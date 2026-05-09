@@ -8,7 +8,7 @@ extends the paper with an OSM-derived intersection layer and a delay-attribution
 heuristic that ranks the dominant slowdown sources along the corridor.
 
 The full write-up is in
-[`report/Reconstructing_Bus_Trajectories_Report.docx`](report/).
+[`report/Reconstructing_Bus_Trajectories_Report.pdf`](report/).
 
 ![431 trips on Route 22 SB](figures/F4_timespace_alltrips_aligned.png)
 
