@@ -73,12 +73,14 @@ DEFAULT_KEEP_TYPES: tuple[str, ...] = (
     "ped_crossing_marked",
 )
 
-# A pedestrian crossing within this distance of a signal / stop-sign
-# intersection is folded into the intersection (the bus's delay there is
-# already attributed to the signal/stop). 40 m ≈ half a typical Chicago
-# block; far enough to catch far-side crossings but tight enough that a
-# genuine mid-block crossing on the next block stays distinct.
-DEFAULT_PED_MERGE_M = 40.0
+# Pedestrian crossings within this along-route distance of an intersection
+# vertex are anchored to that vertex (their delay can be associated with the
+# physical intersection; multiple crossings at the same intersection share
+# an anchor id). Crossings beyond this radius from any vertex are mid-block.
+# 40 m ≈ half a typical Chicago block. This is no longer a merge threshold —
+# every crossing is still emitted as its own ControlPoint; the radius just
+# decides whether an anchor id gets recorded on it.
+DEFAULT_ANCHOR_RADIUS_M = 40.0
 
 DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
 
@@ -90,19 +92,50 @@ DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
 
 @dataclass(frozen=True)
 class ControlPoint:
-    """One controlled intersection along a route."""
+    """One controlled feature along a route.
+
+    For traffic_signals / stop / give_way, the ``intersection_node_id`` is
+    the topological intersection vertex on the bus's way (the node OSM
+    shares between the bus's road and a cross-street).
+
+    For ped_crossing_signal / ped_crossing_marked the ``intersection_node_id``
+    is the crossing's own OSM node id; the *intersection* it belongs to
+    (if any) is recorded separately in ``anchor_intersection_node_id``.
+    """
 
     intersection_node_id: int
     lat: float
     lon: float
     dist_along_route_m: float
     on_way_id: int
-    control_type: str  # "traffic_signals" | "stop" | "give_way"
+    control_type: str  # "traffic_signals" | "stop" | "give_way" | "ped_crossing_signal" | "ped_crossing_marked"
     cross_street_names: tuple[str, ...]
     # When ControlPoints get merged (e.g., two signal nodes that are
-    # really one physical intersection), this tracks the OSM node_ids that
-    # were folded into this representative ControlPoint.
+    # really one physical intersection split across two OSM ways), this
+    # tracks the OSM node_ids that were folded into this representative.
     merged_node_ids: tuple[int, ...] = ()
+
+    # Pedestrian-crossing metadata. Populated only for ped_crossing_*
+    # ControlPoints; default-empty for everything else.
+    #
+    # ``anchor_intersection_node_id`` — the intersection vertex on the bus's
+    # way that this crossing belongs to, or ``None`` for a true mid-block
+    # crossing with no intersection vertex nearby. Multiple crossings at
+    # the same physical intersection share the same anchor id.
+    #
+    # ``signalized`` — derived from ``control_type`` for ped_crossing_*
+    # but stored explicitly so downstream code can filter on a single
+    # boolean without parsing the type string.
+    #
+    # ``markings`` — the value of OSM ``crossing:markings`` (e.g. "zebra",
+    # "lines", "dashes", "ladder", "yes"). Empty string if absent.
+    #
+    # ``has_island`` — true iff OSM ``crossing:island=yes`` (a pedestrian
+    # refuge in the middle of the crossing).
+    anchor_intersection_node_id: int | None = None
+    signalized: bool = False
+    markings: str = ""
+    has_island: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -225,15 +258,31 @@ def _split_osm_elements(osm: dict) -> tuple[dict[int, dict], dict[int, dict]]:
     return ways, nodes
 
 
-def _node_to_highway_ways(ways_by_id: dict[int, dict]) -> dict[int, set[int]]:
-    """Index: node_id → set of way_ids that include it AND have a highway tag.
+# OSM ``highway=*`` values that count as vehicle roads for intersection
+# purposes. A pedestrian footway sharing a node with the bus's road is a
+# crosswalk, not a cross-street — it must not turn the crossing node into
+# an "intersection vertex".
+_VEHICLE_HIGHWAY_TYPES: frozenset[str] = frozenset((
+    "motorway", "trunk", "primary", "secondary", "tertiary",
+    "unclassified", "residential", "service", "living_street",
+    "motorway_link", "trunk_link", "primary_link", "secondary_link",
+    "tertiary_link", "road", "busway",
+))
 
-    Nodes that only appear in non-road ways (sidewalks-only-as-line, building
-    outlines) won't be flagged as intersections.
+
+def _node_to_highway_ways(ways_by_id: dict[int, dict]) -> dict[int, set[int]]:
+    """Index: node_id → set of way_ids that include it AND are vehicle roads.
+
+    Only ways whose ``highway`` tag is in :data:`_VEHICLE_HIGHWAY_TYPES` are
+    indexed. Footways, cycleways, pedestrian paths, etc. are excluded so
+    that a ``highway=crossing`` node — which is typically also a vertex of
+    a footway-as-crosswalk way — is not mistaken for an intersection
+    vertex.
     """
     out: dict[int, set[int]] = {}
     for w in ways_by_id.values():
-        if "highway" not in (w["tags"] or {}):
+        h = (w["tags"] or {}).get("highway", "").lower()
+        if h not in _VEHICLE_HIGHWAY_TYPES:
             continue
         for nid in w["nodes"]:
             out.setdefault(nid, set()).add(w["id"])
@@ -268,38 +317,6 @@ def _pedestrian_crossing_type(tags: dict) -> str | None:
     ):
         return "ped_crossing_marked"
     return None
-
-
-def _drop_ped_crossings_near_intersections(
-    cps: list[ControlPoint], *, max_dist_m: float
-) -> list[ControlPoint]:
-    """Drop ped-crossing entries that are within ``max_dist_m`` of any
-    non-ped ControlPoint (whose attributed delay already covers the same
-    physical location).
-    """
-    import bisect
-
-    non_ped_dists = sorted(
-        c.dist_along_route_m
-        for c in cps
-        if not c.control_type.startswith("ped_crossing")
-    )
-    if not non_ped_dists:
-        return cps
-    out: list[ControlPoint] = []
-    for c in cps:
-        if not c.control_type.startswith("ped_crossing"):
-            out.append(c)
-            continue
-        i = bisect.bisect_left(non_ped_dists, c.dist_along_route_m)
-        nearest = float("inf")
-        if i < len(non_ped_dists):
-            nearest = min(nearest, abs(non_ped_dists[i] - c.dist_along_route_m))
-        if i > 0:
-            nearest = min(nearest, abs(non_ped_dists[i - 1] - c.dist_along_route_m))
-        if nearest > max_dist_m:
-            out.append(c)
-    return out
 
 
 def _direction_applies(direction_tag: str | None, bus_direction: str) -> bool:
@@ -382,12 +399,29 @@ def find_intersections_for_shape(
     stop_sign_proximity_m: float = STOP_SIGN_PROXIMITY_M,
     keep_types: tuple[str, ...] = DEFAULT_KEEP_TYPES,
     cluster_gap_m: float = DEFAULT_CLUSTER_GAP_M,
-    ped_merge_m: float = DEFAULT_PED_MERGE_M,
+    anchor_radius_m: float = DEFAULT_ANCHOR_RADIUS_M,
 ) -> list[ControlPoint]:
-    """For one shape's way-cache, find every controlled intersection on the route.
+    """For one shape's way-cache, return every controlled feature on the route.
 
-    Output is sorted by ``dist_along_route_m`` and deduped by
-    ``intersection_node_id``.
+    Two passes:
+
+    1. Walk the bus's ways in route order, collect every "intersection
+       vertex" (= node shared between the bus's way and at least one
+       non-bus highway way) regardless of whether it is controlled. While
+       walking, track stop/yield signs to attribute each one to the next
+       intersection vertex downstream on the bus's approach. Adjacent
+       same-type intersection vertices that share at least one non-bus
+       way are merged topologically (handles the OSM-way-splitting case
+       where a single physical intersection emits two endpoint vertices).
+
+    2. Walk every ``highway=crossing`` node on the bus's ways. For each,
+       record its OSM metadata (markings, island, signalised flag) and
+       anchor it to the nearest intersection vertex within
+       ``anchor_radius_m`` along the route, or ``None`` if mid-block.
+       Crossings are NOT merged — every one is emitted.
+
+    Output is sorted by ``dist_along_route_m`` and filtered by
+    ``keep_types``.
     """
     ways_by_id, nodes_by_id = _split_osm_elements(osm_data)
     node_to_ways = _node_to_highway_ways(ways_by_id)
@@ -398,100 +432,77 @@ def find_intersections_for_shape(
         dist_along_m_per_vertex=dist_along_m_per_vertex,
     )
 
-    # Cache route-projection per node (we may visit each many times).
-    proj_cache: dict[int, tuple[float, float]] = {}
+    proj_cache: dict[int, tuple[float, float] | None] = {}
 
     def project(node_id: int) -> tuple[float, float] | None:
         if node_id in proj_cache:
             return proj_cache[node_id]
         n = nodes_by_id.get(node_id)
         if n is None:
-            proj_cache[node_id] = None  # type: ignore[assignment]
+            proj_cache[node_id] = None
             return None
         res = matcher.match(np.array([n["lat"]]), np.array([n["lon"]]))
-        out = (float(res.dist_along_m[0]), float(res.perp_dist_m[0]))
-        proj_cache[node_id] = out
-        return out
+        result = (float(res.dist_along_m[0]), float(res.perp_dist_m[0]))
+        proj_cache[node_id] = result
+        return result
 
     bus_way_ids = {seg.way_id for seg in way_cache}
+
+    # ── Pass 1: collect intersection vertices in route order ──────────────
+    intersection_vertices: list[dict] = []
     seen_intersection_nodes: set[int] = set()
-    out: list[ControlPoint] = []
 
     for seg in way_cache:
         way = ways_by_id.get(seg.way_id)
         if way is None:
             continue
-
-        # Walk this way's nodes in TRAVERSAL ORDER (= seg.direction).
         nodes_in_order = (
-            way["nodes"] if seg.direction != "reverse" else list(reversed(way["nodes"]))
+            way["nodes"] if seg.direction != "reverse"
+            else list(reversed(way["nodes"]))
         )
-        # Track the most-recently-seen stop/yield node on the bus's way that
-        # might control the next intersection.
-        pending_stop: tuple[int, float, str] | None = None  # (node_id, dist_route_m, control_type)
+        pending_stop: tuple[int, float, str] | None = None
 
         for node_id in nodes_in_order:
             node = nodes_by_id.get(node_id)
             if node is None:
                 continue
             tags = node.get("tags") or {}
-
             proj = project(node_id)
             if proj is None:
                 continue
             dist_route_m, perp_m = proj
             if perp_m > perp_threshold_m:
                 continue
-            # Must lie within this segment's traversed range (small tolerance
-            # for projection noise at boundaries).
             if not (seg.dist_start_m - 1e-3 <= dist_route_m <= seg.dist_end_m + 1e-3):
                 continue
 
             highway_tag = tags.get("highway")
 
-            # Track stop/yield signs on the bus's way for the next intersection.
+            # Track stop/give_way signs on the bus's approach.
             if highway_tag in ("stop", "give_way") and _direction_applies(
                 tags.get("direction"), seg.direction
             ):
                 pending_stop = (node_id, dist_route_m, highway_tag)
 
-            # Is this node an intersection (member of >=2 highway ways
-            # OUTSIDE the bus's path — Clark Street is itself many OSM ways
-            # joined end-to-end, so we exclude every way_id the bus traverses
-            # to avoid treating the next Clark segment as a "cross street")?
-            # Or is it a pedestrian crossing on the bus's way?
+            # Intersection vertices only: must share a node with at least
+            # one non-bus highway way.
             other_ways = node_to_ways.get(node_id, set()) - bus_way_ids
-            is_intersection = bool(other_ways)
-            ped_type = _pedestrian_crossing_type(tags)
-            if not is_intersection and ped_type is None:
+            if not other_ways:
                 continue
-
-            # Already reported (e.g., shared between two segments)? Still update
-            # pending_stop, but don't double-emit.
             if node_id in seen_intersection_nodes:
-                # Keep walking; the stop/yield tracking is per-segment-direction.
                 continue
+            seen_intersection_nodes.add(node_id)
 
-            # Determine control type. Intersection signal/stop takes
-            # precedence over a co-located ped crossing (the proximity
-            # filter would have dropped the ped entry anyway).
+            # Classify the vertex.
             control_type: str | None = None
-            if is_intersection:
-                if highway_tag == "traffic_signals":
-                    control_type = "traffic_signals"
-                elif (
-                    pending_stop is not None
-                    and (dist_route_m - pending_stop[1]) <= stop_sign_proximity_m
-                    and (dist_route_m - pending_stop[1]) >= -1e-3
-                ):
-                    control_type = pending_stop[2]  # "stop" or "give_way"
-            if control_type is None and ped_type is not None:
-                control_type = ped_type
-
-            if control_type is None:
-                # Intersection with no signal/stop on the bus's side, and
-                # not a ped crossing — bus has right-of-way. Skip.
-                continue
+            if highway_tag == "traffic_signals":
+                control_type = "traffic_signals"
+            elif (
+                pending_stop is not None
+                and (dist_route_m - pending_stop[1]) <= stop_sign_proximity_m
+                and (dist_route_m - pending_stop[1]) >= -1e-3
+            ):
+                control_type = pending_stop[2]
 
             cross_names: list[str] = []
             for wid in sorted(other_ways):
@@ -502,35 +513,157 @@ def find_intersections_for_shape(
                 if name and name not in cross_names:
                     cross_names.append(name)
 
-            out.append(
-                ControlPoint(
-                    intersection_node_id=int(node_id),
-                    lat=float(node["lat"]),
-                    lon=float(node["lon"]),
-                    dist_along_route_m=dist_route_m,
-                    on_way_id=int(seg.way_id),
-                    control_type=control_type,
-                    cross_street_names=tuple(cross_names),
-                )
-            )
-            seen_intersection_nodes.add(node_id)
-            # Once an intersection consumes a pending_stop, clear it.
+            intersection_vertices.append({
+                "node_id": int(node_id),
+                "lat": float(node["lat"]),
+                "lon": float(node["lon"]),
+                "dist_along_route_m": dist_route_m,
+                "on_way_id": int(seg.way_id),
+                "control_type": control_type,  # None = uncontrolled
+                "cross_way_ids": frozenset(int(w) for w in other_ways),
+                "cross_street_names": tuple(cross_names),
+                "merged_node_ids": (),
+            })
+
             if control_type in ("stop", "give_way"):
                 pending_stop = None
 
-    # Drop ped crossings that share their physical delay with an already-
-    # captured signal/stop intersection nearby.
-    if ped_merge_m > 0:
-        out = _drop_ped_crossings_near_intersections(out, max_dist_m=ped_merge_m)
+    # ── Pass 1b: topological merge — adjacent same-control-type signal
+    # vertices that share at least one non-bus way are the same physical
+    # intersection split across two OSM way endpoints. Fold the second into
+    # the first. (Y-junctions where the cross-streets differ legitimately
+    # remain distinct: they share no non-bus way.)
+    intersection_vertices.sort(key=lambda v: v["dist_along_route_m"])
+    merged_vertices: list[dict] = []
+    i = 0
+    while i < len(intersection_vertices):
+        head = dict(intersection_vertices[i])
+        merged_ids = list(head["merged_node_ids"])
+        cross_names_set = set(head["cross_street_names"])
+        cumulative_cross_ways = set(head["cross_way_ids"])
+        j = i + 1
+        while (
+            head["control_type"] == "traffic_signals"
+            and j < len(intersection_vertices)
+            and intersection_vertices[j]["control_type"] == "traffic_signals"
+            and cumulative_cross_ways & intersection_vertices[j]["cross_way_ids"]
+        ):
+            v_next = intersection_vertices[j]
+            merged_ids.append(v_next["node_id"])
+            cumulative_cross_ways |= set(v_next["cross_way_ids"])
+            cross_names_set.update(v_next["cross_street_names"])
+            j += 1
+        head["merged_node_ids"] = tuple(merged_ids)
+        head["cross_street_names"] = tuple(sorted(cross_names_set))
+        head["cross_way_ids"] = frozenset(cumulative_cross_ways)
+        merged_vertices.append(head)
+        i = j
+    intersection_vertices = merged_vertices
 
-    # Filter to kept control types (default includes both signals + stop
-    # plus the two ped-crossing variants).
+    # ── Pass 2: ped crossings, every one emitted, each anchored to the
+    # nearest intersection vertex within anchor_radius_m (controlled or
+    # uncontrolled — anchoring uses all vertices we found in pass 1).
+    import bisect
+    vertex_dists = [v["dist_along_route_m"] for v in intersection_vertices]
+
+    ped_controls: list[ControlPoint] = []
+    seen_ped_nodes: set[int] = set()
+    for seg in way_cache:
+        way = ways_by_id.get(seg.way_id)
+        if way is None:
+            continue
+        for node_id in way["nodes"]:
+            if node_id in seen_ped_nodes:
+                continue
+            node = nodes_by_id.get(node_id)
+            if node is None:
+                continue
+            tags = node.get("tags") or {}
+            ped_type = _pedestrian_crossing_type(tags)
+            if ped_type is None:
+                continue
+            proj = project(node_id)
+            if proj is None:
+                continue
+            dist_route_m, perp_m = proj
+            if perp_m > perp_threshold_m:
+                continue
+            if not (seg.dist_start_m - 1e-3 <= dist_route_m <= seg.dist_end_m + 1e-3):
+                continue
+            seen_ped_nodes.add(node_id)
+
+            # Nearest intersection vertex within anchor_radius_m
+            anchor_node_id: int | None = None
+            if vertex_dists:
+                idx = bisect.bisect_left(vertex_dists, dist_route_m)
+                best_d, best_i = float("inf"), None
+                for ci in (idx - 1, idx):
+                    if 0 <= ci < len(vertex_dists):
+                        d_to = abs(vertex_dists[ci] - dist_route_m)
+                        if d_to < best_d:
+                            best_d, best_i = d_to, ci
+                if best_i is not None and best_d <= anchor_radius_m:
+                    anchor_node_id = intersection_vertices[best_i]["node_id"]
+
+            markings = (tags.get("crossing:markings") or "").strip().lower()
+            if not markings:
+                # Legacy: ``crossing=zebra|marked|uncontrolled`` implies
+                # markings exist even when crossing:markings is absent.
+                c_val = (tags.get("crossing") or "").lower()
+                if c_val in ("zebra", "marked", "uncontrolled"):
+                    markings = "yes"
+                elif (tags.get("crossing_ref") or "").lower() == "zebra":
+                    markings = "zebra"
+            has_island = (tags.get("crossing:island") or "").lower() == "yes"
+            signalized = ped_type == "ped_crossing_signal"
+
+            ped_controls.append(ControlPoint(
+                intersection_node_id=int(node_id),
+                lat=float(node["lat"]),
+                lon=float(node["lon"]),
+                dist_along_route_m=dist_route_m,
+                on_way_id=int(seg.way_id),
+                control_type=ped_type,
+                cross_street_names=(),
+                merged_node_ids=(),
+                anchor_intersection_node_id=anchor_node_id,
+                signalized=signalized,
+                markings=markings,
+                has_island=has_island,
+            ))
+
+    # ── Emit: controlled intersection vertices + every ped crossing.
+    out: list[ControlPoint] = []
+    for v in intersection_vertices:
+        if v["control_type"] is None:
+            continue  # uncontrolled vertex — used for anchoring only
+        out.append(ControlPoint(
+            intersection_node_id=v["node_id"],
+            lat=v["lat"],
+            lon=v["lon"],
+            dist_along_route_m=v["dist_along_route_m"],
+            on_way_id=v["on_way_id"],
+            control_type=v["control_type"],
+            cross_street_names=v["cross_street_names"],
+            merged_node_ids=v["merged_node_ids"],
+            signalized=v["control_type"] == "traffic_signals",
+        ))
+    out.extend(ped_controls)
+
     out = [c for c in out if c.control_type in keep_types]
     out.sort(key=lambda c: c.dist_along_route_m)
 
-    # Merge clusters of same-type signals at one physical intersection.
+    # Clusters: signals are already topologically merged in pass 1b; ped
+    # crossings are never merged; only stop/give_way still get the
+    # proximity-based clustering (preserves the previous behaviour for
+    # those rarer cases of two stop signs that are really one).
     if cluster_gap_m > 0:
-        out = cluster_signals(out, max_gap_m=cluster_gap_m)
+        clusterable = ("stop", "give_way")
+        to_cluster = [c for c in out if c.control_type in clusterable]
+        others = [c for c in out if c.control_type not in clusterable]
+        if to_cluster:
+            to_cluster = cluster_signals(to_cluster, max_gap_m=cluster_gap_m)
+        out = sorted(others + to_cluster, key=lambda c: c.dist_along_route_m)
     return out
 
 
@@ -549,7 +682,7 @@ def build_intersections(
     stop_sign_proximity_m: float = STOP_SIGN_PROXIMITY_M,
     keep_types: tuple[str, ...] = DEFAULT_KEEP_TYPES,
     cluster_gap_m: float = DEFAULT_CLUSTER_GAP_M,
-    ped_merge_m: float = DEFAULT_PED_MERGE_M,
+    anchor_radius_m: float = DEFAULT_ANCHOR_RADIUS_M,
     progress: bool = True,
 ) -> dict[str, list[ControlPoint]]:
     """Build ``{shape_id: [ControlPoint, ...]}`` from a way-match cache."""
@@ -582,7 +715,7 @@ def build_intersections(
             stop_sign_proximity_m=stop_sign_proximity_m,
             keep_types=keep_types,
             cluster_gap_m=cluster_gap_m,
-            ped_merge_m=ped_merge_m,
+            anchor_radius_m=anchor_radius_m,
         )
         out[sid] = cps
         if progress:
@@ -612,9 +745,12 @@ def save_intersections(
 
 def load_intersections(in_path: str | Path) -> dict[str, list[ControlPoint]]:
     payload = json.loads(Path(in_path).read_text())
-    return {
-        sid: [
-            ControlPoint(
+    out: dict[str, list[ControlPoint]] = {}
+    for sid, cps in payload.items():
+        loaded: list[ControlPoint] = []
+        for d in cps:
+            anchor = d.get("anchor_intersection_node_id")
+            loaded.append(ControlPoint(
                 intersection_node_id=int(d["intersection_node_id"]),
                 lat=float(d["lat"]),
                 lon=float(d["lon"]),
@@ -623,8 +759,10 @@ def load_intersections(in_path: str | Path) -> dict[str, list[ControlPoint]]:
                 control_type=str(d["control_type"]),
                 cross_street_names=tuple(d.get("cross_street_names") or ()),
                 merged_node_ids=tuple(int(n) for n in (d.get("merged_node_ids") or ())),
-            )
-            for d in cps
-        ]
-        for sid, cps in payload.items()
-    }
+                anchor_intersection_node_id=(int(anchor) if anchor is not None else None),
+                signalized=bool(d.get("signalized", False)),
+                markings=str(d.get("markings") or ""),
+                has_island=bool(d.get("has_island", False)),
+            ))
+        out[sid] = loaded
+    return out

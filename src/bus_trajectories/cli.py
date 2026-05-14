@@ -169,7 +169,7 @@ def _cmd_build_intersections(args: argparse.Namespace) -> int:
             stop_sign_proximity_m=args.stop_proximity,
             keep_types=keep_types,
             cluster_gap_m=args.cluster_gap,
-            ped_merge_m=args.ped_merge,
+            anchor_radius_m=args.anchor_radius,
             progress=True,
         )
     except OverpassUnreachable as e:
@@ -342,13 +342,15 @@ def main(argv: list[str] | None = None) -> int:
              "0 disables clustering. Default 0.015 mi (~24 m).",
     )
     i.add_argument(
-        "--ped-merge",
+        "--anchor-radius",
         type=float,
         default=40.0,
-        dest="ped_merge",
-        help="Drop pedestrian crossings within this distance (m) of an "
-             "already-captured signal/stop intersection. Default 40 m. 0 "
-             "disables the filter.",
+        dest="anchor_radius",
+        help="Pedestrian crossings within this along-route distance (m) of "
+             "an intersection vertex are anchored to that vertex (their "
+             "anchor_intersection_node_id is recorded). Crossings beyond "
+             "this radius are mid-block. Crossings are no longer merged or "
+             "dropped — every one is emitted. Default 40 m.",
     )
     i.set_defaults(func=_cmd_build_intersections)
 

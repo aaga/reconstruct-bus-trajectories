@@ -412,13 +412,12 @@ def test_ped_crossing_unmarked_skipped():
     assert cps == []
 
 
-def test_ped_crossing_near_signal_suppressed():
-    """A ped crossing within DEFAULT_PED_MERGE_M of a captured traffic signal
-    is dropped — the signal already accounts for the bus's stopping delay."""
+def test_ped_crossing_near_signal_anchored_not_dropped():
+    """A ped crossing near a signal is KEPT (not merged) and gets an
+    anchor_intersection_node_id pointing at the signal's vertex."""
     poly, dist = _straight_polyline(n=51, total_m=1000.0)
     bus_node_ids = list(range(1, 52))
     bus_way = _way(100, bus_node_ids, tags={"highway": "primary", "name": "Clark"})
-    # Cross street meets the bus at node 25 (dist 480m).
     cross_way = _way(200, [100, 25, 200], tags={"highway": "secondary",
                                                   "name": "West Foster Avenue"})
     elements: list[dict] = [bus_way, cross_way]
@@ -426,22 +425,29 @@ def test_ped_crossing_near_signal_suppressed():
         tags: dict | None = None
         if nid == 25:
             tags = {"highway": "traffic_signals"}
-        elif nid == 26:  # ~20 m past the signal: far-side ped crossing
-            tags = {"highway": "crossing", "crossing": "marked"}
+        elif nid == 26:  # ~20 m past the signal
+            tags = {"highway": "crossing", "crossing": "marked",
+                    "crossing:markings": "zebra"}
         elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
     elements.append(_node(100, float(poly[24, 0]) + 0.001, float(poly[24, 1])))
     elements.append(_node(200, float(poly[24, 0]) - 0.001, float(poly[24, 1])))
     cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
                          direction="forward", name="Clark", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
-    # Just the signal should survive; the co-located ped crossing is dropped.
-    assert len(cps) == 1
-    assert cps[0].control_type == "traffic_signals"
+    # Both survive now: signal + crossing
+    assert len(cps) == 2
+    sig = next(c for c in cps if c.control_type == "traffic_signals")
+    ped = next(c for c in cps if c.control_type == "ped_crossing_marked")
+    # Crossing anchors to the signal's intersection vertex
+    assert ped.anchor_intersection_node_id == sig.intersection_node_id
+    assert ped.signalized is False
+    assert ped.markings == "zebra"
+    assert ped.has_island is False
 
 
-def test_ped_crossing_far_from_signal_kept():
-    """If the ped crossing is far from any signal/stop intersection, it
-    survives the proximity filter."""
+def test_ped_crossing_far_from_intersection_has_null_anchor():
+    """A mid-block crossing far from any intersection vertex has
+    anchor_intersection_node_id == None."""
     poly, dist = _straight_polyline(n=51, total_m=1000.0)
     bus_node_ids = list(range(1, 52))
     bus_way = _way(100, bus_node_ids, tags={"highway": "primary"})
@@ -452,8 +458,9 @@ def test_ped_crossing_far_from_signal_kept():
         tags: dict | None = None
         if nid == 5:
             tags = {"highway": "traffic_signals"}
-        elif nid == 30:  # 500 m past the signal — well outside merge radius
-            tags = {"highway": "crossing", "crossing": "marked"}
+        elif nid == 30:  # 500 m past the signal — well beyond anchor radius
+            tags = {"highway": "crossing", "crossing": "marked",
+                    "crossing:island": "yes"}
         elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
     elements.append(_node(100, float(poly[4, 0]) + 0.001, float(poly[4, 1])))
     elements.append(_node(200, float(poly[4, 0]) - 0.001, float(poly[4, 1])))
@@ -461,7 +468,124 @@ def test_ped_crossing_far_from_signal_kept():
                          direction="forward", name="Clark", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
     assert len(cps) == 2
-    assert {c.control_type for c in cps} == {"traffic_signals", "ped_crossing_marked"}
+    ped = next(c for c in cps if c.control_type == "ped_crossing_marked")
+    assert ped.anchor_intersection_node_id is None  # mid-block
+    assert ped.has_island is True
+
+
+def test_ped_crossing_at_uncontrolled_intersection_anchors():
+    """The Clark & Wisconsin case: two ped crossings bracket an
+    uncontrolled intersection vertex. Both are emitted, both anchor to
+    the same vertex id, no signal/stop is emitted (uncontrolled
+    intersections are not surfaced as ControlPoints)."""
+    # 101 vertices over 1000 m → 10 m spacing
+    poly, dist = _straight_polyline(n=101, total_m=1000.0)
+    bus_node_ids = list(range(1, 102))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary", "name": "Clark"})
+    # Cross street meets bus at node 50 (dist 490 m) — UNCONTROLLED
+    # (no signal, no stop on bus's approach).
+    cross_way = _way(200, [100, 50, 200], tags={"highway": "residential",
+                                                  "name": "West Wisconsin Street"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 48:  # 20 m upstream of the intersection vertex
+            tags = {"highway": "crossing", "crossing": "uncontrolled",
+                    "crossing:markings": "zebra", "crossing:island": "yes"}
+        elif nid == 52:  # 20 m downstream of the intersection vertex
+            tags = {"highway": "crossing", "crossing": "uncontrolled",
+                    "crossing:markings": "zebra"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[49, 0]) + 0.001, float(poly[49, 1])))
+    elements.append(_node(200, float(poly[49, 0]) - 0.001, float(poly[49, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    # No signal/stop emitted; just the two crossings.
+    assert all(c.control_type == "ped_crossing_marked" for c in cps)
+    assert len(cps) == 2
+    # Both anchor to the same uncontrolled intersection vertex (node 50).
+    assert {c.anchor_intersection_node_id for c in cps} == {50}
+    # Crossings remain distinct (not merged) but share the anchor.
+    assert {c.intersection_node_id for c in cps} == {48, 52}
+    # Metadata captured.
+    a = next(c for c in cps if c.intersection_node_id == 48)
+    assert a.markings == "zebra"
+    assert a.has_island is True
+    b = next(c for c in cps if c.intersection_node_id == 52)
+    assert b.has_island is False
+
+
+def test_topological_signal_merge_via_shared_way():
+    """Two adjacent signal vertices that share a cross-street way are
+    folded into one ControlPoint (the OSM way-splitting case for Clark)."""
+    # 101 vertices over 1000 m → 10 m spacing
+    poly, dist = _straight_polyline(n=101, total_m=1000.0)
+    # Bus's road is split into two OSM ways at node 50 (the signal).
+    bus_way_a = _way(100, list(range(1, 51)), tags={"highway": "primary",
+                                                       "name": "Clark"})
+    bus_way_b = _way(101, list(range(50, 102)), tags={"highway": "primary",
+                                                        "name": "Clark"})
+    # The cross-street (Ridge) is also split: way 200 ends at vertex 49,
+    # way 201 starts at vertex 51. They share node 999 (off-route) so they
+    # are clearly the same street, but adjacent intersection vertices have
+    # different cross_way ids. To express the case the user described — two
+    # signal vertices sharing one non-bus way — give Ridge a SINGLE way
+    # that touches both vertices.
+    cross_way = _way(200, [300, 49, 999, 51, 400],
+                       tags={"highway": "secondary", "name": "North Ridge Avenue"})
+    elements: list[dict] = [bus_way_a, bus_way_b, cross_way]
+    for nid in range(1, 102):
+        tags: dict | None = None
+        if nid in (49, 51):
+            # Both endpoints of the way split are signalised.
+            tags = {"highway": "traffic_signals"}
+        elements.append(_node(nid, float(poly[nid - 1, 0]),
+                                float(poly[nid - 1, 1]), tags))
+    elements.append(_node(50, float(poly[49, 0]), float(poly[49, 1])))
+    for nid in (300, 999, 400):
+        elements.append(_node(nid, float(poly[49, 0]) - 0.001, float(poly[49, 1])))
+    cache = [
+        WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=490.0,
+                    direction="forward", name="Clark", road_class="primary"),
+        WaySegment(way_id=101, dist_start_m=490.0, dist_end_m=1010.0,
+                    direction="forward", name="Clark", road_class="primary"),
+    ]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    # Both vertices share cross-way 200 (Ridge), so they merge into one.
+    sigs = [c for c in cps if c.control_type == "traffic_signals"]
+    assert len(sigs) == 1
+    # The merged ControlPoint records the folded node id.
+    assert 51 in sigs[0].merged_node_ids
+
+
+def test_yjunction_signals_do_not_merge():
+    """Two signal vertices that do NOT share a non-bus way stay distinct
+    (Y/T-junction with two different cross-streets at one physical
+    signal). Topology gets this right; we don't merge across cross-streets."""
+    poly, dist = _straight_polyline(n=101, total_m=1000.0)
+    bus_way = _way(100, list(range(1, 102)),
+                     tags={"highway": "primary", "name": "Clark"})
+    # Two different cross-streets, one at vertex 49, one at vertex 51.
+    cross_a = _way(200, [300, 49, 301],
+                     tags={"highway": "residential", "name": "Schreiber"})
+    cross_b = _way(201, [400, 51, 401],
+                     tags={"highway": "residential", "name": "Ashland"})
+    elements: list[dict] = [bus_way, cross_a, cross_b]
+    for nid in range(1, 102):
+        tags: dict | None = None
+        if nid in (49, 51):
+            tags = {"highway": "traffic_signals"}
+        elements.append(_node(nid, float(poly[nid - 1, 0]),
+                                float(poly[nid - 1, 1]), tags))
+    for nid in (300, 301, 400, 401):
+        elements.append(_node(nid, float(poly[49, 0]) - 0.001, float(poly[49, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    sigs = [c for c in cps if c.control_type == "traffic_signals"]
+    # Two distinct signal ControlPoints — they share no cross-way.
+    assert len(sigs) == 2
 
 
 # ---------- save/load round-trip -------------------------------------------
