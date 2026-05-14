@@ -169,6 +169,7 @@ def _cmd_build_intersections(args: argparse.Namespace) -> int:
             stop_sign_proximity_m=args.stop_proximity,
             keep_types=keep_types,
             cluster_gap_m=args.cluster_gap,
+            ped_merge_m=args.ped_merge,
             progress=True,
         )
     except OverpassUnreachable as e:
@@ -325,10 +326,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     i.add_argument(
         "--keep-types",
-        default="traffic_signals,stop",
+        default="traffic_signals,stop,ped_crossing_signal,ped_crossing_marked",
         dest="keep_types",
-        help="Comma-separated control types to keep (default: traffic_signals,stop). "
-             "Use 'traffic_signals,stop,give_way' to include yields.",
+        help="Comma-separated control types to keep. Default keeps signals, "
+             "stop signs, signalised pedestrian crossings, and marked "
+             "pedestrian crossings. Use 'traffic_signals,stop' to exclude "
+             "pedestrian crossings; add 'give_way' to include yields.",
     )
     i.add_argument(
         "--cluster-gap",
@@ -337,6 +340,15 @@ def main(argv: list[str] | None = None) -> int:
         dest="cluster_gap",
         help="Merge consecutive same-type intersections within this distance (m). "
              "0 disables clustering. Default 0.015 mi (~24 m).",
+    )
+    i.add_argument(
+        "--ped-merge",
+        type=float,
+        default=40.0,
+        dest="ped_merge",
+        help="Drop pedestrian crossings within this distance (m) of an "
+             "already-captured signal/stop intersection. Default 40 m. 0 "
+             "disables the filter.",
     )
     i.set_defaults(func=_cmd_build_intersections)
 

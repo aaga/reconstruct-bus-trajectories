@@ -1,14 +1,25 @@
-"""Enrich a way-match cache with the controlled intersections along a route.
+"""Enrich a way-match cache with the controlled features along a route.
 
-For each shape in a way-match cache, we identify intersections (nodes where
-the bus's OSM way meets another road) and keep only those where the bus's
-direction of travel is *controlled*:
+For each shape in a way-match cache, we identify two kinds of nodes that
+constrain the bus's speed:
 
-  - The intersection node carries ``highway=traffic_signals`` (signal applies
-    to all approaches by default).
-  - A node on the bus's way, just upstream of the intersection in the bus's
-    traversal direction, carries ``highway=stop`` or ``highway=give_way``
-    with a ``direction`` tag that matches the bus's traversal.
+1. **Controlled intersections** — nodes where the bus's OSM way meets another
+   road, and the bus's direction of travel is controlled:
+
+   - The intersection node carries ``highway=traffic_signals`` (signal
+     applies to all approaches by default).
+   - A node on the bus's way, just upstream of the intersection in the
+     bus's traversal direction, carries ``highway=stop`` or
+     ``highway=give_way`` with a ``direction`` tag that matches the bus's
+     traversal.
+
+2. **Pedestrian crossings** — ``highway=crossing`` nodes on the bus's way
+   that are either signalised (``crossing=traffic_signals`` and related
+   ``crossing_ref`` values) or marked (``crossing=marked`` / ``zebra`` /
+   ``uncontrolled``). Unmarked crossings are skipped since they rarely
+   cause buses to actually stop. Crossings co-located with a captured
+   intersection (within ~40 m) are dropped to avoid double-counting the
+   same physical delay.
 
 Intersections where the control is on a side street the bus doesn't use are
 treated as "bus has free right-of-way" and skipped.
@@ -55,7 +66,19 @@ DEFAULT_CLUSTER_GAP_M = 0.015 * 1609.344  # ~24.1 m
 
 # Default control types to keep in the output. give_way is dropped by
 # default since OSM tagging of yields on bus arterials is sparse and noisy.
-DEFAULT_KEEP_TYPES: tuple[str, ...] = ("traffic_signals", "stop")
+DEFAULT_KEEP_TYPES: tuple[str, ...] = (
+    "traffic_signals",
+    "stop",
+    "ped_crossing_signal",
+    "ped_crossing_marked",
+)
+
+# A pedestrian crossing within this distance of a signal / stop-sign
+# intersection is folded into the intersection (the bus's delay there is
+# already attributed to the signal/stop). 40 m ≈ half a typical Chicago
+# block; far enough to catch far-side crossings but tight enough that a
+# genuine mid-block crossing on the next block stays distinct.
+DEFAULT_PED_MERGE_M = 40.0
 
 DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
 
@@ -217,6 +240,68 @@ def _node_to_highway_ways(ways_by_id: dict[int, dict]) -> dict[int, set[int]]:
     return out
 
 
+def _pedestrian_crossing_type(tags: dict) -> str | None:
+    """Classify a ``highway=crossing`` node by its variant.
+
+    Returns:
+        ``"ped_crossing_signal"`` — signalised pedestrian crossing (Pelican,
+        Puffin, Toucan, etc.), where the bus must wait on a red.
+        ``"ped_crossing_marked"`` — marked but un-signalised crossing
+        (zebra, marked, "uncontrolled"). Buses must yield to pedestrians.
+        ``None`` — unmarked / unknown / not a crossing. Skipped.
+    """
+    if (tags.get("highway") or "").lower() != "crossing":
+        return None
+    crossing = (tags.get("crossing") or "").lower()
+    cref = (tags.get("crossing_ref") or "").lower()
+    if crossing == "traffic_signals" or cref in (
+        "pelican", "puffin", "toucan", "pegasus", "signals"
+    ):
+        return "ped_crossing_signal"
+    # "uncontrolled" in OSM legacy tagging means "marked, no signal" — buses
+    # still stop. New OSM guidance is to use crossing=marked; we accept both.
+    if crossing in ("marked", "zebra", "uncontrolled") or cref == "zebra":
+        return "ped_crossing_marked"
+    # Newer schema: crossing:markings=yes/zebra/lines/...
+    if (tags.get("crossing:markings") or "").lower() in (
+        "yes", "zebra", "lines", "dashes", "ladder"
+    ):
+        return "ped_crossing_marked"
+    return None
+
+
+def _drop_ped_crossings_near_intersections(
+    cps: list[ControlPoint], *, max_dist_m: float
+) -> list[ControlPoint]:
+    """Drop ped-crossing entries that are within ``max_dist_m`` of any
+    non-ped ControlPoint (whose attributed delay already covers the same
+    physical location).
+    """
+    import bisect
+
+    non_ped_dists = sorted(
+        c.dist_along_route_m
+        for c in cps
+        if not c.control_type.startswith("ped_crossing")
+    )
+    if not non_ped_dists:
+        return cps
+    out: list[ControlPoint] = []
+    for c in cps:
+        if not c.control_type.startswith("ped_crossing"):
+            out.append(c)
+            continue
+        i = bisect.bisect_left(non_ped_dists, c.dist_along_route_m)
+        nearest = float("inf")
+        if i < len(non_ped_dists):
+            nearest = min(nearest, abs(non_ped_dists[i] - c.dist_along_route_m))
+        if i > 0:
+            nearest = min(nearest, abs(non_ped_dists[i - 1] - c.dist_along_route_m))
+        if nearest > max_dist_m:
+            out.append(c)
+    return out
+
+
 def _direction_applies(direction_tag: str | None, bus_direction: str) -> bool:
     """Does an OSM direction tag apply to a bus traversing in ``bus_direction``?
 
@@ -297,6 +382,7 @@ def find_intersections_for_shape(
     stop_sign_proximity_m: float = STOP_SIGN_PROXIMITY_M,
     keep_types: tuple[str, ...] = DEFAULT_KEEP_TYPES,
     cluster_gap_m: float = DEFAULT_CLUSTER_GAP_M,
+    ped_merge_m: float = DEFAULT_PED_MERGE_M,
 ) -> list[ControlPoint]:
     """For one shape's way-cache, find every controlled intersection on the route.
 
@@ -369,12 +455,15 @@ def find_intersections_for_shape(
             ):
                 pending_stop = (node_id, dist_route_m, highway_tag)
 
-            # Is this an intersection node? (member of >=2 highway ways
+            # Is this node an intersection (member of >=2 highway ways
             # OUTSIDE the bus's path — Clark Street is itself many OSM ways
             # joined end-to-end, so we exclude every way_id the bus traverses
-            # to avoid treating the next Clark segment as a "cross street".)
+            # to avoid treating the next Clark segment as a "cross street")?
+            # Or is it a pedestrian crossing on the bus's way?
             other_ways = node_to_ways.get(node_id, set()) - bus_way_ids
-            if not other_ways:
+            is_intersection = bool(other_ways)
+            ped_type = _pedestrian_crossing_type(tags)
+            if not is_intersection and ped_type is None:
                 continue
 
             # Already reported (e.g., shared between two segments)? Still update
@@ -383,19 +472,25 @@ def find_intersections_for_shape(
                 # Keep walking; the stop/yield tracking is per-segment-direction.
                 continue
 
-            # Determine control type. First hit wins.
+            # Determine control type. Intersection signal/stop takes
+            # precedence over a co-located ped crossing (the proximity
+            # filter would have dropped the ped entry anyway).
             control_type: str | None = None
-            if highway_tag == "traffic_signals":
-                control_type = "traffic_signals"
-            elif (
-                pending_stop is not None
-                and (dist_route_m - pending_stop[1]) <= stop_sign_proximity_m
-                and (dist_route_m - pending_stop[1]) >= -1e-3
-            ):
-                control_type = pending_stop[2]  # "stop" or "give_way"
+            if is_intersection:
+                if highway_tag == "traffic_signals":
+                    control_type = "traffic_signals"
+                elif (
+                    pending_stop is not None
+                    and (dist_route_m - pending_stop[1]) <= stop_sign_proximity_m
+                    and (dist_route_m - pending_stop[1]) >= -1e-3
+                ):
+                    control_type = pending_stop[2]  # "stop" or "give_way"
+            if control_type is None and ped_type is not None:
+                control_type = ped_type
 
             if control_type is None:
-                # Uncontrolled — bus has right-of-way. Skip.
+                # Intersection with no signal/stop on the bus's side, and
+                # not a ped crossing — bus has right-of-way. Skip.
                 continue
 
             cross_names: list[str] = []
@@ -423,7 +518,13 @@ def find_intersections_for_shape(
             if control_type in ("stop", "give_way"):
                 pending_stop = None
 
-    # Filter to kept control types (default: signals + stop, dropping give_way).
+    # Drop ped crossings that share their physical delay with an already-
+    # captured signal/stop intersection nearby.
+    if ped_merge_m > 0:
+        out = _drop_ped_crossings_near_intersections(out, max_dist_m=ped_merge_m)
+
+    # Filter to kept control types (default includes both signals + stop
+    # plus the two ped-crossing variants).
     out = [c for c in out if c.control_type in keep_types]
     out.sort(key=lambda c: c.dist_along_route_m)
 
@@ -448,6 +549,7 @@ def build_intersections(
     stop_sign_proximity_m: float = STOP_SIGN_PROXIMITY_M,
     keep_types: tuple[str, ...] = DEFAULT_KEEP_TYPES,
     cluster_gap_m: float = DEFAULT_CLUSTER_GAP_M,
+    ped_merge_m: float = DEFAULT_PED_MERGE_M,
     progress: bool = True,
 ) -> dict[str, list[ControlPoint]]:
     """Build ``{shape_id: [ControlPoint, ...]}`` from a way-match cache."""
@@ -480,6 +582,7 @@ def build_intersections(
             stop_sign_proximity_m=stop_sign_proximity_m,
             keep_types=keep_types,
             cluster_gap_m=cluster_gap_m,
+            ped_merge_m=ped_merge_m,
         )
         out[sid] = cps
         if progress:

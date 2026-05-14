@@ -337,6 +337,133 @@ def test_give_way_filtered_by_default():
     assert len(cps2) == 1 and cps2[0].control_type == "give_way"
 
 
+# ---------- pedestrian crossings -------------------------------------------
+
+
+def _bus_with_node(crossing_node_idx: int, crossing_tags: dict,
+                   *, n: int = 51, total_m: float = 1000.0):
+    """Helper: bus way with a single node at index crossing_node_idx tagged
+    as the given crossing variant. Returns (cache, polyline, dist, elements)."""
+    poly, dist = _straight_polyline(n=n, total_m=total_m)
+    bus_node_ids = list(range(1, n + 1))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary",
+                                              "name": "North Clark Street"})
+    elements: list[dict] = [bus_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags = crossing_tags if i == crossing_node_idx else None
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=total_m,
+                         direction="forward", name="Clark", road_class="primary")]
+    return cache, poly, dist, elements
+
+
+def test_ped_crossing_signalised_kept():
+    """A mid-block highway=crossing + crossing=traffic_signals on the bus's
+    way → one ControlPoint of type ped_crossing_signal."""
+    cache, poly, dist, elements = _bus_with_node(
+        crossing_node_idx=20,  # 400 m into the route
+        crossing_tags={"highway": "crossing", "crossing": "traffic_signals"},
+    )
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert len(cps) == 1
+    assert cps[0].control_type == "ped_crossing_signal"
+    assert abs(cps[0].dist_along_route_m - 400.0) < 1.0
+    assert cps[0].cross_street_names == ()  # mid-block; no cross way
+
+
+def test_ped_crossing_marked_kept():
+    """highway=crossing + crossing=marked → ped_crossing_marked."""
+    cache, poly, dist, elements = _bus_with_node(
+        crossing_node_idx=15,
+        crossing_tags={"highway": "crossing", "crossing": "marked"},
+    )
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert len(cps) == 1
+    assert cps[0].control_type == "ped_crossing_marked"
+
+
+def test_ped_crossing_zebra_kept():
+    """crossing=zebra is treated as marked."""
+    cache, poly, dist, elements = _bus_with_node(
+        crossing_node_idx=10,
+        crossing_tags={"highway": "crossing", "crossing_ref": "zebra"},
+    )
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert len(cps) == 1 and cps[0].control_type == "ped_crossing_marked"
+
+
+def test_ped_crossing_pelican_kept_as_signal():
+    """crossing_ref=pelican → ped_crossing_signal."""
+    cache, poly, dist, elements = _bus_with_node(
+        crossing_node_idx=10,
+        crossing_tags={"highway": "crossing", "crossing_ref": "pelican"},
+    )
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert len(cps) == 1 and cps[0].control_type == "ped_crossing_signal"
+
+
+def test_ped_crossing_unmarked_skipped():
+    """An unmarked crossing is not reliable bus delay → skipped."""
+    cache, poly, dist, elements = _bus_with_node(
+        crossing_node_idx=10,
+        crossing_tags={"highway": "crossing", "crossing": "unmarked"},
+    )
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert cps == []
+
+
+def test_ped_crossing_near_signal_suppressed():
+    """A ped crossing within DEFAULT_PED_MERGE_M of a captured traffic signal
+    is dropped — the signal already accounts for the bus's stopping delay."""
+    poly, dist = _straight_polyline(n=51, total_m=1000.0)
+    bus_node_ids = list(range(1, 52))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary", "name": "Clark"})
+    # Cross street meets the bus at node 25 (dist 480m).
+    cross_way = _way(200, [100, 25, 200], tags={"highway": "secondary",
+                                                  "name": "West Foster Avenue"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 25:
+            tags = {"highway": "traffic_signals"}
+        elif nid == 26:  # ~20 m past the signal: far-side ped crossing
+            tags = {"highway": "crossing", "crossing": "marked"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[24, 0]) + 0.001, float(poly[24, 1])))
+    elements.append(_node(200, float(poly[24, 0]) - 0.001, float(poly[24, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    # Just the signal should survive; the co-located ped crossing is dropped.
+    assert len(cps) == 1
+    assert cps[0].control_type == "traffic_signals"
+
+
+def test_ped_crossing_far_from_signal_kept():
+    """If the ped crossing is far from any signal/stop intersection, it
+    survives the proximity filter."""
+    poly, dist = _straight_polyline(n=51, total_m=1000.0)
+    bus_node_ids = list(range(1, 52))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary"})
+    cross_way = _way(200, [100, 5, 200], tags={"highway": "secondary",
+                                                 "name": "Foster"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 5:
+            tags = {"highway": "traffic_signals"}
+        elif nid == 30:  # 500 m past the signal — well outside merge radius
+            tags = {"highway": "crossing", "crossing": "marked"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[4, 0]) + 0.001, float(poly[4, 1])))
+    elements.append(_node(200, float(poly[4, 0]) - 0.001, float(poly[4, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert len(cps) == 2
+    assert {c.control_type for c in cps} == {"traffic_signals", "ped_crossing_marked"}
+
+
 # ---------- save/load round-trip -------------------------------------------
 
 
