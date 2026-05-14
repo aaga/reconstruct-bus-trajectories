@@ -601,25 +601,22 @@ def test_marked_near_signal_is_kept():
     assert types == ["ped_crossing_marked", "traffic_signals"]
 
 
-def test_ped_signal_just_over_30m_but_anchored_is_dropped():
-    """A ped_crossing_signal sitting ~40 m past a captured signal — just
-    outside the 30 m distance threshold — is still dropped because its
-    anchor_intersection_node_id matches the captured signal's node id."""
+def test_ped_signal_near_stop_is_kept():
+    """A signalised pedestrian crossing near a stop sign is KEPT — the
+    filter only drops ped_crossing_signal near a traffic_signals
+    ControlPoint, not near stops."""
     # 51 vertices over 1000 m → 20 m spacing
     poly, dist = _straight_polyline(n=51, total_m=1000.0)
     bus_node_ids = list(range(1, 52))
     bus_way = _way(100, bus_node_ids, tags={"highway": "primary"})
     cross_way = _way(200, [100, 26, 200],
-                       tags={"highway": "secondary", "name": "Foster"})
+                       tags={"highway": "residential", "name": "Foster"})
     elements: list[dict] = [bus_way, cross_way]
     for i, nid in enumerate(bus_node_ids):
         tags: dict | None = None
-        if nid == 26:  # signal at 500 m
-            tags = {"highway": "traffic_signals"}
-        elif nid == 28:  # ped signal at 540 m — 40 m past the signal,
-                          # outside the 30 m distance check but inside the
-                          # 40 m anchor radius, so its anchor latches onto
-                          # the signal's intersection node.
+        if nid == 25:  # stop sign on bus approach 20 m before vertex
+            tags = {"highway": "stop", "direction": "forward"}
+        elif nid == 27:  # ped signal 20 m past the stopped-at vertex
             tags = {"highway": "crossing", "crossing": "traffic_signals"}
         elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
     elements.append(_node(100, float(poly[25, 0]) + 0.001, float(poly[25, 1])))
@@ -627,9 +624,9 @@ def test_ped_signal_just_over_30m_but_anchored_is_dropped():
     cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
                          direction="forward", name="Clark", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
-    # Only the signal survives — the ped signal's anchor caught it.
-    types = [c.control_type for c in cps]
-    assert types == ["traffic_signals"]
+    types = sorted(c.control_type for c in cps)
+    # Both kept — ped_signal is only filtered by signals, not stops.
+    assert types == ["ped_crossing_signal", "stop"]
 
 
 def test_midblock_ped_signal_is_kept():
