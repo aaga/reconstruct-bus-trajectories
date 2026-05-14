@@ -390,6 +390,63 @@ def cluster_signals(
     return out
 
 
+def _filter_near(
+    cps: list[ControlPoint],
+    *,
+    drop_type: str,
+    near_types: tuple[str, ...],
+    max_dist_m: float,
+) -> list[ControlPoint]:
+    """Drop every ControlPoint of ``drop_type`` that is either
+
+      - within ``max_dist_m`` (along-route) of any ControlPoint whose
+        ``control_type`` is in ``near_types``, OR
+      - whose ``anchor_intersection_node_id`` matches the
+        ``intersection_node_id`` (or any ``merged_node_ids``) of such a
+        ControlPoint.
+
+    Distance handles cases where the OSM anchor points to an uncontrolled
+    duplicate vertex of a captured intersection. Anchor matching handles
+    cases just outside the distance threshold where OSM still says
+    explicitly that the crossing belongs to the intersection. Both signals
+    use OSM data directly, no proximity merging required.
+    """
+    import bisect
+
+    targets = sorted(c.dist_along_route_m for c in cps
+                     if c.control_type in near_types)
+    anchor_ids: set[int] = set()
+    for c in cps:
+        if c.control_type in near_types:
+            anchor_ids.add(c.intersection_node_id)
+            anchor_ids.update(c.merged_node_ids)
+    if not targets and not anchor_ids:
+        return cps
+
+    out: list[ControlPoint] = []
+    for c in cps:
+        if c.control_type != drop_type:
+            out.append(c)
+            continue
+        if (
+            c.anchor_intersection_node_id is not None
+            and c.anchor_intersection_node_id in anchor_ids
+        ):
+            continue  # anchor explicitly points at a captured intersection
+        if targets:
+            d = c.dist_along_route_m
+            idx = bisect.bisect_left(targets, d)
+            nearest = float("inf")
+            if idx < len(targets):
+                nearest = min(nearest, abs(targets[idx] - d))
+            if idx > 0:
+                nearest = min(nearest, abs(targets[idx - 1] - d))
+            if nearest <= max_dist_m:
+                continue  # within the distance threshold
+        out.append(c)
+    return out
+
+
 def find_intersections_for_shape(
     way_cache: list[WaySegment],
     polyline_latlon: np.ndarray,
@@ -636,25 +693,32 @@ def find_intersections_for_shape(
             to_cluster = cluster_signals(to_cluster, max_gap_m=cluster_gap_m)
         out = sorted(to_cluster + peds, key=lambda c: c.dist_along_route_m)
 
-    # Drop redundant signalised crosswalks: a ped_crossing_signal anchored
-    # to a captured signal/stop intersection is already represented by the
-    # intersection's ControlPoint, so emitting it as a second feature
-    # double-counts the same physical delay. Mid-block ped_crossing_signal
-    # (anchor=None) — e.g. a stand-alone HAWK signal — is kept, as are
-    # all ped_crossing_marked entries regardless of anchor.
-    controlled_ids: set[int] = set()
-    for c in out:
-        if c.control_type in ("traffic_signals", "stop", "give_way"):
-            controlled_ids.add(c.intersection_node_id)
-            controlled_ids.update(c.merged_node_ids)
-    out = [
-        c for c in out
-        if not (
-            c.control_type == "ped_crossing_signal"
-            and c.anchor_intersection_node_id is not None
-            and c.anchor_intersection_node_id in controlled_ids
-        )
-    ]
+    # Distance-based drop rules (anchor-based filtering missed cases where
+    # the ped crossing's nearest intersection vertex is an UNCONTROLLED
+    # OSM-duplicate of an adjacent signalised intersection — a frequent
+    # pattern on Chicago arterials where the cross-street is itself split
+    # into multiple ways at the junction):
+    #
+    #   - ped_crossing_signal within 30 m of any captured signal / stop /
+    #     give_way ControlPoint is dropped (its delay is already
+    #     represented by that controlled intersection).
+    #
+    #   - ped_crossing_marked within 30 m of a captured stop / give_way is
+    #     dropped (a marked crosswalk at a stop-sign-controlled junction
+    #     adds no information beyond the stop sign itself). Marked
+    #     crossings near signals are KEPT — signalised intersections often
+    #     have unsignalised marked crosswalks on adjacent legs that are
+    #     real delay sources for the bus.
+    out = _filter_near(
+        out, drop_type="ped_crossing_signal",
+        near_types=("traffic_signals", "stop", "give_way"),
+        max_dist_m=30.0,
+    )
+    out = _filter_near(
+        out, drop_type="ped_crossing_marked",
+        near_types=("stop", "give_way"),
+        max_dist_m=30.0,
+    )
     return out
 
 

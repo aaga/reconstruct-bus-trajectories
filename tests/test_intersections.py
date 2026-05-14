@@ -516,11 +516,11 @@ def test_ped_crossing_at_uncontrolled_intersection_anchors():
     assert b.has_island is False
 
 
-def test_ped_signal_at_captured_signal_is_dropped():
-    """A ped_crossing_signal anchored to a captured traffic_signals
-    intersection is the same physical delay event the signal already
-    represents — drop it from the output (the marked-crosswalk case at
-    the same location would be kept)."""
+def test_ped_signal_within_30m_of_signal_is_dropped():
+    """A ped_crossing_signal within 30 m of a captured traffic_signals
+    ControlPoint is dropped — pure distance-based filter (not anchor-
+    based, which misses cases where the ped crossing's anchor is an
+    uncontrolled OSM-duplicate vertex of the signalised intersection)."""
     poly, dist = _straight_polyline(n=51, total_m=1000.0)
     bus_node_ids = list(range(1, 52))
     bus_way = _way(100, bus_node_ids, tags={"highway": "primary",
@@ -534,7 +534,7 @@ def test_ped_signal_at_captured_signal_is_dropped():
             tags = {"highway": "traffic_signals"}
         elif nid == 26:  # signalised ped crossing 20 m past the signal
             tags = {"highway": "crossing", "crossing": "traffic_signals"}
-        elif nid == 27:  # marked (unsignalised) crossing also near the signal
+        elif nid == 27:  # marked crossing 40 m past the signal — KEPT
             tags = {"highway": "crossing", "crossing": "marked"}
         elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
     elements.append(_node(100, float(poly[24, 0]) + 0.001, float(poly[24, 1])))
@@ -543,11 +543,93 @@ def test_ped_signal_at_captured_signal_is_dropped():
                          direction="forward", name="Clark", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
     types = sorted(c.control_type for c in cps)
-    # The ped_crossing_signal is dropped (redundant with the signal it
-    # anchors to). The signal and the marked crosswalk survive.
+    # ped_signal dropped; marked crosswalk near a signal is KEPT.
     assert types == ["ped_crossing_marked", "traffic_signals"]
-    marked = next(c for c in cps if c.control_type == "ped_crossing_marked")
-    assert marked.anchor_intersection_node_id == 25  # still anchored
+
+
+def test_marked_within_30m_of_stop_is_dropped():
+    """A ped_crossing_marked within 30 m of a captured stop sign is
+    dropped (the stop's delay already accounts for that location).
+    Marked crossings near signals are unaffected."""
+    poly, dist = _straight_polyline(n=51, total_m=1000.0)
+    bus_node_ids = list(range(1, 52))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary",
+                                              "name": "Clark"})
+    # Cross-street meets bus at node 25 (480 m).
+    cross_way = _way(200, [100, 25, 200],
+                       tags={"highway": "residential", "name": "Foster"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 24:  # stop sign on bus approach, ~20 m before vertex
+            tags = {"highway": "stop", "direction": "forward"}
+        elif nid == 26:  # marked crossing 20 m past the stop → DROPPED
+            tags = {"highway": "crossing", "crossing": "marked"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[24, 0]) + 0.001, float(poly[24, 1])))
+    elements.append(_node(200, float(poly[24, 0]) - 0.001, float(poly[24, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    types = sorted(c.control_type for c in cps)
+    assert types == ["stop"]
+
+
+def test_marked_near_signal_is_kept():
+    """The Clark & Wisconsin case generalised: marked crossings within
+    30 m of a SIGNAL stay (they're not dropped by the stop-only rule)."""
+    poly, dist = _straight_polyline(n=51, total_m=1000.0)
+    bus_node_ids = list(range(1, 52))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary",
+                                              "name": "Clark"})
+    cross_way = _way(200, [100, 25, 200],
+                       tags={"highway": "secondary", "name": "Foster"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 25:
+            tags = {"highway": "traffic_signals"}
+        elif nid == 26:  # marked crossing 20 m past the signal → KEPT
+            tags = {"highway": "crossing", "crossing": "marked"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[24, 0]) + 0.001, float(poly[24, 1])))
+    elements.append(_node(200, float(poly[24, 0]) - 0.001, float(poly[24, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    types = sorted(c.control_type for c in cps)
+    assert types == ["ped_crossing_marked", "traffic_signals"]
+
+
+def test_ped_signal_just_over_30m_but_anchored_is_dropped():
+    """A ped_crossing_signal sitting ~40 m past a captured signal — just
+    outside the 30 m distance threshold — is still dropped because its
+    anchor_intersection_node_id matches the captured signal's node id."""
+    # 51 vertices over 1000 m → 20 m spacing
+    poly, dist = _straight_polyline(n=51, total_m=1000.0)
+    bus_node_ids = list(range(1, 52))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary"})
+    cross_way = _way(200, [100, 26, 200],
+                       tags={"highway": "secondary", "name": "Foster"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 26:  # signal at 500 m
+            tags = {"highway": "traffic_signals"}
+        elif nid == 28:  # ped signal at 540 m — 40 m past the signal,
+                          # outside the 30 m distance check but inside the
+                          # 40 m anchor radius, so its anchor latches onto
+                          # the signal's intersection node.
+            tags = {"highway": "crossing", "crossing": "traffic_signals"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[25, 0]) + 0.001, float(poly[25, 1])))
+    elements.append(_node(200, float(poly[25, 0]) - 0.001, float(poly[25, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    # Only the signal survives — the ped signal's anchor caught it.
+    types = [c.control_type for c in cps]
+    assert types == ["traffic_signals"]
 
 
 def test_midblock_ped_signal_is_kept():
