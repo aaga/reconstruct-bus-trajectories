@@ -336,10 +336,10 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument(
         "--cluster-gap",
         type=float,
-        default=0.015 * 1609.344,
+        default=30.0,
         dest="cluster_gap",
-        help="Merge consecutive same-type intersections within this distance (m). "
-             "0 disables clustering. Default 0.015 mi (~24 m).",
+        help="Merge consecutive same-type signal / stop / give_way ControlPoints "
+             "within this distance (m). 0 disables clustering. Default 30 m.",
     )
     i.add_argument(
         "--anchor-radius",

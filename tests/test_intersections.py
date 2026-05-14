@@ -516,57 +516,67 @@ def test_ped_crossing_at_uncontrolled_intersection_anchors():
     assert b.has_island is False
 
 
-def test_topological_signal_merge_via_shared_way():
-    """Two adjacent signal vertices that share a cross-street way are
-    folded into one ControlPoint (the OSM way-splitting case for Clark)."""
-    # 101 vertices over 1000 m → 10 m spacing
-    poly, dist = _straight_polyline(n=101, total_m=1000.0)
-    # Bus's road is split into two OSM ways at node 50 (the signal).
-    bus_way_a = _way(100, list(range(1, 51)), tags={"highway": "primary",
-                                                       "name": "Clark"})
-    bus_way_b = _way(101, list(range(50, 102)), tags={"highway": "primary",
-                                                        "name": "Clark"})
-    # The cross-street (Ridge) is also split: way 200 ends at vertex 49,
-    # way 201 starts at vertex 51. They share node 999 (off-route) so they
-    # are clearly the same street, but adjacent intersection vertices have
-    # different cross_way ids. To express the case the user described — two
-    # signal vertices sharing one non-bus way — give Ridge a SINGLE way
-    # that touches both vertices.
-    cross_way = _way(200, [300, 49, 999, 51, 400],
-                       tags={"highway": "secondary", "name": "North Ridge Avenue"})
-    elements: list[dict] = [bus_way_a, bus_way_b, cross_way]
-    for nid in range(1, 102):
+def test_ped_signal_at_captured_signal_is_dropped():
+    """A ped_crossing_signal anchored to a captured traffic_signals
+    intersection is the same physical delay event the signal already
+    represents — drop it from the output (the marked-crosswalk case at
+    the same location would be kept)."""
+    poly, dist = _straight_polyline(n=51, total_m=1000.0)
+    bus_node_ids = list(range(1, 52))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary",
+                                              "name": "Clark"})
+    cross_way = _way(200, [100, 25, 200],
+                       tags={"highway": "secondary", "name": "Foster"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
         tags: dict | None = None
-        if nid in (49, 51):
-            # Both endpoints of the way split are signalised.
+        if nid == 25:
             tags = {"highway": "traffic_signals"}
-        elements.append(_node(nid, float(poly[nid - 1, 0]),
-                                float(poly[nid - 1, 1]), tags))
-    elements.append(_node(50, float(poly[49, 0]), float(poly[49, 1])))
-    for nid in (300, 999, 400):
-        elements.append(_node(nid, float(poly[49, 0]) - 0.001, float(poly[49, 1])))
-    cache = [
-        WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=490.0,
-                    direction="forward", name="Clark", road_class="primary"),
-        WaySegment(way_id=101, dist_start_m=490.0, dist_end_m=1010.0,
-                    direction="forward", name="Clark", road_class="primary"),
-    ]
+        elif nid == 26:  # signalised ped crossing 20 m past the signal
+            tags = {"highway": "crossing", "crossing": "traffic_signals"}
+        elif nid == 27:  # marked (unsignalised) crossing also near the signal
+            tags = {"highway": "crossing", "crossing": "marked"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[24, 0]) + 0.001, float(poly[24, 1])))
+    elements.append(_node(200, float(poly[24, 0]) - 0.001, float(poly[24, 1])))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
-    # Both vertices share cross-way 200 (Ridge), so they merge into one.
-    sigs = [c for c in cps if c.control_type == "traffic_signals"]
-    assert len(sigs) == 1
-    # The merged ControlPoint records the folded node id.
-    assert 51 in sigs[0].merged_node_ids
+    types = sorted(c.control_type for c in cps)
+    # The ped_crossing_signal is dropped (redundant with the signal it
+    # anchors to). The signal and the marked crosswalk survive.
+    assert types == ["ped_crossing_marked", "traffic_signals"]
+    marked = next(c for c in cps if c.control_type == "ped_crossing_marked")
+    assert marked.anchor_intersection_node_id == 25  # still anchored
 
 
-def test_yjunction_signals_do_not_merge():
-    """Two signal vertices that do NOT share a non-bus way stay distinct
-    (Y/T-junction with two different cross-streets at one physical
-    signal). Topology gets this right; we don't merge across cross-streets."""
+def test_midblock_ped_signal_is_kept():
+    """A ped_crossing_signal with no nearby intersection vertex (mid-block
+    HAWK-style standalone signal) has anchor=None and is kept."""
+    poly, dist = _straight_polyline(n=51, total_m=1000.0)
+    bus_node_ids = list(range(1, 52))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "primary"})
+    elements: list[dict] = [bus_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 25:
+            tags = {"highway": "crossing", "crossing": "traffic_signals"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert len(cps) == 1
+    assert cps[0].control_type == "ped_crossing_signal"
+    assert cps[0].anchor_intersection_node_id is None
+
+
+def test_proximity_signal_merge_via_cluster_gap():
+    """Two signal vertices within DEFAULT_CLUSTER_GAP_M (30 m) — say,
+    20 m apart — are merged by the proximity clusterer regardless of
+    whether their cross-streets are the same (Y-junction) or different."""
     poly, dist = _straight_polyline(n=101, total_m=1000.0)
     bus_way = _way(100, list(range(1, 102)),
                      tags={"highway": "primary", "name": "Clark"})
-    # Two different cross-streets, one at vertex 49, one at vertex 51.
     cross_a = _way(200, [300, 49, 301],
                      tags={"highway": "residential", "name": "Schreiber"})
     cross_b = _way(201, [400, 51, 401],
@@ -584,8 +594,9 @@ def test_yjunction_signals_do_not_merge():
                          direction="forward", name="Clark", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
     sigs = [c for c in cps if c.control_type == "traffic_signals"]
-    # Two distinct signal ControlPoints — they share no cross-way.
-    assert len(sigs) == 2
+    # Both vertices are ~20 m apart → merged under the 30 m default.
+    assert len(sigs) == 1
+    assert 51 in sigs[0].merged_node_ids
 
 
 # ---------- save/load round-trip -------------------------------------------

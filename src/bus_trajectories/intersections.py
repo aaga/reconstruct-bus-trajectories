@@ -59,10 +59,11 @@ DEFAULT_PERP_THRESHOLD_M = 30.0
 
 # Default cluster threshold for merging adjacent same-control-type
 # intersections that look like one physical intersection in OSM. Consecutive
-# ControlPoints within this distance get merged. 0.015 mi ≈ 24 m. Tight
-# enough that only signal nodes that are essentially co-located (e.g., two
-# OSM nodes at one physical signalized junction) get folded together.
-DEFAULT_CLUSTER_GAP_M = 0.015 * 1609.344  # ~24.1 m
+# ControlPoints within this distance get merged. 30 m is just over the
+# original 0.015 mi (~24 m) and covers the OSM way-splitting cases where a
+# single physical intersection emits two endpoint signal vertices, as well
+# as Y/X-junctions where two cross-streets converge on one signal cycle.
+DEFAULT_CLUSTER_GAP_M = 30.0
 
 # Default control types to keep in the output. give_way is dropped by
 # default since OSM tagging of yields on bus arterials is sparse and noisy.
@@ -528,37 +529,7 @@ def find_intersections_for_shape(
             if control_type in ("stop", "give_way"):
                 pending_stop = None
 
-    # ── Pass 1b: topological merge — adjacent same-control-type signal
-    # vertices that share at least one non-bus way are the same physical
-    # intersection split across two OSM way endpoints. Fold the second into
-    # the first. (Y-junctions where the cross-streets differ legitimately
-    # remain distinct: they share no non-bus way.)
     intersection_vertices.sort(key=lambda v: v["dist_along_route_m"])
-    merged_vertices: list[dict] = []
-    i = 0
-    while i < len(intersection_vertices):
-        head = dict(intersection_vertices[i])
-        merged_ids = list(head["merged_node_ids"])
-        cross_names_set = set(head["cross_street_names"])
-        cumulative_cross_ways = set(head["cross_way_ids"])
-        j = i + 1
-        while (
-            head["control_type"] == "traffic_signals"
-            and j < len(intersection_vertices)
-            and intersection_vertices[j]["control_type"] == "traffic_signals"
-            and cumulative_cross_ways & intersection_vertices[j]["cross_way_ids"]
-        ):
-            v_next = intersection_vertices[j]
-            merged_ids.append(v_next["node_id"])
-            cumulative_cross_ways |= set(v_next["cross_way_ids"])
-            cross_names_set.update(v_next["cross_street_names"])
-            j += 1
-        head["merged_node_ids"] = tuple(merged_ids)
-        head["cross_street_names"] = tuple(sorted(cross_names_set))
-        head["cross_way_ids"] = frozenset(cumulative_cross_ways)
-        merged_vertices.append(head)
-        i = j
-    intersection_vertices = merged_vertices
 
     # ── Pass 2: ped crossings, every one emitted, each anchored to the
     # nearest intersection vertex within anchor_radius_m (controlled or
@@ -653,17 +624,37 @@ def find_intersections_for_shape(
     out = [c for c in out if c.control_type in keep_types]
     out.sort(key=lambda c: c.dist_along_route_m)
 
-    # Clusters: signals are already topologically merged in pass 1b; ped
-    # crossings are never merged; only stop/give_way still get the
-    # proximity-based clustering (preserves the previous behaviour for
-    # those rarer cases of two stop signs that are really one).
+    # Proximity-based clustering for the controlled-intersection types
+    # (traffic_signals, stop, give_way). Ped crossings are never merged —
+    # every one is preserved as its own ControlPoint, and the redundant
+    # ones get filtered out below by anchor lookup.
     if cluster_gap_m > 0:
-        clusterable = ("stop", "give_way")
+        clusterable = ("traffic_signals", "stop", "give_way")
         to_cluster = [c for c in out if c.control_type in clusterable]
-        others = [c for c in out if c.control_type not in clusterable]
+        peds = [c for c in out if c.control_type not in clusterable]
         if to_cluster:
             to_cluster = cluster_signals(to_cluster, max_gap_m=cluster_gap_m)
-        out = sorted(others + to_cluster, key=lambda c: c.dist_along_route_m)
+        out = sorted(to_cluster + peds, key=lambda c: c.dist_along_route_m)
+
+    # Drop redundant signalised crosswalks: a ped_crossing_signal anchored
+    # to a captured signal/stop intersection is already represented by the
+    # intersection's ControlPoint, so emitting it as a second feature
+    # double-counts the same physical delay. Mid-block ped_crossing_signal
+    # (anchor=None) — e.g. a stand-alone HAWK signal — is kept, as are
+    # all ped_crossing_marked entries regardless of anchor.
+    controlled_ids: set[int] = set()
+    for c in out:
+        if c.control_type in ("traffic_signals", "stop", "give_way"):
+            controlled_ids.add(c.intersection_node_id)
+            controlled_ids.update(c.merged_node_ids)
+    out = [
+        c for c in out
+        if not (
+            c.control_type == "ped_crossing_signal"
+            and c.anchor_intersection_node_id is not None
+            and c.anchor_intersection_node_id in controlled_ids
+        )
+    ]
     return out
 
 
