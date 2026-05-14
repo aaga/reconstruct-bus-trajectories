@@ -473,6 +473,41 @@ def test_ped_crossing_far_from_intersection_has_null_anchor():
     assert ped.has_island is True
 
 
+def test_anchor_picks_closest_when_multiple_in_range():
+    """When a crossing sits within the anchor radius of two intersection
+    vertices, the closer one wins."""
+    # 101 vertices over 1000 m → 10 m spacing.
+    poly, dist = _straight_polyline(n=101, total_m=1000.0)
+    bus_node_ids = list(range(1, 102))
+    bus_way = _way(100, bus_node_ids,
+                     tags={"highway": "primary", "name": "Clark"})
+    # Two cross-streets, each making an intersection vertex on the bus:
+    # Foster at vertex 49 (480 m) and Berwyn at vertex 53 (520 m).
+    cross_a = _way(200, [100, 49, 201],
+                       tags={"highway": "secondary", "name": "Foster"})
+    cross_b = _way(202, [203, 53, 204],
+                       tags={"highway": "secondary", "name": "Berwyn"})
+    elements: list[dict] = [bus_way, cross_a, cross_b]
+    for i, nid in enumerate(bus_node_ids):
+        tags: dict | None = None
+        if nid == 50:  # ped crossing at 490 m — 10 m from Foster, 30 m from Berwyn
+            tags = {"highway": "crossing", "crossing": "marked"}
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.extend([
+        _node(100, float(poly[48, 0]) + 0.001, float(poly[48, 1])),
+        _node(201, float(poly[48, 0]) - 0.001, float(poly[48, 1])),
+        _node(203, float(poly[52, 0]) + 0.001, float(poly[52, 1])),
+        _node(204, float(poly[52, 0]) - 0.001, float(poly[52, 1])),
+    ])
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                         direction="forward", name="Clark", road_class="primary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    ped = next(c for c in cps if c.control_type == "ped_crossing_marked")
+    # Both vertices are within the 40 m anchor radius; Foster (vertex 49,
+    # 10 m away) is closer than Berwyn (vertex 53, 30 m away).
+    assert ped.anchor_intersection_node_id == 49
+
+
 def test_ped_crossing_at_uncontrolled_intersection_anchors():
     """The Clark & Wisconsin case: two ped crossings bracket an
     uncontrolled intersection vertex. Both are emitted, both anchor to

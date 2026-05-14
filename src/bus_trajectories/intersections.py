@@ -597,7 +597,12 @@ def find_intersections_for_shape(
                 continue
             seen_ped_nodes.add(node_id)
 
-            # Nearest intersection vertex within anchor_radius_m
+            # Find the closest intersection vertex within anchor_radius_m.
+            # vertex_dists is sorted by route distance, so the two adjacent
+            # entries to the crossing's insertion point are guaranteed to
+            # be the two nearest in the whole list; whichever of the two
+            # has the smaller |Δd| wins. If multiple intersections fall
+            # inside the radius, this picks the closest one.
             anchor_node_id: int | None = None
             if vertex_dists:
                 idx = bisect.bisect_left(vertex_dists, dist_route_m)
