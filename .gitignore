@@ -32,6 +32,8 @@ out/
 out_*/
 out_compare*.html
 *.html
+# Exception: dashboard HTML shell ships as a source asset.
+!scripts/dashboard/assets/index.html
 
 # Standalone diagnostic plots emitted at the repo root by exploratory scripts
 timespace_*.png
@@ -52,8 +54,16 @@ cta_avl_archive_*.csv
 freeflow_search_result.json
 way_cache_route22.json
 
-# Build / figure-rendering scripts kept locally only
-scripts/
+# Build / figure-rendering scripts kept locally only (every direct
+# child of scripts/), with scripts/dashboard/ as an explicit exception
+# below. We can't simply ignore "scripts/" because then git wouldn't
+# recurse into the directory and the exception wouldn't apply.
+scripts/*
+# Exception: the interactive route dashboard (Python build + JS assets)
+# IS tracked. It's a substantial deliverable, not a one-off figure
+# script, so it gets versioned even though the surrounding scripts/ tree
+# stays local-only.
+!scripts/dashboard
 
 # Externally-tracked subprojects
 routing-valhalla/
