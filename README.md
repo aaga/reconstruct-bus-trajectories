@@ -115,6 +115,50 @@ Delay attribution then segments the speed profile into `v < 5 mph` windows
 and assigns each to a nearby bus stop or controlled intersection — see
 §2.4 of the report.
 
+## Delay attribution: two frameworks
+
+Two delay-attribution frameworks live side-by-side in this repository:
+
+- **Naive Delay** (`scripts/naive_delay/build_naive_delay_slides.py`,
+  gitignored). Finds slowdown windows (`v < 5 mph`, ≥2 s) and splits each
+  window's duration evenly across whatever stops or intersections fall
+  inside its distance span. Fast, illustrative, but blurs dwell ↔ signal ↔
+  congestion. Produces `figures/G_*` and `figures/H_*`.
+
+- **Chapter-3 Decomposition** (`src/bus_trajectories/delay_decomposition/`
+  package + `scripts/decomposition/`, both available locally). Follows
+  Huang (2023), *Chapter 3 — Transit Delay Analysis* (`docs/chapter 3
+  delay analysis.pdf`): signal-to-signal segmentation, per-segment
+  `T_obs = T_ff + T_dwell + D_signal + D_crossing + D_congestion` with
+  `T_ff` estimated as the 5th-percentile travel time of late-night
+  (22:00–05:00 Chicago) trips on the same pattern. Produces
+  `figures/decomp_*`.
+
+Two deviations from the paper:
+- AVL door-open/close data is not available, so dwell is attributed by
+  proximity (`[x_stop - 30 m, x_stop + 10 m]`, clipped at intersection
+  nodes). The :class:`DwellAttributor` protocol leaves room to drop in
+  an AVL-based attributor later without touching the rest of the package.
+- Mid-block pedestrian signals count as signalized intersections for
+  segmentation. A bus stop within 30 m upstream of any signalized
+  intersection is flagged as "near-side"; dwell attributed there is
+  marked ambiguous because dwell-time vs. signal-delay can't be
+  separated from GPS alone.
+
+Run the decomposition end-to-end:
+
+```bash
+# 1. Build the late-night free-flow baseline (scours R2 manifest, fetches
+#    late-night pings, reconstructs them at bw=5, writes p5 per segment).
+PYTHONPATH=src uv run python scripts/decomposition/build_freeflow_baseline.py
+
+# 2. Decompose every trip (or one with --trip-id <id>).
+PYTHONPATH=src uv run python scripts/decomposition/run_decomposition.py
+
+# 3. Render figures.
+PYTHONPATH=src uv run python scripts/decomposition/build_decomposition_figs.py
+```
+
 ## License
 
 Code: MIT. The original Huang et al. paper PDF is not redistributed here.

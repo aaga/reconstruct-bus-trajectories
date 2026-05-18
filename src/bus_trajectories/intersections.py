@@ -779,6 +779,39 @@ def save_intersections(
     return out
 
 
+SIGNALIZED_CONTROL_TYPES = frozenset({"traffic_signals", "ped_crossing_signal"})
+
+
+def classify_near_side_stops(
+    stops: list[dict],
+    control_points: list[ControlPoint],
+    threshold_m: float = 30.0,
+) -> set[str]:
+    """Return the set of ``stop_id`` values that are "near-side" — i.e. have any
+    signalized ControlPoint (``traffic_signals`` or ``ped_crossing_signal``)
+    within ``threshold_m`` *downstream* (larger ``dist_along_route_m``).
+
+    For near-side stops, the dwell vs. signal portion of any stopping activity
+    is ambiguous from GPS alone; downstream consumers should flag attributions
+    to these stops as uncertain.
+    """
+    signal_xs = sorted(
+        cp.dist_along_route_m for cp in control_points
+        if cp.control_type in SIGNALIZED_CONTROL_TYPES
+    )
+    flagged: set[str] = set()
+    for stop in stops:
+        x_stop = stop["dist_along_m"]
+        for x_sig in signal_xs:
+            if x_sig < x_stop:
+                continue
+            if x_sig - x_stop > threshold_m:
+                break  # sorted; no further signals can be within threshold
+            flagged.add(str(stop["stop_id"]))
+            break
+    return flagged
+
+
 def load_intersections(in_path: str | Path) -> dict[str, list[ControlPoint]]:
     payload = json.loads(Path(in_path).read_text())
     out: dict[str, list[ControlPoint]] = {}

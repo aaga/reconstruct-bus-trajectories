@@ -73,3 +73,7 @@ Reconstructing_Transit_Vehicle_Trajectory_Using_High-Resolution_GPS_Data.pdf
 
 # Office lock files
 ~\$*
+
+# Reference PDFs and Claude Code session state — local-only.
+docs/
+.claude/
