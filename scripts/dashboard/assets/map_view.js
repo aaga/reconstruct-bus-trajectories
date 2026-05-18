@@ -49,6 +49,16 @@ export class MapView {
     this.state = state;
     this.featuresById = new Map(data.features.map(f => [f.id, f]));
     this.hoveredFeatureId = null;
+    // A feature is "attributed" iff at least one delay band claims it as
+    // facility_id. Unattributed features stay visible on the map but at
+    // reduced opacity so they recede behind the active causes of delay.
+    const attributed = new Set();
+    for (const v of data.views || []) {
+      for (const b of v.delay_bands || []) {
+        if (b.facility_id) attributed.add(b.facility_id);
+      }
+    }
+    this.attributedIds = attributed;
 
     const [[minLon, minLat], [maxLon, maxLat]] = data.shape.bounds;
     this.map = new maplibregl.Map({
@@ -88,6 +98,9 @@ export class MapView {
       if (e.source !== "profile") return;
       this._fitToRange(e.visibleDistRangeM);
     });
+    state.subscribe("hideUnattributed:changed", ({ value }) => {
+      this._applyAttributedFilter(value);
+    });
   }
 
   _buildLayers() {
@@ -124,6 +137,7 @@ export class MapView {
           label: f.label,
           cross_street: f.cross_street || "",
           dist_m: f.dist_m,
+          attributed: this.attributedIds.has(f.id),
         },
         geometry: { type: "Point", coordinates: [f.lon, f.lat] },
       })),
@@ -362,6 +376,28 @@ export class MapView {
 
   _hideCursor() {
     if (this.cursorEl) this.cursorEl.style.display = "none";
+  }
+
+  // Apply / remove a layer filter that hides features whose `attributed`
+  // property is false. The features GeoJSON carries that property
+  // (computed in _buildLayers from this.attributedIds).
+  _applyAttributedFilter(hide) {
+    // Preserve the per-layer "kind" filter that limits feature-labels to
+    // signals + bus stops by ANDing with our new attributed-only filter.
+    const labelKindFilter = ["any",
+      ["==", ["get", "kind"], "traffic_signals"],
+      ["==", ["get", "kind"], "bus_stop"],
+    ];
+    const dotsFilter = hide ? ["boolean", ["get", "attributed"], false] : null;
+    const labelsFilter = hide
+      ? ["all", labelKindFilter, ["boolean", ["get", "attributed"], false]]
+      : labelKindFilter;
+    if (this.map.getLayer("features-fill")) {
+      this.map.setFilter("features-fill", dotsFilter);
+    }
+    if (this.map.getLayer("feature-labels")) {
+      this.map.setFilter("feature-labels", labelsFilter);
+    }
   }
 
   _highlightFeature(featureId) {

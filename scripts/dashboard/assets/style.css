@@ -68,6 +68,24 @@ body {
 .profile-legend svg {
   flex-shrink: 0;
 }
+.profile-legend .legend-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #e0e0e0;
+  color: #222;
+  font-size: 11px;
+}
+.profile-legend .legend-toggle input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+.profile-legend .legend-toggle label {
+  cursor: pointer;
+  user-select: none;
+}
 
 /* Map dot legend (HTML overlay in the bottom-left of the map pane) */
 .map-legend {

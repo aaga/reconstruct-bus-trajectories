@@ -46,6 +46,16 @@ export class SpeedProfileView {
     this.featuresById = new Map(data.features.map(f => [f.id, f]));
     this.view = data.views[0];
     this.hoveredFeatureId = null;
+    // Set of feature ids claimed by at least one delay band as
+    // facility_id. When the "show only attributed" toggle is on, anything
+    // outside this set is hidden in both the tick lane and on the map.
+    this.attributedIds = new Set();
+    for (const v of data.views || []) {
+      for (const b of v.delay_bands || []) {
+        if (b.facility_id) this.attributedIds.add(b.facility_id);
+      }
+    }
+    this.hideUnattributed = false;
 
     const rect = container.getBoundingClientRect();
     this.width = rect.width;
@@ -59,7 +69,10 @@ export class SpeedProfileView {
     // -- Patterns + clip -------------------------------------------------
     const defs = this.svg.append("defs");
     // Light-blue base, slightly-darker stripe — visibly "blue with a
-    // texture" but not darker than the regular dwell color.
+    // texture" but not darker than the regular dwell color. A second
+    // pattern (`-hover`) uses saturated dwell-blue as the base and a
+    // very dark stripe, so the band visibly darkens when it's hovered
+    // (matches the fill-opacity bump that the solid bands get).
     const hatch = defs.append("pattern")
       .attr("id", "hatch-dwell-near")
       .attr("patternUnits", "userSpaceOnUse")
@@ -71,6 +84,17 @@ export class SpeedProfileView {
     hatch.append("line")
       .attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 7)
       .attr("stroke", "#3a85d6").attr("stroke-width", 2.2);
+    const hatchHover = defs.append("pattern")
+      .attr("id", "hatch-dwell-near-hover")
+      .attr("patternUnits", "userSpaceOnUse")
+      .attr("width", 7).attr("height", 7)
+      .attr("patternTransform", "rotate(45)");
+    hatchHover.append("rect")
+      .attr("width", 7).attr("height", 7)
+      .attr("fill", "#3a85d6");
+    hatchHover.append("line")
+      .attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 7)
+      .attr("stroke", "#1a3d6a").attr("stroke-width", 2.4);
 
     const plotW = this.width - MARGIN.left - MARGIN.right;
     const plotH = this.height - MARGIN.top - MARGIN.bottom - TICK_LANE_PX;
@@ -203,6 +227,10 @@ export class SpeedProfileView {
       if (e.source === "profile") return;   // ignore our own echo
       this._setRangeFromExternal(e.visibleDistRangeM);
     });
+    state.subscribe("hideUnattributed:changed", ({ value }) => {
+      this.hideUnattributed = value;
+      this._renderTicks();
+    });
   }
 
   // ---- rendering ------------------------------------------------------
@@ -275,7 +303,13 @@ export class SpeedProfileView {
         return `${cx},${s.tipY} ${cx - s.halfW},${s.baseY} ${cx + s.halfW},${s.baseY}`;
       })
       .attr("fill", d => TICK_COLORS[d.kind] || "#888")
-      .attr("opacity", 0.92);
+      .attr("opacity", 0.92)
+      // Hidden when the "show only attributed" toggle is on AND this
+      // feature isn't claimed by any delay band.
+      .attr("display", d =>
+        (this.hideUnattributed && !this.attributedIds.has(d.id))
+          ? "none" : null
+      );
   }
 
   _renderAxes() {
@@ -367,6 +401,16 @@ export class SpeedProfileView {
   _highlightBands(featureId) {
     this.hoveredFeatureId = featureId;
     this.bandsLayer.selectAll("rect.band")
+      .attr("fill", (d) => {
+        const active = featureId != null && d.facility_id === featureId;
+        // Patterned bands swap to a darker pattern variant on hover so
+        // the cross-hatch keeps reading as "ambiguous dwell" but visually
+        // darkens like the solid bands do.
+        if (BAND_PATTERN[d.category]) {
+          return active ? "url(#hatch-dwell-near-hover)" : BAND_PATTERN[d.category];
+        }
+        return BAND_COLORS[d.category] || "#888";
+      })
       .attr("fill-opacity", (d) => {
         if (featureId != null && d.facility_id === featureId) return 0.9;
         return BAND_PATTERN[d.category] ? 0.85 : 0.45;
@@ -421,7 +465,15 @@ export class SpeedProfileView {
   _buildLegend() {
     const el = document.createElement("div");
     el.className = "profile-legend";
-    el.innerHTML = LEGEND.map(({ kind, label }) => {
+    // Toggle row at the top: hide features that didn't cause delay on
+    // this trip. Drives MapView + SpeedProfileView via State.
+    const toggleId = `toggle-${Math.random().toString(36).slice(2, 8)}`;
+    const toggleHtml = `
+      <div class="legend-toggle">
+        <input id="${toggleId}" type="checkbox">
+        <label for="${toggleId}">Hide features without delay</label>
+      </div>`;
+    el.innerHTML = toggleHtml + LEGEND.map(({ kind, label }) => {
       const isHatch = !!BAND_PATTERN[kind];
       const fill = isHatch ? "url(#leg-hatch-dwell-near)" : BAND_COLORS[kind];
       const opacity = isHatch ? 0.9 : 0.6;
@@ -439,6 +491,11 @@ export class SpeedProfileView {
       return `<div class="legend-row">${swatchSvg}<span>${label}</span></div>`;
     }).join("");
     this.container.appendChild(el);
+    // Hook the toggle checkbox after the element is in the DOM.
+    const toggle = el.querySelector(`#${toggleId}`);
+    toggle.addEventListener("change", (event) => {
+      this.state.publish("hideUnattributed:changed", { value: event.target.checked });
+    });
   }
 }
 
