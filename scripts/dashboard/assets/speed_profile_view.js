@@ -2,10 +2,46 @@
 // feature ticks, the vertical hover cursor, and a tooltip-on-band overlay.
 // Supports zoom/pan along the x-axis, which mirrors back to the map view
 // via the State pub/sub.
+//
+// The x-axis can be either DISTANCE (mi along the route) or TIME (s since
+// trip start), selectable via the UI toggle in the legend. The two modes
+// share everything except the x scale and the per-element coordinate
+// (`dist_m` vs `t_s` for features, `dist_start_m/dist_end_m` vs
+// `t_start_s/t_end_s` for bands, the `by_dist` vs `by_time` array for
+// the speed line).
+//
+// Conversions between the two axes go through the `trajectory_xt` lookup
+// table baked into the data payload (800 (t_s, dist_m) pairs sampled
+// uniformly in time over the trip — fine enough for linear interpolation).
 
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 
 const M_PER_MI = 1609.344;
+
+// Binary-search-based linear interpolator. Both `xs` and `ys` must be the
+// same length, with `xs` non-decreasing. Out-of-range queries clamp to
+// the endpoint values (same convention as numpy.interp).
+function interp(x, xs, ys) {
+  const n = xs.length;
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[n - 1]) return ys[n - 1];
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >>> 1;
+    if (xs[mid] <= x) lo = mid; else hi = mid;
+  }
+  const span = xs[hi] - xs[lo];
+  if (span <= 0) return ys[lo];
+  return ys[lo] + (x - xs[lo]) / span * (ys[hi] - ys[lo]);
+}
+
+function formatTime(s) {
+  const sign = s < 0 ? "-" : "";
+  s = Math.abs(s);
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${sign}${m}:${String(sec).padStart(2, "0")}`;
+}
 
 // Band colors are now tied to the corresponding marker colors in
 // map_view.js: dwell ↔ bus_stop (blue), signal_* ↔ traffic_signal (red),
@@ -56,6 +92,7 @@ export class SpeedProfileView {
       }
     }
     this.hideUnattributed = false;
+    this.xMode = "distance";  // "distance" | "time"
 
     const rect = container.getBoundingClientRect();
     this.width = rect.width;
@@ -106,15 +143,33 @@ export class SpeedProfileView {
     this.plotH = plotH;
 
     // -- Scales ---------------------------------------------------------
-    // Keep an unzoomed reference scale so the d3.zoom transform can rescale
-    // it deterministically each event.
-    this.x0 = d3.scaleLinear()
+    // One unzoomed reference scale per mode. d3.zoom's transform is
+    // applied via t.rescaleX(this.x0) where this.x0 is whichever mode
+    // is active. Switching modes is just "swap this.x0 and re-render"
+    // plus a one-shot zoom-transform application to preserve the
+    // currently-visible window across the mode change.
+    this.x0Dist = d3.scaleLinear()
       .domain([0, data.shape.length_m / M_PER_MI])
       .range([0, plotW]);
+    this.x0Time = d3.scaleLinear()
+      .domain([0, data.trip_duration_s || 1])
+      .range([0, plotW]);
+    this.x0 = this.x0Dist;
     this.x = this.x0.copy();
-    const v = this.view.speed_profile.speed_mph;
-    const vMax = Math.max(30, Math.ceil(d3.max(v) / 5) * 5);
+    // Combine speeds from both samplings so the y-axis max is stable
+    // when toggling modes (samples are very similar in practice, but
+    // the by_time array includes the bus's stationary phases at v≈0
+    // which can extend the array slightly).
+    const speedsDist = this.view.speed_profile.by_dist.speed_mph;
+    const speedsTime = this.view.speed_profile.by_time.speed_mph;
+    const vMaxRaw = Math.max(d3.max(speedsDist), d3.max(speedsTime));
+    const vMax = Math.max(30, Math.ceil(vMaxRaw / 5) * 5);
     this.y = d3.scaleLinear().domain([0, vMax]).range([plotH, 0]);
+
+    // Lookup helpers using the trajectory_xt table baked into the data.
+    this._xt = data.trajectory_xt || { t_s: [0, 1], dist_m: [0, 1] };
+    this._distToTime = (distM) => interp(distM, this._xt.dist_m, this._xt.t_s);
+    this._timeToDist = (tS) => interp(tS, this._xt.t_s, this._xt.dist_m);
 
     // -- Layers ---------------------------------------------------------
     this.g = this.svg.append("g")
@@ -135,8 +190,10 @@ export class SpeedProfileView {
       .attr("class", "bands")
       .attr("clip-path", "url(#plot-clip)");
 
+    // Lines are built per-mode in _renderLine; the generator just maps
+    // {x, v} → pixels via the active scale.
     this.lineGen = d3.line()
-      .x(d => this.x(d.distM / M_PER_MI))
+      .x(d => this.x(d.x))
       .y(d => this.y(d.v))
       .curve(d3.curveMonotoneX);
     this.linePath = this.g.append("path")
@@ -231,15 +288,80 @@ export class SpeedProfileView {
       this.hideUnattributed = value;
       this._renderTicks();
     });
+    state.subscribe("xMode:changed", ({ value }) => this._setXMode(value));
+  }
+
+  // Switch between "distance" and "time" x-axes. Preserves the
+  // currently-visible window across the switch by converting its bounds
+  // through the trajectory_xt lookup table.
+  _setXMode(mode) {
+    if (mode !== "distance" && mode !== "time") return;
+    if (this.xMode === mode) return;
+
+    // Capture the current domain in METERS (the shared coordinate) so
+    // we can re-project it into the new mode's units.
+    const [lo, hi] = this.x.domain();
+    let loM, hiM;
+    if (this.xMode === "time") {
+      loM = this._timeToDist(lo);
+      hiM = this._timeToDist(hi);
+    } else {
+      loM = lo * M_PER_MI;
+      hiM = hi * M_PER_MI;
+    }
+
+    this.xMode = mode;
+    this.x0 = mode === "time" ? this.x0Time : this.x0Dist;
+    this.x = this.x0.copy();
+
+    // Compute the target domain in the new mode's units, then apply
+    // it as a d3.zoom transform on the unzoomed base scale.
+    let loDomain, hiDomain;
+    if (mode === "time") {
+      loDomain = this._distToTime(loM);
+      hiDomain = this._distToTime(hiM);
+    } else {
+      loDomain = loM / M_PER_MI;
+      hiDomain = hiM / M_PER_MI;
+    }
+    const denom = this.x0(hiDomain) - this.x0(loDomain);
+    const k = denom > 0 ? this.plotW / denom : 1;
+    const tx = -k * this.x0(loDomain);
+    this._suppressPublish = true;
+    this.overlay.call(this.zoom.transform,
+      d3.zoomIdentity.translate(tx, 0).scale(k));
+    this._suppressPublish = false;
+    // _onZoom already re-rendered everything, but call _renderLine
+    // explicitly because the points themselves are mode-dependent (the
+    // by_dist vs by_time array) — _onZoom only re-applied the existing
+    // generator.
+    this._renderLine();
   }
 
   // ---- rendering ------------------------------------------------------
 
   _renderLine() {
-    const dist_m = this.view.speed_profile.dist_m;
-    const speed = this.view.speed_profile.speed_mph;
-    const pts = dist_m.map((d, i) => ({ distM: d, v: speed[i] }));
+    const sp = this.view.speed_profile;
+    let pts;
+    if (this.xMode === "time") {
+      pts = sp.by_time.t_s.map((t, i) => ({ x: t, v: sp.by_time.speed_mph[i] }));
+    } else {
+      pts = sp.by_dist.dist_m.map((d, i) => ({
+        x: d / M_PER_MI, v: sp.by_dist.speed_mph[i],
+      }));
+    }
     this.linePath.datum(pts).attr("d", this.lineGen);
+  }
+
+  // Helpers that return the right x coordinate for the active mode.
+  _bandStart(b) {
+    return this.xMode === "time" ? b.t_start_s : b.dist_start_m / M_PER_MI;
+  }
+  _bandEnd(b) {
+    return this.xMode === "time" ? b.t_end_s : b.dist_end_m / M_PER_MI;
+  }
+  _featureX(f) {
+    return this.xMode === "time" ? (f.t_s || 0) : f.dist_m / M_PER_MI;
   }
 
   _renderBands() {
@@ -252,10 +374,10 @@ export class SpeedProfileView {
       .attr("y", 0)
       .attr("height", this.plotH)
       .merge(sel)
-      .attr("x", d => this.x(d.dist_start_m / M_PER_MI))
+      .attr("x", d => this.x(this._bandStart(d)))
       .attr("width", d => Math.max(
         1,
-        this.x(d.dist_end_m / M_PER_MI) - this.x(d.dist_start_m / M_PER_MI)
+        this.x(this._bandEnd(d)) - this.x(this._bandStart(d))
       ))
       .attr("fill", d => BAND_PATTERN[d.category] || BAND_COLORS[d.category] || "#888")
       .attr("fill-opacity", d => BAND_PATTERN[d.category] ? 0.85 : 0.45)
@@ -298,7 +420,7 @@ export class SpeedProfileView {
       .attr("pointer-events", "none")
       .merge(sel)
       .attr("points", d => {
-        const cx = this.x(d.dist_m / M_PER_MI);
+        const cx = this.x(this._featureX(d));
         const s = sizeFor(d.kind);
         return `${cx},${s.tipY} ${cx - s.halfW},${s.baseY} ${cx + s.halfW},${s.baseY}`;
       })
@@ -313,8 +435,12 @@ export class SpeedProfileView {
   }
 
   _renderAxes() {
-    const xAxis = d3.axisBottom(this.x)
-      .ticks(8).tickFormat(d => `${d.toFixed(d < 10 ? 1 : 0)} mi`);
+    const xAxis = d3.axisBottom(this.x).ticks(8);
+    if (this.xMode === "time") {
+      xAxis.tickFormat(formatTime);
+    } else {
+      xAxis.tickFormat(d => `${d.toFixed(d < 10 ? 1 : 0)} mi`);
+    }
     this.xAxisG.call(xAxis);
     const yAxis = d3.axisLeft(this.y).ticks(5).tickFormat(d => `${d}`);
     this.yAxisG.call(yAxis);
@@ -338,26 +464,41 @@ export class SpeedProfileView {
     this._renderTicks();
     this._renderAxes();
     this.linePath.attr("d", this.lineGen);
-    // Echo to the map — but only when the event came from a real user
-    // gesture, not from our own setRangeFromExternal call below.
+    // Echo to the map — the map only speaks distance, so in time mode
+    // we convert the visible time domain to distance via _timeToDist.
     if (!this._suppressPublish) {
-      const [loMi, hiMi] = this.x.domain();
+      const [lo, hi] = this.x.domain();
+      let loM, hiM;
+      if (this.xMode === "time") {
+        loM = this._timeToDist(lo);
+        hiM = this._timeToDist(hi);
+      } else {
+        loM = lo * M_PER_MI;
+        hiM = hi * M_PER_MI;
+      }
       this.state.publish("range:changed", {
-        visibleDistRangeM: [loMi * M_PER_MI, hiMi * M_PER_MI],
+        visibleDistRangeM: [loM, hiM],
         source: "profile",
       });
     }
   }
 
   _setRangeFromExternal([loM, hiM]) {
-    // Map drove the zoom. Compute the d3.zoom transform that maps the
-    // unzoomed x0 scale onto this new domain, apply it WITHOUT echoing.
-    const loMi = loM / M_PER_MI;
-    const hiMi = hiM / M_PER_MI;
-    const denom = this.x0(hiMi) - this.x0(loMi);
+    // Map drove the zoom. Convert the distance range to the active
+    // mode's domain units, then compute the d3.zoom transform that
+    // takes x0 onto that domain. Suppress echo so we don't loop.
+    let loDomain, hiDomain;
+    if (this.xMode === "time") {
+      loDomain = this._distToTime(loM);
+      hiDomain = this._distToTime(hiM);
+    } else {
+      loDomain = loM / M_PER_MI;
+      hiDomain = hiM / M_PER_MI;
+    }
+    const denom = this.x0(hiDomain) - this.x0(loDomain);
     if (!isFinite(denom) || denom <= 0) return;
     const k = this.plotW / denom;
-    const tx = -k * this.x0(loMi);
+    const tx = -k * this.x0(loDomain);
     this._suppressPublish = true;
     this.overlay.call(this.zoom.transform,
       d3.zoomIdentity.translate(tx, 0).scale(k));
@@ -368,7 +509,10 @@ export class SpeedProfileView {
 
   _showCursor(distM) {
     if (distM == null) return this.cursor.attr("display", "none");
-    const xPx = this.x(distM / M_PER_MI);
+    const xDomain = this.xMode === "time"
+      ? this._distToTime(distM)
+      : distM / M_PER_MI;
+    const xPx = this.x(xDomain);
     if (xPx < 0 || xPx > this.plotW) {
       return this.cursor.attr("display", "none");
     }
@@ -376,13 +520,19 @@ export class SpeedProfileView {
   }
 
   _onMouseMove(event) {
-    const [mx, my] = d3.pointer(event, this.g.node());
-    const distMi = this.x.invert(mx);
-    const distM = distMi * M_PER_MI;
+    const [mx] = d3.pointer(event, this.g.node());
+    const xDomain = this.x.invert(mx);
+    // The cursor's distance is always published in meters so the map
+    // doesn't need to know which mode the profile is in. For time mode
+    // we look up the trajectory to get the corresponding distance.
+    const distM = this.xMode === "time"
+      ? this._timeToDist(xDomain)
+      : xDomain * M_PER_MI;
     this.state.publish("dist:hovered", { distM, source: "profile" });
 
-    const hits = this.view.delay_bands.filter(
-      b => b.dist_start_m <= distM && b.dist_end_m >= distM
+    // Band hit-detection uses whichever coordinate matches the mode.
+    const hits = this.view.delay_bands.filter(b =>
+      this._bandStart(b) <= xDomain && this._bandEnd(b) >= xDomain
     );
     if (hits.length > 0) {
       const b = hits[0];
@@ -465,15 +615,29 @@ export class SpeedProfileView {
   _buildLegend() {
     const el = document.createElement("div");
     el.className = "profile-legend";
-    // Toggle row at the top: hide features that didn't cause delay on
-    // this trip. Drives MapView + SpeedProfileView via State.
-    const toggleId = `toggle-${Math.random().toString(36).slice(2, 8)}`;
-    const toggleHtml = `
+    // Two toggle rows at the top: x-axis mode (distance/time), and
+    // hide-unattributed. Both drive State events that other views
+    // (notably MapView) listen for.
+    const hideId = `toggle-${Math.random().toString(36).slice(2, 8)}`;
+    const xModeName = `xmode-${Math.random().toString(36).slice(2, 8)}`;
+    const xModeHtml = `
       <div class="legend-toggle">
-        <input id="${toggleId}" type="checkbox">
-        <label for="${toggleId}">Hide features without delay</label>
+        <span class="legend-toggle-label">x-axis:</span>
+        <label class="legend-radio">
+          <input type="radio" name="${xModeName}" value="distance" checked>
+          <span>Distance</span>
+        </label>
+        <label class="legend-radio">
+          <input type="radio" name="${xModeName}" value="time">
+          <span>Time</span>
+        </label>
       </div>`;
-    el.innerHTML = toggleHtml + LEGEND.map(({ kind, label }) => {
+    const hideHtml = `
+      <div class="legend-toggle">
+        <input id="${hideId}" type="checkbox">
+        <label for="${hideId}">Hide features without delay</label>
+      </div>`;
+    el.innerHTML = xModeHtml + hideHtml + LEGEND.map(({ kind, label }) => {
       const isHatch = !!BAND_PATTERN[kind];
       const fill = isHatch ? "url(#leg-hatch-dwell-near)" : BAND_COLORS[kind];
       const opacity = isHatch ? 0.9 : 0.6;
@@ -491,10 +655,17 @@ export class SpeedProfileView {
       return `<div class="legend-row">${swatchSvg}<span>${label}</span></div>`;
     }).join("");
     this.container.appendChild(el);
-    // Hook the toggle checkbox after the element is in the DOM.
-    const toggle = el.querySelector(`#${toggleId}`);
-    toggle.addEventListener("change", (event) => {
+    // Hook the controls after the element is in the DOM.
+    const hide = el.querySelector(`#${hideId}`);
+    hide.addEventListener("change", (event) => {
       this.state.publish("hideUnattributed:changed", { value: event.target.checked });
+    });
+    el.querySelectorAll(`input[name="${xModeName}"]`).forEach(input => {
+      input.addEventListener("change", (event) => {
+        if (event.target.checked) {
+          this.state.publish("xMode:changed", { value: event.target.value });
+        }
+      });
     });
   }
 }

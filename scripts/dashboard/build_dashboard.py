@@ -65,17 +65,22 @@ M_PER_MI = 1609.344
 
 
 # ----------------------------------------------------------------------
-# Speed profile sampling — uniform in distance, not in time
+# Speed profile sampling — two variants: uniform in distance and
+# uniform in time. Both share a (t_s ↔ dist_m) lookup table so the JS
+# can convert cursor positions and zoom ranges between axes.
 # ----------------------------------------------------------------------
 
 
-def _sample_speed_profile(record: dict, n_points: int = 1500
-                          ) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``(dist_m, speed_mph)`` sampled uniformly along route distance.
+def _sample_speed_profile(record: dict, n_points: int = 1500) -> dict:
+    """Return a payload containing:
 
-    We first evaluate the smoothed trajectory ``f`` densely in time, then
-    use ``np.interp`` to resample onto a uniform-distance grid. PCHIP makes
-    ``f`` monotone so the inversion is well defined.
+      - ``by_dist``: speed_mph sampled uniformly along route distance
+      - ``by_time``: speed_mph sampled uniformly in time
+      - ``xt``: a small (t_s, dist_m) lookup table for dist ↔ time
+        conversion in the browser.
+
+    The smoothed trajectory ``f`` is monotone in distance (PCHIP-enforced),
+    so the inversions are well-defined.
     """
     f = from_pchip_record(record)
     t0, t1 = float(f.x[0]), float(f.x[-1])
@@ -88,9 +93,54 @@ def _sample_speed_profile(record: dict, n_points: int = 1500
     # plateaus; np.interp tolerates these but assumes strictly non-decreasing
     # x. Round trips to monotone (the dups are a no-op for interpolation).
     x_dense = np.maximum.accumulate(x_dense)
+
+    # by_dist: uniform in distance.
     dist_target = np.linspace(0.0, float(x_dense[-1]), n_points)
-    speed_target = np.interp(dist_target, x_dense, v_dense_mph)
-    return dist_target, speed_target
+    speed_by_dist = np.interp(dist_target, x_dense, v_dense_mph)
+
+    # by_time: uniform in time. Re-sample on a fresh evenly spaced grid
+    # so the JS doesn't have to interpolate a 1 s array of ~5000 points.
+    t_target = np.linspace(t0, t1, n_points)
+    speed_by_time = np.asarray(f.derivative()(t_target), dtype=float) * M_PER_S_TO_MPH
+
+    # xt lookup table: 800 paired (t_s, dist_m) samples. Coarse enough to
+    # keep payload small, fine enough that linear interpolation in JS is
+    # within ~5 m of the true trajectory.
+    xt_n = 800
+    t_xt = np.linspace(t0, t1, xt_n)
+    x_xt = np.maximum.accumulate(np.asarray(f(t_xt), dtype=float))
+
+    return {
+        "by_dist": {
+            "dist_m": dist_target.tolist(),
+            "speed_mph": speed_by_dist.tolist(),
+        },
+        "by_time": {
+            "t_s": (t_target - t0).tolist(),       # relative seconds from trip start
+            "speed_mph": speed_by_time.tolist(),
+        },
+        "xt": {
+            "t_s": (t_xt - t0).tolist(),
+            "dist_m": x_xt.tolist(),
+        },
+        "t0_s": t0,
+        "duration_s": t1 - t0,
+    }
+
+
+def _feature_times(features: list[dict], record: dict) -> None:
+    """Annotate each feature with `t_s` — the time (in seconds since trip
+    start) at which the bus crossed its `dist_m` position. Modifies in place.
+    """
+    f = from_pchip_record(record)
+    t0, t1 = float(f.x[0]), float(f.x[-1])
+    t_dense = np.arange(t0, t1 + 1.0, 1.0)
+    x_dense = np.maximum.accumulate(np.asarray(f(t_dense), dtype=float))
+    for ft in features:
+        # np.interp clamps below x_dense[0] / above x_dense[-1] to the
+        # endpoint values, which is fine for features at the route ends.
+        t_at_x = float(np.interp(ft["dist_m"], x_dense, t_dense))
+        ft["t_s"] = t_at_x - t0
 
 
 # ----------------------------------------------------------------------
@@ -262,7 +312,7 @@ def build_view(
     record = next((r for r in records if str(r["trip_id"]) == str(trip_id)), None)
     if record is None:
         raise SystemExit(f"trip_id {trip_id} not in {DAYTIME_BUNDLE}")
-    dist_m, speed_mph = _sample_speed_profile(record)
+    speed_payload = _sample_speed_profile(record)
 
     # ---- attribution ---------------------------------------------------
     segments = build_segments_for_pattern(
@@ -271,9 +321,18 @@ def build_view(
     ff = load_freeflow_table(FREEFLOW_TABLE)
     decomp = decompose_trip(record, segments, ff)
     bands = _bands_from_decomp(decomp)
+    # The bands' t_start_s / t_end_s come out of decompose_trip in
+    # absolute-trip-start-seconds. Make them relative to t0 (consistent
+    # with `speed_payload["by_time"]["t_s"]` and `features[*].t_s`)
+    # so the JS only has one time base to think about.
+    t0 = speed_payload["t0_s"]
+    for b in bands:
+        b["t_start_s"] = float(b["t_start_s"]) - t0
+        b["t_end_s"] = float(b["t_end_s"]) - t0
 
     # ---- features ------------------------------------------------------
     features = _build_features(shape_id, poly_latlon, cumdist)
+    _feature_times(features, record)
 
     # ---- meta ----------------------------------------------------------
     first_iso = record.get("first_ping_iso", "")
@@ -298,6 +357,8 @@ def build_view(
             "length_m": length_m,
         },
         "features": features,
+        "trajectory_xt": speed_payload["xt"],   # shared (t_s, dist_m) lookup
+        "trip_duration_s": speed_payload["duration_s"],
         "views": [
             {
                 "id": "primary",
@@ -305,8 +366,8 @@ def build_view(
                 "label": label,
                 "color": "#222",
                 "speed_profile": {
-                    "dist_m": [float(d) for d in dist_m],
-                    "speed_mph": [float(v) for v in speed_mph],
+                    "by_dist": speed_payload["by_dist"],
+                    "by_time": speed_payload["by_time"],
                 },
                 "delay_bands": bands,
             }
@@ -327,8 +388,10 @@ def build_view(
     print(f"[dashboard] wrote {out_dir}")
     print(f"[dashboard]   shape {shape_id}: {len(poly_latlon)} vertices, "
           f"{length_m / M_PER_MI:.2f} mi, bearing {bearing:.1f}°")
-    print(f"[dashboard]   trip {trip_id}: {len(dist_m)} speed samples, "
-          f"{len(bands)} delay bands")
+    n_dist = len(speed_payload["by_dist"]["dist_m"])
+    n_time = len(speed_payload["by_time"]["t_s"])
+    print(f"[dashboard]   trip {trip_id}: {n_dist}/{n_time} speed samples "
+          f"(by dist / by time), {len(bands)} delay bands")
     print(f"[dashboard]   features: {len(features)} "
           f"(signals/stops/crossings/bus stops)")
     return out_dir
