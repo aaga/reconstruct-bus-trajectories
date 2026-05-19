@@ -234,6 +234,17 @@ export class SpeedProfileView {
       .attr("stroke", "#cc0000").attr("stroke-width", 1)
       .attr("display", "none");
 
+    // "Ghost" cursor line at the position the user clicked to open
+    // Street View. Stays visible (faded, dashed) until the popup closes.
+    this.ghostLine = this.g.append("line")
+      .attr("class", "ghost-cursor")
+      .attr("y1", 0).attr("y2", plotH)
+      .attr("stroke", "#cc0000").attr("stroke-width", 1.5)
+      .attr("stroke-dasharray", "4,3")
+      .attr("opacity", 0.55)
+      .attr("display", "none");
+    this.ghostDistM = null;
+
     // Title overlay (sits over the plot top edge).
     this.svg.append("text")
       .attr("x", MARGIN.left).attr("y", 12)
@@ -259,7 +270,8 @@ export class SpeedProfileView {
           this.state.publish("feature:cleared", null);
         }
         this._hideTooltip();
-      });
+      })
+      .on("click", (event) => this._onClick(event));
 
     this.zoom = d3.zoom()
       .scaleExtent([1, 250])
@@ -286,9 +298,45 @@ export class SpeedProfileView {
     });
     state.subscribe("hideUnattributed:changed", ({ value }) => {
       this.hideUnattributed = value;
+      // Keep the checkbox in sync when this was published from elsewhere
+      // (e.g. the global keyboard shortcut).
+      if (this._hideCheckbox && this._hideCheckbox.checked !== value) {
+        this._hideCheckbox.checked = value;
+      }
       this._renderTicks();
     });
     state.subscribe("xMode:changed", ({ value }) => this._setXMode(value));
+    state.subscribe("streetview:open", ({ distM }) => {
+      this.ghostDistM = distM;
+      this._updateGhost();
+    });
+    state.subscribe("streetview:close", () => {
+      this.ghostDistM = null;
+      this._updateGhost();
+    });
+  }
+
+  _onClick(event) {
+    const [mx] = d3.pointer(event, this.g.node());
+    const xDomain = this.x.invert(mx);
+    const distM = this.xMode === "time"
+      ? this._timeToDist(xDomain)
+      : xDomain * M_PER_MI;
+    this.state.publish("streetview:open", { distM });
+  }
+
+  _updateGhost() {
+    if (this.ghostDistM == null) {
+      return this.ghostLine.attr("display", "none");
+    }
+    const xDomain = this.xMode === "time"
+      ? this._distToTime(this.ghostDistM)
+      : this.ghostDistM / M_PER_MI;
+    const xPx = this.x(xDomain);
+    if (xPx < 0 || xPx > this.plotW) {
+      return this.ghostLine.attr("display", "none");
+    }
+    this.ghostLine.attr("display", null).attr("x1", xPx).attr("x2", xPx);
   }
 
   // Switch between "distance" and "time" x-axes. Preserves the
@@ -313,6 +361,10 @@ export class SpeedProfileView {
     this.xMode = mode;
     this.x0 = mode === "time" ? this.x0Time : this.x0Dist;
     this.x = this.x0.copy();
+    // Sync the radio buttons if this came from a keyboard shortcut.
+    if (this._xModeRadios) {
+      this._xModeRadios.forEach(r => { r.checked = (r.value === mode); });
+    }
 
     // Compute the target domain in the new mode's units, then apply
     // it as a d3.zoom transform on the unzoomed base scale.
@@ -464,6 +516,7 @@ export class SpeedProfileView {
     this._renderTicks();
     this._renderAxes();
     this.linePath.attr("d", this.lineGen);
+    this._updateGhost();
     // Echo to the map — the map only speaks distance, so in time mode
     // we convert the visible time domain to distance via _timeToDist.
     if (!this._suppressPublish) {
@@ -625,17 +678,17 @@ export class SpeedProfileView {
         <span class="legend-toggle-label">x-axis:</span>
         <label class="legend-radio">
           <input type="radio" name="${xModeName}" value="distance" checked>
-          <span>Distance</span>
+          <span>Distance <span class="legend-shortcut">(D)</span></span>
         </label>
         <label class="legend-radio">
           <input type="radio" name="${xModeName}" value="time">
-          <span>Time</span>
+          <span>Time <span class="legend-shortcut">(T)</span></span>
         </label>
       </div>`;
     const hideHtml = `
       <div class="legend-toggle">
         <input id="${hideId}" type="checkbox">
-        <label for="${hideId}">Hide features without delay</label>
+        <label for="${hideId}">Hide features without delay <span class="legend-shortcut">(H)</span></label>
       </div>`;
     el.innerHTML = xModeHtml + hideHtml + LEGEND.map(({ kind, label }) => {
       const isHatch = !!BAND_PATTERN[kind];
@@ -655,12 +708,15 @@ export class SpeedProfileView {
       return `<div class="legend-row">${swatchSvg}<span>${label}</span></div>`;
     }).join("");
     this.container.appendChild(el);
-    // Hook the controls after the element is in the DOM.
-    const hide = el.querySelector(`#${hideId}`);
-    hide.addEventListener("change", (event) => {
+    // Hook the controls after the element is in the DOM, and stash
+    // references so we can sync them programmatically when keyboard
+    // shortcuts fire the same State events.
+    this._hideCheckbox = el.querySelector(`#${hideId}`);
+    this._xModeRadios = el.querySelectorAll(`input[name="${xModeName}"]`);
+    this._hideCheckbox.addEventListener("change", (event) => {
       this.state.publish("hideUnattributed:changed", { value: event.target.checked });
     });
-    el.querySelectorAll(`input[name="${xModeName}"]`).forEach(input => {
+    this._xModeRadios.forEach(input => {
       input.addEventListener("change", (event) => {
         if (event.target.checked) {
           this.state.publish("xMode:changed", { value: event.target.value });

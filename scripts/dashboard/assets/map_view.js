@@ -101,6 +101,8 @@ export class MapView {
     state.subscribe("hideUnattributed:changed", ({ value }) => {
       this._applyAttributedFilter(value);
     });
+    state.subscribe("streetview:open", ({ distM }) => this._showGhost(distM));
+    state.subscribe("streetview:close", () => this._hideGhost());
   }
 
   _buildLayers() {
@@ -249,16 +251,55 @@ export class MapView {
     }).setLngLat(data.shape.polyline_lonlat[0]).addTo(this.map);
     this.cursorEl = busEl;
 
+    // "Ghost" bus icon at the position the user clicked to open
+    // Street View. Stays at that location (faded) until the popup closes.
+    const ghostEl = busEl.cloneNode(true);
+    ghostEl.className = "cursor-bus cursor-bus-ghost";
+    ghostEl.style.display = "none";
+    this.ghostMarker = new maplibregl.Marker({
+      element: ghostEl,
+      rotationAlignment: "viewport",
+      pitchAlignment: "viewport",
+      offset: [0, -16],
+      anchor: "bottom",
+    }).setLngLat(data.shape.polyline_lonlat[0]).addTo(this.map);
+    this.ghostEl = ghostEl;
+
     // -- Cursor & feature hover handling --------------------------------
     this.map.on("mousemove", (e) => this._onMouseMove(e));
     this.map.on("mouseout", () => {
       this.state.publish("dist:cleared", null);
       this.state.publish("feature:cleared", null);
     });
+    this.map.on("click", (e) => this._onClick(e));
 
     // Initial range publish (full route, since the constructor fitBounds
     // shows everything).
     this._publishRange();
+  }
+
+  _onClick(e) {
+    // Project the click point onto the route and publish a streetview
+    // open event. The StreetViewPopup handles the lat/lon/heading
+    // computation centrally so all click sources publish the same shape.
+    const cursor = [e.lngLat.lng, e.lngLat.lat];
+    const proj = projectCursorToRoute(
+      cursor, this.data.shape.polyline_lonlat, this.data.shape.cumdist_m
+    );
+    this.state.publish("streetview:open", { distM: proj.distM });
+  }
+
+  _showGhost(distM) {
+    if (distM == null || !this.ghostMarker) return;
+    const lonlat = distToLonLat(
+      distM, this.data.shape.polyline_lonlat, this.data.shape.cumdist_m
+    );
+    this.ghostMarker.setLngLat(lonlat);
+    this.ghostEl.style.display = "";
+  }
+
+  _hideGhost() {
+    if (this.ghostEl) this.ghostEl.style.display = "none";
   }
 
   _onMouseMove(e) {

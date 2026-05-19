@@ -60,6 +60,37 @@ export function visibleRouteRange(map, polyline_lonlat, cumdist_m) {
   return [lo, hi];
 }
 
+// Compass bearing (degrees, 0 = north) of the polyline at the given
+// distance along the route, looking in the increasing-distance
+// direction. Used to point Street View "forward" at the click point.
+export function headingAtDistDeg(distM, polyline_lonlat, cumdist_m) {
+  const n = cumdist_m.length;
+  if (n < 2) return 0;
+  // Find the segment [lo, hi] that contains distM.
+  let lo, hi;
+  if (distM <= cumdist_m[0]) {
+    lo = 0; hi = 1;
+  } else if (distM >= cumdist_m[n - 1]) {
+    lo = n - 2; hi = n - 1;
+  } else {
+    lo = 0; hi = n - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >>> 1;
+      if (cumdist_m[mid] <= distM) lo = mid; else hi = mid;
+    }
+  }
+  const [lonA, latA] = polyline_lonlat[lo];
+  const [lonB, latB] = polyline_lonlat[hi];
+  const mlat = Math.cos((latA + latB) / 2 * Math.PI / 180);
+  const dLon = (lonB - lonA) * mlat;
+  const dLat = latB - latA;
+  // atan2(dEast, dNorth) returns 0 for due-north motion, +90 for due-east —
+  // which is the compass-bearing convention Street View's `cbp` parameter
+  // expects.
+  const rad = Math.atan2(dLon, dLat);
+  return (rad * 180 / Math.PI + 360) % 360;
+}
+
 // Inverse of project: given a target distance, return its [lon, lat] by
 // linear interpolation between two adjacent polyline vertices.
 export function distToLonLat(distM, polyline_lonlat, cumdist_m) {

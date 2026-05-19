@@ -6,6 +6,7 @@
 import { State } from "./state.js";
 import { MapView } from "./map_view.js";
 import { SpeedProfileView } from "./speed_profile_view.js";
+import { StreetViewPopup } from "./street_view.js";
 
 async function main() {
   const data = await fetch("./data.json").then(r => r.json());
@@ -18,11 +19,36 @@ async function main() {
   const mapView = new MapView(
     document.getElementById("map"), data, state
   );
+  const streetView = new StreetViewPopup(data, state);
+
+  // Global keyboard shortcuts. Bypassed when the user is typing into
+  // a form field or when a modifier is held, so the shortcuts don't
+  // collide with browser commands like Ctrl+D (bookmark).
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const tag = (event.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return;
+    switch (event.key.toLowerCase()) {
+      case "h":
+        state.publish("hideUnattributed:changed",
+          { value: !profileView.hideUnattributed });
+        break;
+      case "d":
+        state.publish("xMode:changed", { value: "distance" });
+        break;
+      case "t":
+        state.publish("xMode:changed", { value: "time" });
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  });
 
   // Hand both views a reference to the data + state, then let them drive
   // themselves. The map will publish range:changed once it loads, which
   // gives the profile its initial x-domain.
-  window._dashboard = { data, state, profileView, mapView };  // for debugging
+  window._dashboard = { data, state, profileView, mapView, streetView };  // for debugging
 }
 
 main().catch(err => {
