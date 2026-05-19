@@ -258,9 +258,15 @@ export class SpeedProfileView {
     // The overlay rect captures mouse events for both d3.zoom (drag/wheel)
     // and cursor scrubbing (mousemove). They coexist: d3.zoom only
     // responds to drag/wheel, leaving plain mousemove for us.
+    // The overlay covers the plot area PLUS the tick-lane area below it,
+    // so triangle hover (which only happens in the bottom strip) is
+    // detectable by the same single mousemove handler. Triangles
+    // themselves keep pointer-events:none, so events fall through to
+    // the overlay regardless of which part the cursor is over.
     this.overlay = this.g.append("rect")
       .attr("class", "hover-overlay")
-      .attr("width", plotW).attr("height", plotH)
+      .attr("width", plotW)
+      .attr("height", plotH + 2 + TICK_LANE_PX)
       .attr("fill", "transparent")
       .style("cursor", "crosshair")
       .on("mousemove", (event) => this._onMouseMove(event))
@@ -573,7 +579,7 @@ export class SpeedProfileView {
   }
 
   _onMouseMove(event) {
-    const [mx] = d3.pointer(event, this.g.node());
+    const [mx, my] = d3.pointer(event, this.g.node());
     const xDomain = this.x.invert(mx);
     // The cursor's distance is always published in meters so the map
     // doesn't need to know which mode the profile is in. For time mode
@@ -583,22 +589,52 @@ export class SpeedProfileView {
       : xDomain * M_PER_MI;
     this.state.publish("dist:hovered", { distM, source: "profile" });
 
-    // Band hit-detection uses whichever coordinate matches the mode.
-    const hits = this.view.delay_bands.filter(b =>
+    // Priority: band hover wins over triangle hover, because bands already
+    // include the underlying feature (via facility_id) and additionally
+    // carry the delay-duration info.
+    const bandHits = this.view.delay_bands.filter(b =>
       this._bandStart(b) <= xDomain && this._bandEnd(b) >= xDomain
     );
-    if (hits.length > 0) {
-      const b = hits[0];
+    if (bandHits.length > 0) {
+      const b = bandHits[0];
       if (b.facility_id !== this.hoveredFeatureId) {
         this.state.publish("feature:hovered", { featureId: b.facility_id });
       }
-      this._showTooltip(b, event);
-    } else {
-      if (this.hoveredFeatureId != null) {
-        this.state.publish("feature:cleared", null);
-      }
-      this._hideTooltip();
+      this._showBandTooltip(b, event);
+      return;
     }
+
+    // Triangle hover: only in the bottom of the plot or in the tick lane.
+    // 8 px below the plot bottom captures the tip area; +TICK_LANE_PX
+    // catches the base. Horizontal tolerance is 6 px around the
+    // feature's x position.
+    if (my >= this.plotH - 8) {
+      const f = this._nearestTriangleFeature(mx);
+      if (f) {
+        if (f.id !== this.hoveredFeatureId) {
+          this.state.publish("feature:hovered", { featureId: f.id });
+        }
+        this._showFeatureTooltip(f, event);
+        return;
+      }
+    }
+
+    if (this.hoveredFeatureId != null) {
+      this.state.publish("feature:cleared", null);
+    }
+    this._hideTooltip();
+  }
+
+  _nearestTriangleFeature(xPx) {
+    // Linear scan over ~221 features is cheap at mousemove rate. Respects
+    // the hide-unattributed toggle (don't hover invisible triangles).
+    let best = null, bestDx = 6;
+    for (const f of this.data.features) {
+      if (this.hideUnattributed && !this.attributedIds.has(f.id)) continue;
+      const dx = Math.abs(this.x(this._featureX(f)) - xPx);
+      if (dx < bestDx) { bestDx = dx; best = f; }
+    }
+    return best;
   }
 
   _highlightBands(featureId) {
@@ -629,7 +665,7 @@ export class SpeedProfileView {
     this.container.appendChild(this.tooltip);
   }
 
-  _showTooltip(band, event) {
+  _showBandTooltip(band, event) {
     const feature = band.facility_id ? this.featuresById.get(band.facility_id) : null;
     // For features whose label starts with a kind prefix ("Signal @", "Bus stop:")
     // we strip the prefix so the tooltip reads like "Foster Avenue" rather than
@@ -649,14 +685,48 @@ export class SpeedProfileView {
       `<div class="ttl-cat" style="color:${BAND_COLORS[band.category] || "#444"}">${catLabel}</div>` +
       facility +
       `<div class="ttl-dur">${sec}s delay</div>`;
+    this._positionTooltip(event);
+  }
+
+  _showFeatureTooltip(feature, event) {
+    const KIND_LABEL = {
+      traffic_signals: "Traffic Signal",
+      stop: "Stop Sign",
+      ped_crossing_signal: "Pedestrian Signal",
+      ped_crossing_marked: "Marked Crosswalk",
+      bus_stop: "Bus Stop",
+    };
+    const TICK_COLORS = {
+      traffic_signals:     "#cc0000",
+      stop:                "#f2c543",
+      ped_crossing_signal: "#7b3fa0",
+      ped_crossing_marked: "#00897b",
+      bus_stop:            "#3a85d6",
+    };
+    const kindLabel = KIND_LABEL[feature.kind] || feature.kind;
+    const color = TICK_COLORS[feature.kind] || "#444";
+    const name = feature.cross_street || feature.label || "";
+    this.tooltip.innerHTML =
+      `<div class="ttl-cat" style="color:${color}">${kindLabel}</div>` +
+      (name ? `<div class="ttl-where">${escapeHtml(name)}</div>` : "");
+    // Triangles live at the bottom edge of the pane, so anchor the
+    // tooltip above the cursor — placing it below would clip against
+    // the pane boundary.
+    this._positionTooltip(event, { above: true });
+  }
+
+  _positionTooltip(event, { above = false } = {}) {
     this.tooltip.style.display = "block";
     // Position next to the cursor. clientX/Y are page-relative; convert to
     // container-relative by subtracting the container's bounding rect.
     const rect = this.container.getBoundingClientRect();
-    const px = event.clientX - rect.left + 12;
-    const py = event.clientY - rect.top + 12;
-    this.tooltip.style.left = `${px}px`;
-    this.tooltip.style.top = `${py}px`;
+    this.tooltip.style.left = `${event.clientX - rect.left + 12}px`;
+    if (above) {
+      const h = this.tooltip.offsetHeight;
+      this.tooltip.style.top = `${event.clientY - rect.top - h - 8}px`;
+    } else {
+      this.tooltip.style.top = `${event.clientY - rect.top + 12}px`;
+    }
   }
 
   _hideTooltip() {
