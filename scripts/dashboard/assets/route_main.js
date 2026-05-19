@@ -6,10 +6,12 @@ import { State } from "./state.js";
 import { MapView } from "./map_view.js";
 import { DelayView } from "./delay_view.js";
 import { StreetViewPopup } from "./street_view.js";
+import { mountViewSwitcher } from "./view_switcher.js";
 
 async function main() {
   const data = await fetch("./data.json").then(r => r.json());
   document.title = data.view_title || data.view_id;
+  mountViewSwitcher(data);
 
   const state = new State();
   const profileView = new DelayView(

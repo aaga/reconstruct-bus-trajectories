@@ -167,6 +167,7 @@ def build_route_view(
     view_id: str,
     out_root: Path,
     bearing: float | None = None,
+    counterpart_view_id: str | None = "sb_1001350",
 ) -> Path:
     # ---- shape ---------------------------------------------------------
     poly_latlon, dist_gtfs = load_gtfs_shape_with_dist(GTFS_ZIP, shape_id)
@@ -228,6 +229,9 @@ def build_route_view(
         "view_id": view_id,
         "view_title": view_title,
         "n_trips": n_trips,
+        "counterpart_url": (f"../{counterpart_view_id}/"
+                            if counterpart_view_id else None),
+        "counterpart_label": "Switch to single trip view",
         "shape": {
             "shape_id": shape_id,
             "polyline_lonlat": [
@@ -269,6 +273,11 @@ def main() -> int:
     ap.add_argument("--view-id", default="sb_route")
     ap.add_argument("--out", default=str(REPO / "out_dashboard"))
     ap.add_argument("--bearing", type=float, default=None)
+    ap.add_argument(
+        "--counterpart-view-id", default="sb_1001350",
+        help="view-id whose page the view-switcher button links to "
+             "(default: sb_1001350). Pass empty string to disable.",
+    )
     args = ap.parse_args()
     build_route_view(
         shape_id=args.shape_id,
@@ -276,6 +285,7 @@ def main() -> int:
         view_id=args.view_id,
         out_root=Path(args.out),
         bearing=args.bearing,
+        counterpart_view_id=args.counterpart_view_id or None,
     )
     return 0
 

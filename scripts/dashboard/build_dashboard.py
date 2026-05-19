@@ -281,6 +281,7 @@ def build_view(
     view_id: str,
     out_root: Path,
     bearing: float | None = None,
+    counterpart_view_id: str | None = "sb_route",
 ) -> Path:
     # ---- shape ---------------------------------------------------------
     # We MUST use the GTFS-supplied per-vertex shape_dist_traveled (converted
@@ -350,6 +351,9 @@ def build_view(
     payload = {
         "view_id": view_id,
         "view_title": view_title,
+        "counterpart_url": (f"../{counterpart_view_id}/"
+                            if counterpart_view_id else None),
+        "counterpart_label": "Switch to average delay view",
         "shape": {
             "shape_id": shape_id,
             # GeoJSON-style [lon, lat] order, for MapLibre.
@@ -434,6 +438,11 @@ def main() -> int:
         help="MapLibre bearing in degrees; default = computed from polyline "
              "(rotates so start→end runs left-to-right). Use 90 for SB.",
     )
+    ap.add_argument(
+        "--counterpart-view-id", default="sb_route",
+        help="view-id whose page the view-switcher button links to "
+             "(default: sb_route). Pass empty string to disable the button.",
+    )
     args = ap.parse_args()
     view_id = args.view_id or f"sb_{args.trip_id}"
     build_view(
@@ -443,6 +452,7 @@ def main() -> int:
         view_id=view_id,
         out_root=Path(args.out),
         bearing=args.bearing,
+        counterpart_view_id=args.counterpart_view_id or None,
     )
     return 0
 

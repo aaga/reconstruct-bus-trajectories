@@ -34,6 +34,30 @@ body {
   font-size: 9px;
 }
 
+/* View-switcher button — bottom-right floating link to this dashboard's
+   counterpart view (single-trip ↔ average-delay). Sits above the
+   MapLibre attribution control with a small gap. */
+.view-switcher {
+  position: fixed;
+  bottom: 28px;
+  right: 14px;
+  z-index: 20;
+  background: #fff;
+  border: 1px solid #888;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #222;
+  text-decoration: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.view-switcher:hover {
+  background: #f0f0f0;
+  border-color: #444;
+}
+
 /* D3 speed-profile axis styling */
 .tick line {
   stroke: #ccc;
