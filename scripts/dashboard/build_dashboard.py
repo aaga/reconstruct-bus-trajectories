@@ -333,6 +333,11 @@ def build_view(
     # ---- features ------------------------------------------------------
     features = _build_features(shape_id, poly_latlon, cumdist)
     _feature_times(features, record)
+    # Mark features that any delay band on this trip claims as the
+    # facility_id. The "Hide features without delay" toggle hides the rest.
+    attributed_ids = {b["facility_id"] for b in bands if b.get("facility_id")}
+    for ft in features:
+        ft["attributed"] = ft["id"] in attributed_ids
 
     # ---- meta ----------------------------------------------------------
     first_iso = record.get("first_ping_iso", "")
@@ -377,10 +382,13 @@ def build_view(
     # ---- write output --------------------------------------------------
     out_dir = out_root / view_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Copy every static asset file (overwrites existing on rebuild).
+    # Copy every static asset file (overwrites existing on rebuild). The
+    # *_index.html files are entry points owned by individual build
+    # scripts — skip them here and copy trip_index.html as the entrypoint.
     for asset in sorted(ASSETS_DIR.iterdir()):
-        if asset.is_file():
+        if asset.is_file() and not asset.name.endswith("_index.html"):
             shutil.copy2(asset, out_dir / asset.name)
+    shutil.copy2(ASSETS_DIR / "trip_index.html", out_dir / "index.html")
     # Write the data payload last so a stale data.json never sits next to
     # fresh assets.
     (out_dir / "data.json").write_text(json.dumps(payload, separators=(",", ":")))

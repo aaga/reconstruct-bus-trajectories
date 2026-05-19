@@ -32,8 +32,8 @@ out/
 out_*/
 out_compare*.html
 *.html
-# Exception: dashboard HTML shell ships as a source asset.
-!scripts/dashboard/assets/index.html
+# Exception: dashboard HTML shells ship as source assets.
+!scripts/dashboard/assets/*_index.html
 
 # Standalone diagnostic plots emitted at the repo root by exploratory scripts
 timespace_*.png

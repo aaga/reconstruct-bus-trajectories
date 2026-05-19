@@ -49,16 +49,12 @@ export class MapView {
     this.state = state;
     this.featuresById = new Map(data.features.map(f => [f.id, f]));
     this.hoveredFeatureId = null;
-    // A feature is "attributed" iff at least one delay band claims it as
-    // facility_id. Unattributed features stay visible on the map but at
-    // reduced opacity so they recede behind the active causes of delay.
-    const attributed = new Set();
-    for (const v of data.views || []) {
-      for (const b of v.delay_bands || []) {
-        if (b.facility_id) attributed.add(b.facility_id);
-      }
-    }
-    this.attributedIds = attributed;
+    // Each feature carries an `attributed` boolean set by the build script.
+    // The "Hide features without delay" toggle then hides features with
+    // attributed=false. The build script decides the criterion: for the
+    // single-trip view that's "claimed by a delay band on this trip", for
+    // the route aggregate view it's "p95 delay >= 0.5 min". Missing values
+    // default to true (visible) so legacy payloads still render.
 
     const [[minLon, minLat], [maxLon, maxLat]] = data.shape.bounds;
     this.map = new maplibregl.Map({
@@ -139,7 +135,7 @@ export class MapView {
           label: f.label,
           cross_street: f.cross_street || "",
           dist_m: f.dist_m,
-          attributed: this.attributedIds.has(f.id),
+          attributed: f.attributed !== false,
         },
         geometry: { type: "Point", coordinates: [f.lon, f.lat] },
       })),
