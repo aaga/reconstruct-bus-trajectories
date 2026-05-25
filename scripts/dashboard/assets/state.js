@@ -9,6 +9,7 @@
 //   "feature:hovered"  — { featureId }
 //   "feature:cleared"  — null
 //   "range:changed"    — { visibleDistRangeM: [lo_m, hi_m] }
+//   "basemap:changed"  — { value: "map" | "satellite" }
 //
 // `range:changed` is emitted exclusively by the map (which owns the zoom).
 // The speed profile listens and updates its x-axis domain.

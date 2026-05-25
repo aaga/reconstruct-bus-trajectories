@@ -576,11 +576,11 @@ export class DelayView {
         <span class="legend-toggle-label">view:</span>
         <label class="legend-radio">
           <input type="radio" name="${modeName}" value="segments" checked>
-          <span>Segments <span class="legend-shortcut">(S)</span></span>
+          <span>Segments <span class="legend-shortcut">(B)</span></span>
         </label>
         <label class="legend-radio">
           <input type="radio" name="${modeName}" value="stems">
-          <span>Stems <span class="legend-shortcut">(M)</span></span>
+          <span>Stems <span class="legend-shortcut">(E)</span></span>
         </label>
       </div>`;
     const hideHtml = `

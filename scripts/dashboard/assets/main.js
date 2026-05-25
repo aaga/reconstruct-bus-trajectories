@@ -41,6 +41,12 @@ async function main() {
       case "t":
         state.publish("xMode:changed", { value: "time" });
         break;
+      case "m":
+        state.publish("basemap:changed", { value: "map" });
+        break;
+      case "s":
+        state.publish("basemap:changed", { value: "satellite" });
+        break;
       default:
         return;
     }

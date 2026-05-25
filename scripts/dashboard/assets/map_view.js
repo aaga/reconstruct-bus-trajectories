@@ -23,6 +23,10 @@ const MARKER_STYLE = {
 // Minimal style. The `glyphs` URL must be defined for text-rendering layers
 // (street-name labels) to load fonts. demotiles.maplibre.org is the canonical
 // open glyphs server.
+//
+// Two basemap sources are declared up-front so toggling between them is just
+// a visibility flip — no `setStyle()` call that would tear down our added
+// sources and layers. The satellite layer starts hidden.
 const TILE_STYLE = {
   version: 8,
   glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
@@ -39,8 +43,25 @@ const TILE_STYLE = {
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
         ' contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
     },
+    "esri-imagery": {
+      type: "raster",
+      tiles: [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      ],
+      tileSize: 256,
+      attribution:
+        'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+    },
   },
-  layers: [{ id: "carto", type: "raster", source: "carto-positron" }],
+  layers: [
+    { id: "carto", type: "raster", source: "carto-positron" },
+    {
+      id: "satellite",
+      type: "raster",
+      source: "esri-imagery",
+      layout: { visibility: "none" },
+    },
+  ],
 };
 
 export class MapView {
@@ -99,6 +120,7 @@ export class MapView {
     });
     state.subscribe("streetview:open", ({ distM }) => this._showGhost(distM));
     state.subscribe("streetview:close", () => this._hideGhost());
+    state.subscribe("basemap:changed", ({ value }) => this._setBasemap(value));
   }
 
   _buildLayers() {
@@ -112,14 +134,27 @@ export class MapView {
         geometry: { type: "LineString", coordinates: data.shape.polyline_lonlat },
       },
     });
+    // Two-layer route line so it reads on both light (Positron) and dark
+    // (satellite) basemaps without recoloring on toggle: dark halo
+    // underneath, bright fill on top.
+    this.map.addLayer({
+      id: "route-halo",
+      type: "line",
+      source: "route",
+      paint: {
+        "line-color": "#1a1a1a",
+        "line-width": 5.5,
+        "line-opacity": 0.7,
+      },
+    });
     this.map.addLayer({
       id: "route-line",
       type: "line",
       source: "route",
       paint: {
-        "line-color": "#333",
-        "line-width": 3.5,
-        "line-opacity": 0.85,
+        "line-color": "#ffcc33",
+        "line-width": 3,
+        "line-opacity": 0.95,
       },
     });
 
@@ -456,11 +491,25 @@ export class MapView {
 
   // Tiny HTML legend in the top-left of the map pane (matches the speed
   // profile's legend in the top-right of its pane). Single source of
-  // truth: MARKER_STYLE above.
+  // truth: MARKER_STYLE above. Also hosts the Map/Satellite basemap
+  // toggle since this is where the rest of the map's chrome already lives.
   _buildLegend(container) {
     const el = document.createElement("div");
     el.className = "map-legend";
-    el.innerHTML = Object.entries(MARKER_STYLE).map(([kind, s]) => {
+    const basemapName = `basemap-${Math.random().toString(36).slice(2, 8)}`;
+    const basemapHtml = `
+      <div class="legend-toggle">
+        <span class="legend-toggle-label">basemap:</span>
+        <label class="legend-radio">
+          <input type="radio" name="${basemapName}" value="map" checked>
+          <span>Map <span class="legend-shortcut">(M)</span></span>
+        </label>
+        <label class="legend-radio">
+          <input type="radio" name="${basemapName}" value="satellite">
+          <span>Satellite <span class="legend-shortcut">(S)</span></span>
+        </label>
+      </div>`;
+    const kindRows = Object.entries(MARKER_STYLE).map(([kind, s]) => {
       const dotSize = s.radius * 2;
       return `<div class="legend-row">
         <span class="dot" style="
@@ -469,6 +518,34 @@ export class MapView {
         <span>${s.label}</span>
       </div>`;
     }).join("");
+    el.innerHTML = basemapHtml + kindRows;
     container.appendChild(el);
+    this._basemapRadios = el.querySelectorAll(`input[name="${basemapName}"]`);
+    this._basemapRadios.forEach(input => {
+      input.addEventListener("change", (event) => {
+        if (event.target.checked) {
+          this.state.publish("basemap:changed", { value: event.target.value });
+        }
+      });
+    });
+  }
+
+  // Flip the visibility of the two basemap layers. The sources stay
+  // mounted in the style so tiles for the inactive basemap remain cached
+  // and a re-toggle is instant. Also resync the radios so M/S keyboard
+  // shortcuts keep the legend in step with the actual layer state.
+  _setBasemap(name) {
+    const showSat = (name === "satellite");
+    if (this.map.getLayer("carto")) {
+      this.map.setLayoutProperty(
+        "carto", "visibility", showSat ? "none" : "visible");
+    }
+    if (this.map.getLayer("satellite")) {
+      this.map.setLayoutProperty(
+        "satellite", "visibility", showSat ? "visible" : "none");
+    }
+    if (this._basemapRadios) {
+      this._basemapRadios.forEach(r => { r.checked = (r.value === name); });
+    }
   }
 }

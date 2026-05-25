@@ -23,8 +23,11 @@ async function main() {
   const streetView = new StreetViewPopup(data, state);
 
   // Global keyboard shortcuts. Bypassed when typing into form fields or
-  // when a modifier is held. H toggles hide-without-delay; S / M switch
-  // x-axis mode between Segments and steMs.
+  // when a modifier is held. H toggles hide-without-delay; B / E switch
+  // the delay view between segments (Bars) and stEms; M / S flip the
+  // map basemap between Map and Satellite. M/S used to be bound to the
+  // delay-view modes here, but were reassigned so the basemap shortcuts
+  // could match the trip dashboard.
   document.addEventListener("keydown", (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const tag = (event.target.tagName || "").toLowerCase();
@@ -34,11 +37,17 @@ async function main() {
         state.publish("hideUnattributed:changed",
           { value: !profileView.hideUnattributed });
         break;
-      case "s":
+      case "b":
         state.publish("delayMode:changed", { value: "segments" });
         break;
-      case "m":
+      case "e":
         state.publish("delayMode:changed", { value: "stems" });
+        break;
+      case "m":
+        state.publish("basemap:changed", { value: "map" });
+        break;
+      case "s":
+        state.publish("basemap:changed", { value: "satellite" });
         break;
       default:
         return;
