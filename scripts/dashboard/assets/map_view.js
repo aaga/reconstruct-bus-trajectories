@@ -8,6 +8,13 @@ import {
   distToLonLat,
 } from "./projection.js";
 
+// Mapbox public access token (pk.*). Required for the satellite-streets
+// basemap; paste yours here. Mapbox's free tier covers 50k web map loads
+// + 200k raster-tile requests per month — well above what a research
+// dashboard needs. Without a token the satellite toggle silently falls
+// back to a blank layer; the dashboard still works on the Carto basemap.
+const MAPBOX_TOKEN = "pk.eyJ1IjoiYWFnYSIsImEiOiJjazVlYWZtdXMwZG80M21tNHR2a2p4bHpmIn0.xWIYS40OSkd1A6dQw0kIDg";
+
 // Marker palette + sizes — keyed by feature kind. The user pinned these
 // during the dashboard review: signals are the dominant "you should slow
 // down" red dots, bus stops are big blue, and the less-controlling
@@ -43,14 +50,20 @@ const TILE_STYLE = {
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
         ' contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
     },
-    "esri-imagery": {
+    // Mapbox's satellite-streets-v12 style flattened to raster tiles. The
+    // /tiles/256/ endpoint serves PNGs of the full hybrid composition
+    // (imagery + roads + place labels) — so toggling "Satellite" gives
+    // a Google-Hybrid look in one source, no extra labels layer needed.
+    "mapbox-satellite-streets": {
       type: "raster",
       tiles: [
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        `https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/256/{z}/{x}/{y}?access_token=${MAPBOX_TOKEN}`,
       ],
       tileSize: 256,
       attribution:
-        'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+        '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a>' +
+        ' &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
+        ' <strong><a href="https://www.mapbox.com/map-feedback/" target="_blank">Improve this map</a></strong>',
     },
   },
   layers: [
@@ -58,7 +71,7 @@ const TILE_STYLE = {
     {
       id: "satellite",
       type: "raster",
-      source: "esri-imagery",
+      source: "mapbox-satellite-streets",
       layout: { visibility: "none" },
     },
   ],
