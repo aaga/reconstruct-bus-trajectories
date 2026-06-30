@@ -5,8 +5,11 @@
 
 import maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/+esm";
 import { projectCursorToRoute, visibleRouteRange, distToLonLat } from "./projection.js";
-
-const MAPBOX_TOKEN = "pk.eyJ1IjoiYWFnYSIsImEiOiJjazVlYWZtdXMwZG80M21tNHR2a2p4bHpmIn0.xWIYS40OSkd1A6dQw0kIDg";
+// Single source of truth for the token, in the parent dashboard's assets.
+// (This analysis dashboard is a repo-local dev viewer served from the repo
+// root, so the relative hop is safe; it collapses fully when the two
+// dashboards are merged.)
+import { MAPBOX_TOKEN } from "../../../scripts/dashboard/assets/mapbox_token.js";
 
 const MARKER_STYLE = {
   traffic_signals:       { color: "#cc0000", radius: 7, label: "Traffic signal" },

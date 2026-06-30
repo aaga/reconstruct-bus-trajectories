@@ -7,13 +7,7 @@ import {
   visibleRouteRange,
   distToLonLat,
 } from "./projection.js";
-
-// Mapbox public access token (pk.*). Required for the satellite-streets
-// basemap; paste yours here. Mapbox's free tier covers 50k web map loads
-// + 200k raster-tile requests per month — well above what a research
-// dashboard needs. Without a token the satellite toggle silently falls
-// back to a blank layer; the dashboard still works on the Carto basemap.
-const MAPBOX_TOKEN = "pk.eyJ1IjoiYWFnYSIsImEiOiJjazVlYWZtdXMwZG80M21tNHR2a2p4bHpmIn0.xWIYS40OSkd1A6dQw0kIDg";
+import { MAPBOX_TOKEN } from "./mapbox_token.js";
 
 // Marker palette + sizes — keyed by feature kind. The user pinned these
 // during the dashboard review: signals are the dominant "you should slow
