@@ -10,7 +10,7 @@ heuristic that ranks the dominant slowdown sources along the corridor.
 The full write-up is in
 [`report/Reconstructing_Bus_Trajectories_Report.pdf`](report/).
 
-![431 trips on Route 22 SB](figures/F4_timespace_alltrips_aligned.png)
+![431 trips on Route 22 SB](figures/C4_alltrips_aligned.png)
 
 ---
 

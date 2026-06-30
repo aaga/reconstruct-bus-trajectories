@@ -1,4 +1,4 @@
-"""Render F4_timespace_alltrips_aligned.png from the already-reconstructed
+"""Render C4_alltrips_aligned.png from the already-reconstructed
 ``out_r2_bw5/trajectories.json`` bundle, skipping the slow re-reconstruction
 that the original ``build_alltrip_aligned.py`` performs.
 
@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO / "src"))
 from bus_trajectories.serialize import load_records  # noqa: E402
 
 BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
-OUT = REPO / "figures" / "F4_timespace_alltrips_aligned.png"
+OUT = REPO / "figures" / "C4_alltrips_aligned.png"
 MAX_DURATION_MIN = 120.0  # F4-only filter; keeps the figure readable
 M_PER_MI = 1609.344
 

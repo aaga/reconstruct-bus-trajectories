@@ -1,7 +1,7 @@
 """LOCREG explainer slide: the algorithm + a worked example with the cubic
 that comes out of weighted least-squares.
 
-Output: slides/L_locreg_explainer.png
+Output: slides/D1_locreg.png
 """
 
 from __future__ import annotations
@@ -151,7 +151,7 @@ def main() -> None:
     ax_plot.grid(True, alpha=0.3, linewidth=0.5)
     ax_plot.legend(loc="lower right", fontsize=9, frameon=True)
 
-    out = SLIDES / "L_locreg_explainer.png"
+    out = SLIDES / "D1_locreg.png"
     fig.savefig(out, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")

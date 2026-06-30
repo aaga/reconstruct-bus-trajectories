@@ -38,13 +38,19 @@ data/
 outputs/
 caches/
 
-# Figures: the curated report figure set under figures/ is tracked. The VTRAK /
-# ROCKET validation scripts also drop scratch PNGs there — ignore just those.
+# Figures: the curated report figure set under figures/ (families A1..H7) is
+# tracked. Scripts also drop scratch / experimental PNGs there — ignore those.
 figures/vtrak_smooth_*.png
 figures/vtrak_speed_*.png
 figures/rocket_vs_r2_*.png
 figures/speed_pchip_vs_mqsi_*.png
 figures/accel_pchip_vs_mqsi_*.png
+figures/*_downtown_speed.png
+figures/G_stem_along_route_*.png
+figures/H_buffer_stem*.png
+figures/H_stem_mean_only.png
+figures/H_stem_with_congestion.png
+figures/*_copy.png
 
 # Stray HTML emitted by exploratory scripts. Exceptions: the dashboard HTML
 # shells and the observation_tool web app (its HTML is all source).

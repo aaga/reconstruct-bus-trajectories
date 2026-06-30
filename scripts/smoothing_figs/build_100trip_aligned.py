@@ -2,7 +2,7 @@
 R2 archive (~9 days of data), smooth them, and plot one aligned-departure
 time-space diagram.
 
-Output: slides/F3_timespace_100trips_aligned.png
+Output: slides/C3_100trips_aligned.png
 
 "Departure" is the last stationary ping before the bus first makes ≥ 0.03 mi
 of forward progress along the shape, matching the existing
@@ -207,7 +207,7 @@ def main() -> None:
     )
     print(f"Reconstructed {len(recons)} trips")
 
-    plot_aligned(recons, SLIDES / "F3_timespace_100trips_aligned.png")
+    plot_aligned(recons, SLIDES / "C3_100trips_aligned.png")
 
 
 if __name__ == "__main__":

@@ -1,20 +1,20 @@
 """Generate all slide images for the 5-minute presentation.
 
 Produces 14 PNGs in `slides/`:
-  01_archive.png         — multi-agency R2 archive (4 city heatmaps)
-  02_pings_only.png      — trip 1001350 raw pings on a map
-  03_pings_with_shape.png — same + GTFS shape underlay
-  04_ts_raw.png          — TS diagram, raw pings only, miles 3-6
-  05_ts_join.png         — same TS + join-the-dots
-  06_ts_locreg.png       — same TS + LOCREG-PCHIP bw=5
-  07_ts_smooth_only.png  — same TS, smooth only
-  08_ts_with_stops.png   — same TS + bus stop horizontal dotted lines
-  09_ts_with_intersections.png  — same + intersection horizontal dotted lines
-  10_mapmatch.png        — Valhalla map-matching explainer
-  A_multitrip.png        — 11 trip stringlines on the same TS diagram (full route)
-  B_speed.png            — trip 1001350 speed profile (miles 3-6) with vertical lines for every stop+intersection
-  C_pipeline.png         — pipeline diagram (boxes + arrows)
-  E_intersections_map.png — Route 22 SB intersections rendered on a basemap
+  A1_archive.png         — multi-agency R2 archive (4 city heatmaps)
+  A2_pings_only.png      — trip 1001350 raw pings on a map
+  A3_pings_with_shape.png — same + GTFS shape underlay
+  A4_ts_raw.png          — TS diagram, raw pings only, miles 3-6
+  A5_ts_join.png         — same TS + join-the-dots
+  A6_ts_locreg.png       — same TS + LOCREG-PCHIP bw=5
+  A7_ts_smooth_only.png  — same TS, smooth only
+  A8_ts_with_stops.png   — same TS + bus stop horizontal dotted lines
+  A9_ts_with_intersections.png  — same + intersection horizontal dotted lines
+  A10_mapmatch.png        — Valhalla map-matching explainer
+  C5_multitrip.png        — 11 trip stringlines on the same TS diagram (full route)
+  B1_speed.png            — trip 1001350 speed profile (miles 3-6) with vertical lines for every stop+intersection
+  D2_pipeline.png         — pipeline diagram (boxes + arrows)
+  E1_map.png — Route 22 SB intersections rendered on a basemap
 
 Run:
     PYTHONPATH=src .venv/bin/python scripts/build_slides.py
@@ -192,7 +192,7 @@ def slide_01_archive():
     fig.suptitle("Bus position archive — 1 hour of pings, 4 agencies",
                  fontsize=14, fontweight="bold")
     fig.tight_layout()
-    out = OUT / "01_archive.png"
+    out = OUT / "A1_archive.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -226,7 +226,7 @@ def slide_02_pings_only():
     ax.set_title(f"Trip {TRIP_ID} — raw AVL pings on Route 22 SB",
                  fontsize=12, pad=8)
     fig.tight_layout()
-    out = OUT / "02_pings_only.png"
+    out = OUT / "A2_pings_only.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -239,7 +239,7 @@ def slide_03_pings_with_shape():
     ax.set_title("Pings projected onto GTFS shape → 'distance along route'",
                  fontsize=12, pad=8)
     fig.tight_layout()
-    out = OUT / "03_pings_with_shape.png"
+    out = OUT / "A3_pings_with_shape.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -328,7 +328,7 @@ def slide_04_ts_raw():
     ax.scatter(rc, raw_win.d_mi, s=30, color=PING_RAW,
                edgecolor="white", linewidth=0.5, zorder=3, label="raw pings")
     ax.legend(loc="lower right", frameon=True)
-    _save_ts(fig, "04_ts_raw.png")
+    _save_ts(fig, "A4_ts_raw.png")
 
 
 def slide_05_ts_join():
@@ -340,7 +340,7 @@ def slide_05_ts_join():
     ax.scatter(rc, raw_win.d_mi, s=24, color=PING_RAW,
                edgecolor="white", linewidth=0.5, zorder=3)
     ax.legend(loc="lower right", frameon=True)
-    _save_ts(fig, "05_ts_join.png")
+    _save_ts(fig, "A5_ts_join.png")
 
 
 def slide_06_ts_locreg():
@@ -351,7 +351,7 @@ def slide_06_ts_locreg():
     ax.scatter(rc, raw_win.d_mi, s=22, color=PING_RAW, alpha=0.7,
                edgecolor="white", linewidth=0.5, zorder=3, label="raw pings")
     ax.legend(loc="lower right", frameon=True)
-    _save_ts(fig, "06_ts_locreg.png")
+    _save_ts(fig, "A6_ts_locreg.png")
 
 
 def slide_07_ts_smooth_only():
@@ -359,7 +359,7 @@ def slide_07_ts_smooth_only():
     rc, raw_win, sc, xs, t0 = _setup_ts_window()
     fig, ax = _ts_skeleton(f"Trip {TRIP_ID} — smoothed trajectory", rc, sc)
     ax.plot(sc, xs, color=LINE_BUS, linewidth=2.6, zorder=4)
-    _save_ts(fig, "07_ts_smooth_only.png")
+    _save_ts(fig, "A7_ts_smooth_only.png")
 
 
 def _draw_horizontal_lines_with_labels(ax, items, *, color, linestyle, label_xpos=0.005):
@@ -403,7 +403,7 @@ def slide_08_ts_with_stops():
     _draw_horizontal_lines_with_labels(ax, stops, color=STOP_BUS_COLOR, linestyle=":")
     ax.plot(sc, xs, color=LINE_BUS, linewidth=2.6, zorder=4, label="bus trajectory")
     ax.legend(loc="lower right", frameon=True)
-    _save_ts(fig, "08_ts_with_stops.png")
+    _save_ts(fig, "A8_ts_with_stops.png")
 
 
 def slide_09_ts_with_intersections():
@@ -429,7 +429,7 @@ def slide_09_ts_with_intersections():
         mpatches.Patch(color=STOP_COLOR, label="stop signs (dashed)"),
     ]
     ax.legend(handles=legend_handles, loc="lower right", frameon=True, fontsize=9)
-    _save_ts(fig, "09_ts_with_intersections.png")
+    _save_ts(fig, "A9_ts_with_intersections.png")
 
 
 # --- Map matching explainer (#10) ----------------------------------------
@@ -520,7 +520,7 @@ def slide_10_mapmatch():
                  fontsize=11, pad=8)
     ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
     fig.tight_layout()
-    out = OUT / "10_mapmatch.png"
+    out = OUT / "A10_mapmatch.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -562,7 +562,7 @@ def slide_A_multitrip():
     ax.grid(True, alpha=0.3, linewidth=0.5)
     fig.autofmt_xdate()
     fig.tight_layout()
-    out = OUT / "A_multitrip.png"
+    out = OUT / "C5_multitrip.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -605,7 +605,7 @@ def slide_B_speed():
                  "amber dashed = signals, red dashed = stop signs",
                  fontsize=11, pad=8)
     fig.tight_layout()
-    out = OUT / "B_speed.png"
+    out = OUT / "B1_speed.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -646,7 +646,7 @@ def slide_B1_speed_plain():
     ax.set_title(f"Trip {TRIP_ID} — speed profile (miles {WINDOW_MI[0]}–{WINDOW_MI[1]})",
                  fontsize=12, pad=8)
     fig.tight_layout()
-    out = OUT / "B1_speed.png"
+    out = OUT / "B2_speed.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -671,7 +671,7 @@ def slide_B2_speed_with_stops():
     ]
     ax.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=9)
     fig.tight_layout()
-    out = OUT / "B2_speed.png"
+    out = OUT / "B3_speed.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -702,7 +702,7 @@ def slide_B3_speed_with_stops_and_signals():
     ]
     ax.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=9)
     fig.tight_layout()
-    out = OUT / "B3_speed.png"
+    out = OUT / "B4_speed.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -750,7 +750,7 @@ def slide_B4_speed_with_delay_shading():
     ]
     ax.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=9)
     fig.tight_layout()
-    out = OUT / "B4_speed.png"
+    out = OUT / "B5_speed.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -798,7 +798,7 @@ def slide_B5_speed_with_delay_shading_10mph():
     ]
     ax.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=9)
     fig.tight_layout()
-    out = OUT / "B5_speed.png"
+    out = OUT / "B6_speed.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -871,7 +871,7 @@ def slide_C_pipeline():
                        "delay attribution is upcoming)",
             fontsize=9, ha="center", color="#666", style="italic")
     fig.tight_layout()
-    out = OUT / "C_pipeline.png"
+    out = OUT / "D2_pipeline.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -913,7 +913,7 @@ def slide_E_intersections_map():
     ax.set_title(f"Route 22 SB — {len(cps)} controlled intersections from OSM",
                  fontsize=11, pad=8)
     fig.tight_layout()
-    out = OUT / "E_intersections_map.png"
+    out = OUT / "E1_map.png"
     fig.savefig(out, dpi=SLIDE_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")

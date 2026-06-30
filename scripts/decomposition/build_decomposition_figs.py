@@ -3,12 +3,12 @@
 Reads the aggregate.csv produced by ``run_decomposition.py`` and the per-trip
 JSON for trip 1001350 to produce three figures:
 
-  - ``figures/decomp_trip_1001350.png``: stacked-bar per segment for one trip
-  - ``figures/decomp_corridor.png``: mean per-segment decomposition across
+  - ``figures/F1_trip_1001350.png``: stacked-bar per segment for one trip
+  - ``figures/F2_corridor.png``: mean per-segment decomposition across
     all decomposed trips (with near-side hatching)
-  - ``figures/decomp_sources.png``: total minutes of each delay category
+  - ``figures/F3_sources.png``: total minutes of each delay category
     summed across the corridor
-  - ``figures/decomp_near_side_stops.png``: list of near-side flagged stops
+  - ``figures/F4_near_side_stops.png``: list of near-side flagged stops
 """
 
 from __future__ import annotations
@@ -323,10 +323,10 @@ def main() -> int:
     agg_df = pd.read_csv(OUT_DIR / "aggregate.csv")
     trip_data = json.loads((OUT_DIR / f"trip_{TARGET_TRIP_ID}.json").read_text())
 
-    figure_trip_waterfall(trip_data, segments, FIG_DIR / f"decomp_trip_{TARGET_TRIP_LABEL}.png")
-    figure_corridor_aggregate(agg_df, segments, FIG_DIR / "decomp_corridor.png")
-    figure_sources(agg_df, FIG_DIR / "decomp_sources.png")
-    figure_near_side_stops(segments, FIG_DIR / "decomp_near_side_stops.png")
+    figure_trip_waterfall(trip_data, segments, FIG_DIR / f"F1_trip_{TARGET_TRIP_LABEL}.png")
+    figure_corridor_aggregate(agg_df, segments, FIG_DIR / "F2_corridor.png")
+    figure_sources(agg_df, FIG_DIR / "F3_sources.png")
+    figure_near_side_stops(segments, FIG_DIR / "F4_near_side_stops.png")
     return 0
 
 

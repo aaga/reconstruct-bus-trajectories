@@ -343,7 +343,7 @@ def main() -> int:
                 color="#a00" if cong < 0 else "#222",
             )
 
-    out = Path(args.out) if args.out else FIG_DIR / f"decomp_speed_profile_{args.trip_id}.png"
+    out = Path(args.out) if args.out else FIG_DIR / f"F5_speed_profile_{args.trip_id}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=200, bbox_inches="tight")
     print(f"Wrote {out}")

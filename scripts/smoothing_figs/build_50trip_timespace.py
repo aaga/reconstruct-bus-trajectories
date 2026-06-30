@@ -1,8 +1,8 @@
 """Pull 50 consecutive complete Route 22 SB trips on pattern 3936 starting at
 7am Chicago, smooth them, and produce two TS diagrams:
 
-  slides/F1_timespace_50trips_clock.png    — actual clock time (spaced out)
-  slides/F2_timespace_50trips_aligned.png  — minutes since departure (aligned)
+  slides/C1_50trips_clock.png    — actual clock time (spaced out)
+  slides/C2_50trips_aligned.png  — minutes since departure (aligned)
 
 "Departure" = last stationary ping before the bus first makes >=0.03 mi of
 forward progress along the shape (matches the existing
@@ -238,8 +238,8 @@ def main() -> None:
     )
     print(f"Reconstructed {len(recons)} trips")
 
-    plot_clock(recons, SLIDES / "F1_timespace_50trips_clock.png")
-    plot_aligned(recons, SLIDES / "F2_timespace_50trips_aligned.png")
+    plot_clock(recons, SLIDES / "C1_50trips_clock.png")
+    plot_aligned(recons, SLIDES / "C2_50trips_aligned.png")
 
 
 if __name__ == "__main__":

@@ -8,15 +8,15 @@ signal_uniform, signal_overflow, slowdown) rather than the naive
 
 Outputs (all in ``figures/``):
 
-  G_delay_attribution_1001350.png   – per-trip 2-column table
-  G_bar_1001350.png                 – per-trip horizontal bar (top 25)
-  H_delay_attribution_aggregate.png – aggregate 2-column table
-  H_bar_aggregate.png               – aggregate horizontal bar, mean ± std
-  H_bar_aggregate_median.png        – aggregate horizontal bar, median + IQR
-  H_stem_along_route.png            – stem along route, mean
-  H_stem_along_route_median.png     – stem along route, median
-  H_map_bubbles.png                 – bubble map of facility delay
-  H_3d_map_stem.png                 – 3D stem over a basemap
+  G1_waterfall_1001350.png   – per-trip 2-column table
+  G2_bar_1001350.png                 – per-trip horizontal bar (top 25)
+  H1_waterfall_aggregate.png – aggregate 2-column table
+  H2_bar_aggregate.png               – aggregate horizontal bar, mean ± std
+  H3_bar_aggregate_median.png        – aggregate horizontal bar, median + IQR
+  H4_stem.png            – stem along route, mean
+  H5_stem_median.png     – stem along route, median
+  H6_map_bubbles.png                 – bubble map of facility delay
+  H7_3d_map_stem.png                 – 3D stem over a basemap
 
 Usage:
     PYTHONPATH=src uv run python scripts/decomposition/build_attribution_slides.py
@@ -337,7 +337,7 @@ def slide_G_table(rows, other_s, t_obs_s) -> None:
         ),
         columns=["d_mi", "min"],
         col_titles=["mile", "delay (min)"],
-        out=FIG_DIR / f"G_delay_attribution_{TARGET_TRIP_LABEL}.png",
+        out=FIG_DIR / f"G1_waterfall_{TARGET_TRIP_LABEL}.png",
         n_cols=2,
     )
 
@@ -376,7 +376,7 @@ def slide_G_bar(rows, other_s, t_obs_s) -> None:
     handles, lbls = _legend_handles()
     ax.legend(handles, lbls, loc="lower right", fontsize=9, frameon=True)
     fig.tight_layout()
-    out = FIG_DIR / f"G_bar_{TARGET_TRIP_LABEL}.png"
+    out = FIG_DIR / f"G2_bar_{TARGET_TRIP_LABEL}.png"
     fig.savefig(out, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -394,7 +394,7 @@ def slide_G_stem(rows, other_s, t_obs_s) -> None:
                f"({TARGET_TRIP_ID})\n"
                f"Run: {trip_min:.1f} min  |  "
                f"OTHER (slowdown): {other_s / 60:.2f} min"),
-        out=FIG_DIR / f"G_stem_along_route_{TARGET_TRIP_LABEL}.png",
+        out=FIG_DIR / f"G3_stem_{TARGET_TRIP_LABEL}.png",
     )
 
 
@@ -438,7 +438,7 @@ def slide_H_table(rows, other_secs, n_trips) -> None:
         ),
         columns=["d_mi", "mean_min", "std_min", "total_min"],
         col_titles=["mile", "mean (min)", "std (min)", "total (min)"],
-        out=FIG_DIR / "H_delay_attribution_aggregate.png",
+        out=FIG_DIR / "H1_waterfall_aggregate.png",
         n_cols=2,
     )
 
@@ -486,7 +486,7 @@ def slide_H_bar(rows, other_secs, n_trips) -> None:
     handles, lbls = _legend_handles()
     ax.legend(handles, lbls, loc="lower right", fontsize=9, frameon=True)
     fig.tight_layout()
-    out = FIG_DIR / "H_bar_aggregate.png"
+    out = FIG_DIR / "H2_bar_aggregate.png"
     fig.savefig(out, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -533,7 +533,7 @@ def slide_H_bar_median(rows, other_secs, n_trips) -> None:
     handles, lbls = _legend_handles()
     ax.legend(handles, lbls, loc="lower right", fontsize=9, frameon=True)
     fig.tight_layout()
-    out = FIG_DIR / "H_bar_aggregate_median.png"
+    out = FIG_DIR / "H3_bar_aggregate_median.png"
     fig.savefig(out, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -585,7 +585,7 @@ def slide_H_stem(rows, n_trips) -> None:
         ylabel="Mean delay attributed per trip (min)",
         title=(f"Delay attribution — where delay accumulates "
                f"along Route 22 SB, {n_trips} trips (mean per facility)"),
-        out=FIG_DIR / "H_stem_along_route.png",
+        out=FIG_DIR / "H4_stem.png",
     )
 
 
@@ -597,7 +597,7 @@ def slide_H_stem_median(rows, n_trips) -> None:
         ylabel="Median delay attributed per trip (min)",
         title=(f"Delay attribution — where delay accumulates "
                f"along Route 22 SB, {n_trips} trips (median per facility)"),
-        out=FIG_DIR / "H_stem_along_route_median.png",
+        out=FIG_DIR / "H5_stem_median.png",
     )
 
 
@@ -1013,7 +1013,7 @@ def slide_H_map(rows, polyline, n_trips) -> None:
         fontsize=11, pad=8,
     )
     fig.tight_layout()
-    out = FIG_DIR / "H_map_bubbles.png"
+    out = FIG_DIR / "H6_map_bubbles.png"
     fig.savefig(out, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")
@@ -1133,7 +1133,7 @@ def slide_H_3d_map_stem(rows, polyline, n_trips) -> None:
     handles, lbls = _legend_handles()
     ax.legend(handles, lbls, loc="upper right", fontsize=9, frameon=True)
 
-    out = FIG_DIR / "H_3d_map_stem.png"
+    out = FIG_DIR / "H7_3d_map_stem.png"
     fig.savefig(out, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  saved: {out}")

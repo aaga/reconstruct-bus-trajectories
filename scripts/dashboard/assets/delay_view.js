@@ -2,7 +2,7 @@
 // renderings of the same per-mile x-axis:
 //
 //   Segments  — stacked-bar decomposition per signal-to-signal segment
-//               (mirrors figures/decomp_corridor.png). No hover behavior
+//               (mirrors figures/F2_corridor.png). No hover behavior
 //               beyond the continuous distance cursor.
 //   Stems     — two-sided stems per facility: mean delay up, buffer
 //               (p95 − mean) down (mirrors figures/H_buffer_stem.png).
@@ -25,7 +25,7 @@ import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 const M_PER_MI = 1609.344;
 
 // Segments-mode stack order, bottom → top. Colors mirror the matplotlib
-// palette from decomp_corridor.png as closely as possible while staying
+// palette from F2_corridor.png as closely as possible while staying
 // consistent with the band palette used elsewhere in the dashboard.
 const SEG_STACK = [
   { key: "t_ff_min",                label: "Free-flow",         color: "#9bd4a2" },

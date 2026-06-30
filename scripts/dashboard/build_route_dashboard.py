@@ -5,7 +5,7 @@ payload that drives the Segments-or-Stems "delay view" instead of the
 single-trip speed profile:
 
   * ``segments``  — per signal-to-signal segment, the mean stacked-time
-    components used by ``figures/decomp_corridor.png`` (free-flow,
+    components used by ``figures/F2_corridor.png`` (free-flow,
     dwell, signals, crossings, congestion, negative residual).
   * ``features``  — same intersections/stops list as the trip view but
     annotated with ``mean_min`` and ``p95_min`` per facility, plus
