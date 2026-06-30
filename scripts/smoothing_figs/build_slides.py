@@ -38,7 +38,7 @@ from scipy.interpolate import CubicHermiteSpline
 
 from bus_trajectories.intersections import load_intersections
 from bus_trajectories.io import load_gtfs_shape_with_dist, load_route_stops
-from bus_trajectories.r2 import R2_PUB, fetch as _curl_fetch
+from bus_trajectories.realtime import ARCHIVE_URL, fetch as _curl_fetch
 from bus_trajectories.way_match import decode_polyline6
 
 # --- shared constants -----------------------------------------------------
@@ -126,8 +126,8 @@ def slide_01_archive():
 
     # We have CTA cached locally. For MBTA / MTA / TFL we'll pull a recent
     # hour from R2 if not already cached.
-    pub = R2_PUB
-    cache = Path("caches/r2_cache")
+    pub = ARCHIVE_URL
+    cache = Path("caches/realtime_archive")
     cache.mkdir(exist_ok=True)
     manifest_local = cache / "_manifest.parquet"
     _curl_fetch(f"{pub}/_manifest.parquet", manifest_local)

@@ -96,7 +96,7 @@ patterns have flags; all other stops show "near-side?" (unknown) in the app.
 
 ### All-CTA signalized intersections (one-time, long)
 
-Builds `caches/cta_intersections_all.json` — the same schema as
+Builds `caches/cta/intersections.json` — the same schema as
 `intersections_route22.json`, consumable by `delay_decomposition` — for every
 CTA bus shape (~763). Needs a Valhalla instance for map-matching (stage 1)
 and Overpass (stage 2). Both stages checkpoint and **resume**: re-run the

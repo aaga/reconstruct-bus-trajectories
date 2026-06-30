@@ -34,12 +34,12 @@ sys.path.insert(0, str(REPO / "src"))
 
 from bus_trajectories.io import load_gtfs_shape_with_dist  # noqa: E402
 from bus_trajectories.mapmatch.shape_snap import SnapToShapeMatcher  # noqa: E402
-from bus_trajectories.r2 import to_avl_csv_format, load_all_cta_hours  # noqa: E402
+from bus_trajectories.realtime import to_avl_csv_format, load_all_cta_hours  # noqa: E402
 
 PATTERN_ID = "3936"
 SHAPE_ID = "67803936"
 BANDWIDTH = 5
-R2_CACHE = REPO / "caches" / "r2_cache"
+ARCHIVE_CACHE = REPO / "caches" / "realtime_archive"
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 
 OUT_DIR = REPO / "outputs" / "out_r2_bw5"
@@ -66,7 +66,7 @@ GAP_MAX_S = 300          # 5-min max inter-ping gap on truncated series
 
 def _fetch_all_cta_hours() -> pd.DataFrame:
     """All Route 22 pings across the entire R2 archive (cached locally)."""
-    return load_all_cta_hours(cache_dir=R2_CACHE, route_id="22")
+    return load_all_cta_hours(cache_dir=ARCHIVE_CACHE, route_id="22")
 
 
 def _select_all_sb_trips(r22: pd.DataFrame) -> pd.DataFrame:

@@ -9,7 +9,7 @@ bucket URL, a curl-based ``fetch``, manifest loading, and the AVL-CSV
 conversion. This module is the single home for all of that; scripts import from
 here instead of hand-rolling it.
 
-Downloads are cached under the repo's gitignored ``caches/r2_cache/``.
+Downloads are cached under the repo's gitignored ``caches/realtime_archive/``.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from pathlib import Path
 import pandas as pd
 import pyarrow.parquet as pq
 
-R2_PUB = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
+ARCHIVE_URL = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
 
 _REPO = Path(__file__).resolve().parents[2]
-CACHE_DIR = _REPO / "caches" / "r2_cache"
+CACHE_DIR = _REPO / "caches" / "realtime_archive"
 
 
 def fetch(url: str, dst: str | Path) -> Path:
@@ -46,7 +46,7 @@ def load_manifest(cache_dir: str | Path = CACHE_DIR, refresh: bool = False) -> p
     local = cache_dir / "_manifest.parquet"
     if refresh and local.exists():
         local.unlink()
-    fetch(f"{R2_PUB}/_manifest.parquet", local)
+    fetch(f"{ARCHIVE_URL}/_manifest.parquet", local)
     return pq.read_table(local).to_pandas()
 
 
@@ -65,7 +65,7 @@ def load_hour(path: str, cache_dir: str | Path = CACHE_DIR) -> pd.DataFrame:
     # Flatten the hive-style path into a single filename so pyarrow doesn't
     # auto-treat the cache dir as a partitioned dataset.
     local = Path(cache_dir) / path.replace("/", "__")
-    fetch(f"{R2_PUB}/{path}", local)
+    fetch(f"{ARCHIVE_URL}/{path}", local)
     return pq.ParquetFile(local).read().to_pandas()
 
 

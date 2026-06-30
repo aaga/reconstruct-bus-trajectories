@@ -25,7 +25,7 @@ if PYTHONPATH_SRC not in sys.path:
     sys.path.insert(0, PYTHONPATH_SRC)
 
 from bus_trajectories.pipeline import reconstruct_csv  # noqa: E402
-from bus_trajectories.r2 import R2_PUB as R2, fetch  # noqa: E402
+from bus_trajectories.realtime import ARCHIVE_URL, fetch  # noqa: E402
 
 GTFS = "data/gtfs/cta_gtfs.zip"
 PATTERN = "3936"
@@ -34,21 +34,21 @@ M_PER_MI = 1609.344
 BW = 5
 N_SAMPLE = 100
 SEED = 42
-CACHE = Path("caches/r2_cache")
+CACHE = Path("caches/realtime_archive")
 CSV_OUT = Path("data/r2_route22_sb_100rand.csv")
 SLIDES = Path("figures")
 
 
 
 def load_all_cta() -> pd.DataFrame:
-    fetch(f"{R2}/_manifest.parquet", CACHE / "_manifest.parquet")
+    fetch(f"{ARCHIVE_URL}/_manifest.parquet", CACHE / "_manifest.parquet")
     m = pq.read_table(CACHE / "_manifest.parquet").to_pandas()
     cta = m[m.agency == "cta"].sort_values(["year", "month", "day", "hour"])
     print(f"Loading {len(cta)} CTA hour-files…")
     parts = []
     for _, row in cta.iterrows():
         local = CACHE / row.path.replace("/", "__")
-        fetch(f"{R2}/{row.path}", local)
+        fetch(f"{ARCHIVE_URL}/{row.path}", local)
         parts.append(pq.ParquetFile(local).read().to_pandas())
     return pd.concat(parts, ignore_index=True)
 

@@ -26,9 +26,9 @@ from bus_trajectories.vtrak import (
 ROOT = Path(__file__).resolve().parents[2]
 GTFS = ROOT / "data" / "gtfs" / "cta_gtfs.zip"
 ROCKET_CSV = ROOT / "data" / "ROCKET_june_8_8am_10am.csv"
-R2_HOURS = [
-    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
-    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
+ARCHIVE_HOURS = [
+    ROOT / "caches/realtime_archive/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
+    ROOT / "caches/realtime_archive/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
 ]
 OUTDIR = ROOT / "figures"
 MAX_PERP_M = 50.0
@@ -50,7 +50,7 @@ def build_matcher(shape_id: str):
 
 
 def load_r2():
-    return load_r2_hours(R2_HOURS, veh_ids=VEH)
+    return load_r2_hours(ARCHIVE_HOURS, veh_ids=VEH)
 
 
 def load_rocket():

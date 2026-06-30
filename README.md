@@ -44,7 +44,7 @@ src/bus_trajectories/        core package (installed; the only code with tests)
   ├─ intersections.py        Overpass enrichment → ControlPoint records
   ├─ delay_decomposition/    signal-to-signal segmentation + per-segment buckets
   ├─ io.py                   GTFS / AVL-CSV loaders
-  ├─ r2.py                   shared client for the public R2 ping archive
+  ├─ realtime.py             shared client for the public realtime ping archive (R2-hosted)
   ├─ colors.py               shared figure/dashboard palettes
   ├─ vtrak.py                shared dense-VTRAK (ROCKET) loaders + shape picker
   ├─ viz.py / viz_compare.py interactive Plotly comparison viewers
@@ -52,7 +52,7 @@ src/bus_trajectories/        core package (installed; the only code with tests)
   └─ cli.py                  `bus-trajectories reconstruct | compare | build-*`
 
 scripts/                     build & figure-rendering pipeline (see scripts/README.md)
-  ├─ data_prep/              scour R2 → reconstruction bundles
+  ├─ data_prep/              scour the realtime archive → reconstruction bundles
   ├─ smoothing_figs/         LOCREG-PCHIP smoothing & time-space figures
   ├─ vtrak/                  dense-VTRAK validation figures
   ├─ decomposition/          delay-decomposition figures
@@ -108,12 +108,12 @@ PYTHONPATH=src uv run python -m bus_trajectories compare \
 
 `cta_gtfs.zip` is downloaded on demand from the CTA's published GTFS feed the
 first time a script needs it (into `data/gtfs/`); archived heartbeat data is
-fetched lazily from a public Cloudflare R2 bucket (into `caches/r2_cache/`)
+fetched lazily from a public Cloudflare R2 bucket (into `caches/realtime_archive/`)
 using the paths in its `_manifest.parquet`.
 
 ## Data source — note on the scraper
 
-The R2 archive is produced by a separate companion repository,
+The realtime ping archive is produced by a separate companion repository,
 `scrape-bus-pings`, which polls several agencies (MBTA, MTA NYC Bus, TfL, CTA,
 TransLink Vancouver) every 15 s, canonicalises every feed to a shared 26-column
 schema, batches into 1-minute Parquet files, uploads to Cloudflare R2, and
@@ -182,7 +182,7 @@ PYTHONPATH=src uv run python scripts/decomposition/build_decomposition_figs.py
 - **`observation_tool/`** — a mobile web app for collecting ground-truth field
   data (1 Hz GPS, accelerometer/gyro, hand-tagged delay events) to validate the
   reconstruction pipeline, plus a Python analysis side that compares phone
-  tracks against the R2 archive. See [`observation_tool/README.md`](observation_tool/README.md).
+  tracks against the realtime archive. See [`observation_tool/README.md`](observation_tool/README.md).
 
 ## License
 

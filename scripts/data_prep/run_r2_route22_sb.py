@@ -31,8 +31,8 @@ import pandas as pd
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.r2 import (  # noqa: E402
-    R2_PUB,
+from bus_trajectories.realtime import (  # noqa: E402
+    ARCHIVE_URL,
     fetch,
     load_recent_cta_hours,
     to_avl_csv_format,
@@ -123,7 +123,7 @@ def main() -> int:
     ap.add_argument("--gtfs", default="data/gtfs/cta_gtfs.zip")
     ap.add_argument("--pattern", default="3936")
     ap.add_argument("--bandwidths", default="5,7,10,15,20")
-    ap.add_argument("--cache", default="caches/r2_cache")
+    ap.add_argument("--cache", default="caches/realtime_archive")
     ap.add_argument("--csv-out", default="data/r2_route22_sb.csv")
     ap.add_argument("--out-html", default="data/diagnostics/out_r2_compare.html")
     ap.add_argument("--endpoint", default="http://localhost:8002",

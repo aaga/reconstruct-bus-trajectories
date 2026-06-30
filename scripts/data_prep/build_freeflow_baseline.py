@@ -28,14 +28,14 @@ from bus_trajectories.delay_decomposition.travel_time import (  # noqa: E402
     save_freeflow_table,
     segment_freeflow_table,
 )
-from bus_trajectories.r2 import to_avl_csv_format, load_all_cta_hours  # noqa: E402
+from bus_trajectories.realtime import to_avl_csv_format, load_all_cta_hours  # noqa: E402
 
 PATTERN_ID = "3936"
 SHAPE_ID = "67803936"
 BANDWIDTH = 5
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
-R2_CACHE = REPO / "caches" / "r2_cache"
+ARCHIVE_CACHE = REPO / "caches" / "realtime_archive"
 
 OUT_DIR = REPO / "outputs" / "out_decomposition"
 LATENIGHT_DIR = REPO / "outputs" / f"out_freeflow_latenight_bw{BANDWIDTH}"
@@ -53,7 +53,7 @@ CHI_HOUR_END = 5     # 05:00 Chicago (exclusive upper)
 
 def _fetch_all_cta_hours() -> pd.DataFrame:
     """All Route 22 pings across the entire R2 archive (cached locally)."""
-    return load_all_cta_hours(cache_dir=R2_CACHE, route_id="22")
+    return load_all_cta_hours(cache_dir=ARCHIVE_CACHE, route_id="22")
 
 
 def _select_latenight_sb_trips(r22: pd.DataFrame) -> pd.DataFrame:

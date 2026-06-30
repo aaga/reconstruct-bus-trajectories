@@ -36,9 +36,9 @@ from bus_trajectories.vtrak import (
 ROOT = Path(__file__).resolve().parents[2]
 GTFS = ROOT / "data" / "gtfs" / "cta_gtfs.zip"
 ROCKET_CSV = ROOT / "data" / "ROCKET_june_8_8am_10am.csv"
-R2_HOURS = [
-    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
-    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
+ARCHIVE_HOURS = [
+    ROOT / "caches/realtime_archive/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
+    ROOT / "caches/realtime_archive/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
 ]
 OUTDIR = ROOT / "figures"
 
@@ -58,7 +58,7 @@ VEH_ROUTE = {"8114": "55", "8099": "62", "8089": "94", "1566": "X49"}
 # Thin wrappers binding the shared bus_trajectories.vtrak helpers to this
 # script's constants.
 def load_r2() -> pd.DataFrame:
-    return load_r2_hours(R2_HOURS, veh_ids=VEH_SHAPES)
+    return load_r2_hours(ARCHIVE_HOURS, veh_ids=VEH_SHAPES)
 
 
 def load_rocket() -> pd.DataFrame:

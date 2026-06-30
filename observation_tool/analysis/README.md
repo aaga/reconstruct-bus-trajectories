@@ -6,7 +6,7 @@ shared time axis.
 
 ```
 build_comparison.py   pipeline: webapp + R2 -> reconstruct -> attribute -> data/*.json
-r2_archive.py         fetch CTA AVL pings for one trip from the public R2 bucket
+realtime_archive.py   fetch CTA AVL pings for one trip from the public realtime archive (R2)
 dashboard/            static d3 dashboard (open in a browser)
   index.html main.js style.css
   data/<key>.json     one payload per trip   (+ index.json)
@@ -52,8 +52,9 @@ cd observation_tool/analysis/dashboard && python -m http.server 8123
 # open http://localhost:8123
 ```
 
-Needs `cta_gtfs.zip` and `cta_intersections_all.json` at the repo root (both
-already built). R2 downloads cache under the gitignored `r2_cache/`.
+Needs `data/gtfs/cta_gtfs.zip` and `caches/cta/intersections.json` (both already
+built). Realtime-archive downloads cache under the gitignored
+`caches/realtime_archive/`.
 
 ## Dashboard
 

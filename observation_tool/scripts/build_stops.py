@@ -19,7 +19,7 @@ Pattern identity is per-city:
 
 Near-side classification (CTA only) reuses
 bus_trajectories.intersections.classify_near_side_stops against
-cta_intersections_all.json (built by build_all_intersections.py), with
+caches/cta/intersections.json (built by build_all_intersections.py), with
 intersections_route22.json as a fallback. MTA ships is_near_side: null.
 
 Usage:
@@ -50,7 +50,7 @@ FT_PER_M = 3.28084
 MAX_BUS_STOP_ID = 30000
 
 INTERSECTION_SOURCES = [
-    REPO / "caches" / "cta_intersections_all.json",
+    REPO / "caches" / "cta" / "intersections.json",
     REPO / "intersections_route22.json",
 ]
 

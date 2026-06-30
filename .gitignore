@@ -33,7 +33,7 @@ Thumbs.db
 #   data/    raw + intermediate inputs (GTFS zips, AVL/ROCKET/R2 CSVs,
 #            diagnostic HTML/PNG scratch)
 #   outputs/ reconstruction + decomposition bundles, dashboards, figures' inputs
-#   caches/  R2 hour-file cache, OSM way / intersection caches
+#   caches/  realtime-archive hour-file cache + per-agency OSM way / intersection caches
 data/
 outputs/
 caches/

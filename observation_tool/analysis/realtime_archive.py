@@ -7,7 +7,7 @@ UTC, and we match an observed trip by ``(route_id, vehicle_id, trip_id)`` over
 the UTC hours its wall-clock window spans. ``trip_id`` is the BusTime trip id
 (== the phone app's ``tatripid``), so it isolates exactly the rider's trip.
 
-Downloads are cached under the repo's gitignored ``r2_cache/``.
+Downloads are cached under the repo's gitignored ``realtime_archive/``.
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ from pathlib import Path
 import pandas as pd
 import pyarrow.parquet as pq
 
-R2_PUB = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
+ARCHIVE_URL = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
 REPO = Path(__file__).resolve().parents[2]
-CACHE = REPO / "caches" / "r2_cache"
+CACHE = REPO / "caches" / "realtime_archive"
 _UA = {"User-Agent": "bus-trajectories/analysis (research)"}
 
 
@@ -35,7 +35,7 @@ def load_manifest(refresh: bool = True) -> pd.DataFrame:
     CACHE.mkdir(exist_ok=True)
     local = CACHE / "_manifest.parquet"
     if refresh or not local.exists():
-        local.write_bytes(_fetch(f"{R2_PUB}/_manifest.parquet"))
+        local.write_bytes(_fetch(f"{ARCHIVE_URL}/_manifest.parquet"))
     return pq.read_table(local).to_pandas()
 
 
@@ -43,7 +43,7 @@ def _fetch_hour(path: str) -> pd.DataFrame:
     """One hourly object, cached locally by flattened path."""
     local = CACHE / path.replace("/", "__")
     if not local.exists():
-        local.write_bytes(_fetch(f"{R2_PUB}/{path}"))
+        local.write_bytes(_fetch(f"{ARCHIVE_URL}/{path}"))
     return pq.read_table(local).to_pandas()
 
 

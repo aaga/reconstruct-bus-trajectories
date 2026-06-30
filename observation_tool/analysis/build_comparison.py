@@ -33,7 +33,7 @@ import zipfile
 import numpy as np
 import pandas as pd
 
-from r2_archive import REPO, load_manifest, trip_avl_pings  # sets nothing global
+from realtime_archive import REPO, load_manifest, trip_avl_pings  # sets nothing global
 
 import sys
 sys.path.insert(0, str(REPO / "src"))
@@ -50,7 +50,7 @@ from bus_trajectories.pipeline import reconstruct_trip  # noqa: E402
 from bus_trajectories.serialize import to_pchip_record  # noqa: E402
 
 GTFS = REPO / "data" / "gtfs" / "cta_gtfs.zip"
-INTERSECTIONS = REPO / "caches" / "cta_intersections_all.json"
+INTERSECTIONS = REPO / "caches" / "cta" / "intersections.json"
 PAGES = "https://cta-observation-tool.pages.dev/api/trips"
 CHICAGO = ZoneInfo("America/Chicago")
 MPS_TO_MPH = 2.23694

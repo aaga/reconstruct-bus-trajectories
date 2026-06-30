@@ -58,8 +58,8 @@ from bus_trajectories.way_match import (  # noqa: E402
     save_cache,
 )
 
-DEFAULT_WAY_CACHE = REPO / "caches" / "way_cache_all.json"
-DEFAULT_OUT = REPO / "caches" / "cta_intersections_all.json"
+DEFAULT_WAY_CACHE = REPO / "caches" / "cta" / "way_cache.json"
+DEFAULT_OUT = REPO / "caches" / "cta" / "intersections.json"
 
 
 # ---------------------------------------------------------------- stage 1
