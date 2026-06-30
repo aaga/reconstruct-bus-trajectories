@@ -785,7 +785,7 @@ SIGNALIZED_CONTROL_TYPES = frozenset({"traffic_signals", "ped_crossing_signal"})
 def classify_near_side_stops(
     stops: list[dict],
     control_points: list[ControlPoint],
-    threshold_m: float = 30.0,
+    threshold_m: float = 90 / 3.28084,  # 90 ft
 ) -> set[str]:
     """Return the set of ``stop_id`` values that are "near-side" — i.e. have any
     signalized ControlPoint (``traffic_signals`` or ``ped_crossing_signal``)

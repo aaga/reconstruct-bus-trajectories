@@ -20,7 +20,7 @@ from ..intersections import (
 )
 from ..io import load_route_stops, shape_id_for_pattern
 
-NEAR_SIDE_THRESHOLD_M = 30.0
+NEAR_SIDE_THRESHOLD_M = 90 / 3.28084  # 90 ft
 
 
 @dataclass(frozen=True)

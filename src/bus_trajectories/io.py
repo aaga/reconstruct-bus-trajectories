@@ -90,8 +90,13 @@ def load_gtfs_shape_with_dist(
 
 
 def shape_id_for_pattern(pattern_id: str) -> str:
-    """CTA convention: GTFS shape_id = '6780' + pattern_id."""
-    return f"6780{pattern_id}"
+    """CTA convention: GTFS shape_id = '678' + zero-padded 5-digit pattern_id.
+
+    Four-digit patterns get the familiar '6780' prefix (3936 -> 67803936),
+    but five-digit patterns use the fifth digit (29251 -> 67829251), so the
+    pad — not a literal '6780' — is the real rule.
+    """
+    return f"678{int(pattern_id):05d}"
 
 
 GTFS_ROUTE_TYPE_BUS = "3"

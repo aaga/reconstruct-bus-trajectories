@@ -147,6 +147,7 @@ def decompose_trip(
     dense_dt_s: float = DEFAULT_DENSE_DT_S,
     cruise_threshold_mph: float = 12.0,
     include_loss: bool = False,
+    min_duration_s: float = 15.0,
 ) -> TripDecomp:
     """Decompose one reconstructed trip into per-segment delay components.
 
@@ -155,12 +156,15 @@ def decompose_trip(
     include_loss
         When True, accel/decel shoulders are folded into the parent
         facility bucket. Off by default.
+    min_duration_s
+        Minimum slowdown duration for an event to be detected (passed to
+        ``detect_events``). Default 15 s (chapter §3.3).
     """
     threshold = threshold or AbsoluteSpeedThreshold(5.0)
     dwell_attributor = dwell_attributor or ProximityDwellAttributor()
 
     f, t, x, v_mph = _evaluate_dense(record, dense_dt_s)
-    all_events = detect_events(t, x, v_mph, threshold)
+    all_events = detect_events(t, x, v_mph, threshold, min_duration_s=min_duration_s)
 
     # Pre-compute each segment's time bounds.
     seg_bounds: dict[str, tuple[float, float]] = {

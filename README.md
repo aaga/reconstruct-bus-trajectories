@@ -140,7 +140,7 @@ Two deviations from the paper:
   nodes). The :class:`DwellAttributor` protocol leaves room to drop in
   an AVL-based attributor later without touching the rest of the package.
 - Mid-block pedestrian signals count as signalized intersections for
-  segmentation. A bus stop within 30 m upstream of any signalized
+  segmentation. A bus stop within 90 ft (~27.4 m) upstream of any signalized
   intersection is flagged as "near-side"; dwell attributed there is
   marked ambiguous because dwell-time vs. signal-delay can't be
   separated from GPS alone.
