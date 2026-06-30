@@ -37,14 +37,17 @@ out_compare*.html
 *.html
 # Exception: dashboard HTML shells ship as source assets.
 !scripts/dashboard/assets/*_index.html
+# Exception: observation_tool is a web app — all its HTML is source.
+!observation_tool/**/*.html
 
 # Standalone diagnostic plots emitted at the repo root by exploratory scripts
 timespace_*.png
 mapmatching_example.png
 trip_*.png
 
-# Large data downloads — re-fetch from https://www.transitchicago.com/downloads/sch_data/google_transit.zip
+# Large GTFS downloads — re-fetched on demand by observation_tool/scripts/build_stops.py
 cta_gtfs.zip
+gtfs_*.zip
 
 # R2 hour-file cache — re-fetched on demand from the public R2 URL by scripts/build_*.py
 r2_cache/
@@ -83,3 +86,15 @@ Reconstructing_Transit_Vehicle_Trajectory_Using_High-Resolution_GPS_Data.pdf
 # Reference PDFs and Claude Code session state — local-only.
 docs/
 .claude/
+
+# Observation-tool build artifacts (rebuild via observation_tool/scripts/) and
+# local Cloudflare secrets — never commit.
+way_cache_all.json
+cta_intersections_all.json
+observation_tool/.dev.vars
+# Cloudflare/Miniflare local dev state (local R2 blobs, sqlite, pages cache).
+observation_tool/.wrangler/
+# Generated comparison payloads (rebuilt by analysis/build_comparison.py) and
+# downloaded bus-state-history CSVs — regenerable, not source.
+observation_tool/analysis/dashboard/data/
+observation_tool/analysis/AVL data/

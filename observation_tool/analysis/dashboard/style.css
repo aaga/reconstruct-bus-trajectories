@@ -1,0 +1,131 @@
+/* Desktop analysis dashboard — phone vs R2 trip comparison. */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+  color: #1c1c28;
+  background: #fff;
+}
+/* Full-window column layout; the stage grows to fill leftover height. */
+body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+header, #tabs, #controls, .hint { flex: 0 0 auto; }
+#stage { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+#chart { flex: 1 1 0; min-height: 0; }
+/* Map fills the bottom half on the speed tab; hidden on the trajectory tab. */
+#map { flex: 1 1 0; min-height: 0; position: relative; display: none; }
+body.show-map #map { display: block; }
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 20px 8px;
+}
+h1 { font-size: 18px; margin: 0; }
+#trip-select { font: inherit; font-size: 14px; padding: 5px 8px; border: 1px solid #bbb; border-radius: 6px; }
+.trip-meta { font-size: 13px; color: #666; }
+#global-controls { margin-left: auto; font-size: 13px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+
+#tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid #ddd; }
+#tabs button {
+  font: inherit; font-size: 14px;
+  border: 1px solid #ddd; border-bottom: none;
+  background: #f3f3f6; color: #444;
+  padding: 8px 16px; border-radius: 8px 8px 0 0; cursor: pointer;
+  position: relative; top: 1px;
+}
+#tabs button.active { background: #fff; color: #111; font-weight: 600; border-color: #ddd; }
+
+#controls {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 20px; font-size: 13px; background: #fafafb; border-bottom: 1px solid #eee;
+}
+.ctrl-group { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ctrl-group label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.ctrl-group .sep { margin-left: 8px; padding-left: 12px; border-left: 1px solid #ddd; color: #888; }
+.ctrl-group .seg { display: inline-flex; align-items: center; gap: 6px; }
+.legend { font-weight: 700; padding-left: 16px; position: relative; }
+.legend::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 12px; height: 3px; border-radius: 2px;
+}
+.legend.phone { color: #1a73e8; }
+.legend.phone::before { background: #1a73e8; }
+.legend.r2 { color: #d81b60; }
+.legend.r2::before { background: #d81b60; }
+#reset-zoom { margin-left: auto; font: inherit; font-size: 13px; padding: 5px 12px; border: 1px solid #bbb; border-radius: 6px; background: #fff; cursor: pointer; }
+.hidden { display: none !important; }
+
+/* padding 0 so the JS-sized svg (clientWidth/clientHeight) fills exactly */
+svg { display: block; }
+.axis text { font-size: 11px; fill: #555; }
+.axis path, .axis line { stroke: #ccc; }
+.grid line { stroke: #eee; }
+.curve { fill: none; stroke-width: 2; }
+.curve.phone { stroke: #1a73e8; }
+.curve.r2 { stroke: #d81b60; }
+.raw.phone { fill: #1a73e8; }
+.raw.r2 { fill: #d81b60; }
+.stopline { stroke: #e3e3ea; stroke-dasharray: 2 3; }
+.rowlabel { font-size: 11px; font-weight: 700; fill: #888; }
+.delaybar { stroke: rgba(0,0,0,0.15); stroke-width: 0.5; cursor: pointer; }
+.delaytext { font-size: 10px; fill: #fff; pointer-events: none; font-weight: 600; }
+.rowsep { stroke: #eee; }
+
+.hint { font-size: 12px; color: #888; padding: 4px 20px 20px; }
+.tooltip {
+  position: fixed; z-index: 50; pointer-events: none;
+  background: #1c1c28; color: #fff; font-size: 12px; line-height: 1.4;
+  padding: 6px 9px; border-radius: 6px; max-width: 260px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+/* speed-chart vertical cursor (mirrors the map bus icon) */
+.chart-cursor { stroke: #111; stroke-width: 1; stroke-dasharray: 3 2; pointer-events: none; }
+.threshold-line { stroke: #c0392b; stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.75; pointer-events: none; }
+.threshold-label { font-size: 10px; fill: #c0392b; }
+
+/* ============ ported map / cursor / legend / street-view styles ========= */
+.maplibregl-ctrl-attrib { font-size: 9px; }
+
+.map-legend .legend-toggle {
+  display: flex; align-items: center; gap: 6px; padding-bottom: 4px;
+  margin-bottom: 4px; border-bottom: 1px solid #e0e0e0; color: #222; font-size: 11px;
+}
+.map-legend .legend-toggle input[type="radio"] { margin: 0; cursor: pointer; }
+.map-legend .legend-toggle-label { margin-right: 2px; }
+.map-legend .legend-radio { display: inline-flex; align-items: center; gap: 3px; }
+.legend-shortcut { color: #888; font-size: 10px; margin-left: 2px; }
+.map-legend {
+  position: absolute; bottom: 30px; left: 10px;
+  background: rgba(255, 255, 255, 0.92); border: 1px solid #ddd; border-radius: 4px;
+  padding: 6px 8px; font-size: 11px; line-height: 1.6; z-index: 5;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.map-legend .legend-row { display: flex; align-items: center; gap: 8px; color: #222; }
+.map-legend .dot { display: inline-block; border-radius: 50%; border: 1px solid #111; flex-shrink: 0; }
+
+.cursor-bus { pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4)); }
+.cursor-bus-ghost { opacity: 0.55; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25)) saturate(0.6); }
+
+.streetview-popup {
+  position: fixed; width: 480px; height: 360px; background: #fff;
+  border: 1px solid #888; border-radius: 5px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  z-index: 9999; overflow: hidden; display: flex; flex-direction: column;
+}
+.streetview-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 6px 4px 10px; background: #ececec; border-bottom: 1px solid #ccc;
+  cursor: move; user-select: none; font-size: 11.5px; color: #333; flex: 0 0 auto;
+}
+.streetview-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.streetview-close {
+  background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1;
+  padding: 0 6px; color: #555; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
+}
+.streetview-close:hover { color: #000; }
+.streetview-close-hint { font-size: 10px; color: #888; vertical-align: middle; }
+.streetview-iframe { flex: 1 1 auto; width: 100%; border: 0; }
+.streetview-drag-overlay { position: absolute; inset: 32px 0 0 0; display: none; }
+body.streetview-dragging .streetview-drag-overlay { display: block; cursor: move; }

@@ -1,0 +1,414 @@
+/* Mobile-first styling for the field observation tool. Big thumb targets,
+   high-contrast color-coded states, one-hand reachability. Follows the
+   dashboard's system-font + flat-color spirit (scripts/dashboard/assets). */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+  color: #222;
+  background: #f7f7fa;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.view {
+  max-width: 540px;
+  margin: 0 auto;
+  padding: 12px 14px 40px;
+}
+
+.hidden { display: none !important; }
+.muted { color: #777; font-size: 13px; margin: 6px 0; }
+
+h1 { font-size: 22px; margin: 8px 0 16px; }
+h2 { font-size: 18px; margin: 4px 0 12px; }
+
+/* ------------------------------------------------------------- controls */
+
+button {
+  font: inherit;
+  border: 1px solid #bbb;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px 16px;
+  font-size: 16px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+button:active { filter: brightness(0.92); }
+
+button.primary {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+  width: 100%;
+  margin: 8px 0;
+}
+button.big { padding: 18px; font-size: 19px; font-weight: 600; }
+button.danger {
+  background: #c62828;
+  border-color: #c62828;
+  color: #fff;
+  width: 100%;
+  margin-top: 18px;
+}
+button.secondary {
+  width: 100%;
+  margin: 8px 0;
+  background: #eef1f6;
+  border-color: #d4dae3;
+  color: #33415c;
+  font-weight: 600;
+}
+
+.field { display: block; margin: 10px 0; }
+.field span { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+.field input, .field select, .field textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 16px; /* prevents iOS zoom-on-focus */
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  background: #fff;
+}
+#vehicle-id { font-size: 24px; font-weight: 700; letter-spacing: 2px; text-align: center; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 15px; margin: 10px 0; }
+.check input { width: 22px; height: 22px; }
+
+details { margin-top: 22px; }
+details summary { font-size: 14px; color: #666; padding: 8px 0; cursor: pointer; }
+
+.sync-warn {
+  background: #fdecea;
+  border: 1px solid #f5b5ae;
+  color: #8a1c12;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 6px 0 4px;
+}
+
+/* ----------------------------------------------------- setup pick lists */
+
+.pick-list { margin: 6px 0 12px; }
+.pick-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e2e2e2;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 6px 0;
+}
+.pick-row .pick-main { font-weight: 600; font-size: 15px; }
+.pick-row .pick-sub { font-size: 12px; color: #777; }
+.pick-list.compact .pick-row { padding: 8px 10px; margin: 4px 0; }
+
+.confirm-card {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 6px 14px;
+  margin: 8px 0 14px;
+}
+.confirm-card .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 15px;
+}
+.confirm-card .row:last-child { border-bottom: none; }
+.confirm-card .row strong { text-align: right; }
+
+/* ------------------------------------------------------------ status bar */
+
+#status-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: #1a1a2e;
+  color: #eee;
+  font-size: 13px;
+  padding: 9px 12px;
+  margin: -12px -14px 0;
+  font-variant-numeric: tabular-nums;
+}
+#st-elapsed { font-weight: 700; font-size: 15px; }
+.stat.ok { color: #7ddc8a; }
+.stat.stale { color: #ffd166; }
+.stat.bad { color: #ff7b7b; }
+.rec {
+  margin-left: auto;
+  color: #ff5252;
+  font-weight: 700;
+  animation: blink 1.6s infinite;
+}
+@keyframes blink { 50% { opacity: 0.25; } }
+#st-sync { font-size: 12px; }
+
+.gps-warn {
+  background: #fff3cd;
+  border-bottom: 1px solid #e0a800;
+  color: #6b5300;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 8px 12px;
+  margin: 0 -14px 10px;
+}
+
+/* ------------------------------------------------------------- next stop */
+
+.next-stop { font-size: 13px; color: #555; margin: 10px 0 8px; }
+.next-stop strong { font-size: 14px; color: #222; }
+.badge {
+  background: #fff3cd;
+  border: 1px solid #e0a800;
+  color: #8a6d00;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-left: 6px;
+}
+.badge.unknown { background: #eee; border-color: #bbb; color: #777; }
+
+/* ------------------------------------------------------------- map panel */
+
+.map-panel {
+  height: 220px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #ccc;
+  margin-bottom: 6px;
+  transition: height 0.2s;
+}
+.map-panel.collapsed { height: 0; border: none; margin: 0; }
+#map { width: 100%; height: 100%; }
+
+/* ------------------------------------------------------- upcoming stops */
+
+.stops-panel {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #ccc;
+  background: #fff;
+  margin-bottom: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.stops-panel.collapsed { max-height: 0; border: none; margin: 0; }
+.upcoming-list { padding: 4px 0; }
+.upcoming-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 14px;
+  border-bottom: 1px solid #f1f1f1;
+}
+.upcoming-row:last-child { border-bottom: none; }
+.upcoming-row.terminus { font-weight: 700; color: #222; }
+.upcoming-row .up-name { flex: 1; min-width: 0; }
+.upcoming-row .up-eta { color: #1a73e8; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.upcoming-empty { padding: 10px 14px; font-size: 13px; color: #888; }
+
+/* Map / Upcoming / Note toggles, side by side. */
+.toggle-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.toggle-btn {
+  flex: 1;
+  font-size: 13px;
+  padding: 8px 4px;
+  color: #555;
+  background: #eee;
+  border-color: #ddd;
+}
+.toggle-btn.active { background: #d9e6fb; border-color: #b8d0f5; color: #1a4f9c; }
+
+/* ---------------------------------------------------------- active banner */
+
+.active-banner {
+  position: relative;
+  border-radius: 12px;
+  padding: 16px 14px;
+  margin: 4px 0 12px;
+  color: #fff;
+  text-align: center;
+  transition: background 0.15s;
+  /* Fixed height sized to the tallest normal state (turn delay with the
+     left/right row) so the button grid below never shifts. MOVING just shows
+     whitespace below the label. */
+  min-height: 150px;
+}
+.active-banner.moving { background: #2e7d32; }
+#active-label { font-size: 21px; font-weight: 800; letter-spacing: 0.5px; }
+.active-sub { font-size: 14px; margin-top: 3px; opacity: 0.95; }
+.active-duration { font-size: 15px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+.pencil {
+  position: absolute;
+  top: 8px; right: 8px;
+  background: rgba(255, 255, 255, 0.25);
+  border: none;
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* In-banner follow-up prompt (turn direction). */
+.sub-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.sub-hint { font-size: 13px; opacity: 0.9; }
+button.toggle {
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 800;
+  padding: 10px 18px;
+  border-radius: 24px;
+}
+button.toggle.selected { background: #fff; color: #111; }
+
+/* ------------------------------------------------------------ event grid */
+
+.event-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.event-btn {
+  min-height: 64px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  border: none;
+  line-height: 1.25;
+}
+.event-btn.active-type { outline: 3px solid #111; outline-offset: 2px; }
+
+/* Full-bleed rule separating the current-action banner from the buttons. */
+.section-divider {
+  border: none;
+  border-top: 2px solid #d0d0d8;
+  margin: 0 -14px 12px;
+}
+
+/* Moving (+ optional Waiting-to-merge) row. Each child is flex:1, so Moving
+   fills the row alone but shares it 50/50 when the merge button is shown.
+   While moving the row keeps its space (visibility, not display) so the grid
+   below never shifts. */
+.action-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.action-row.reserved { visibility: hidden; }
+.moving-btn {
+  flex: 1;
+  min-height: 56px;
+  background: #2e7d32;
+  border-color: #2e7d32;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+}
+.exit-btn {
+  flex: 1;
+  min-height: 56px;
+  border: none;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+}
+.exit-btn.active-type { outline: 3px solid #111; outline-offset: 2px; }
+
+/* ------------------------------------------------------------ event list */
+
+.events-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 700;
+  color: #555;
+  margin: 18px 0 6px;
+}
+.event-list { max-height: 320px; overflow-y: auto; }
+.event-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e2e2e2;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 5px 0;
+}
+.event-row .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.event-row .what { flex: 1; min-width: 0; }
+.event-row .what .type { font-weight: 600; font-size: 14px; }
+.event-row .what .note {
+  font-size: 12px; color: #777;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.event-row .when { font-size: 12px; color: #777; text-align: right; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- summary */
+
+.summary-stats {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 6px 14px;
+  margin-bottom: 14px;
+}
+.summary-stats .row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 14px;
+}
+.summary-stats .row:last-child { border-bottom: none; }
+.export-buttons button { margin: 5px 0; }
+
+/* ------------------------------------------------------------ bottom sheet */
+
+.backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 40;
+}
+.sheet {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 50;
+  background: #fff;
+  border-radius: 16px 16px 0 0;
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.25);
+  max-width: 540px;
+  margin: 0 auto;
+}
+.sheet-buttons { display: flex; gap: 10px; margin-top: 12px; }
+/* Save and Cancel are equal-width: same flex basis, and neutralise the
+   full-width margin/width that .primary carries elsewhere. */
+.sheet-buttons button { flex: 1 1 0; width: auto; margin: 0; }

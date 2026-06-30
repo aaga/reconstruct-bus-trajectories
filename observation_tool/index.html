@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>Bus Trip Observer</title>
+  <link rel="stylesheet"
+        href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+  <!-- ============================== SETUP ============================== -->
+  <section id="view-setup" class="view">
+    <h1>Bus Trip Observer</h1>
+
+    <label class="field">
+      <span>City / agency</span>
+      <select id="city-select"></select>
+    </label>
+
+    <label class="field">
+      <span>Observer name</span>
+      <input id="observer-name" type="text" placeholder="Your name" autocomplete="name">
+    </label>
+
+    <!-- Start method A: by vehicle number -->
+    <div id="setup-main">
+      <label class="field">
+        <span>Bus vehicle number</span>
+        <input id="vehicle-id" type="text" inputmode="numeric"
+               maxlength="7" placeholder="e.g. 1809"
+               autocomplete="off" enterkeyhint="go">
+      </label>
+      <p class="muted">It's printed on the bus (front/side/interior). We look up
+        the route, trip and pattern from this.</p>
+
+      <button id="btn-lookup" class="primary big">🔎 Look up bus</button>
+      <button id="btn-find-stop" class="secondary">📍 Or start from a nearby stop</button>
+      <div id="setup-status" class="muted"></div>
+
+      <details id="sync-settings">
+        <summary>Server backup settings</summary>
+        <label class="field">
+          <span>Sync token</span>
+          <input id="sync-token" type="password" placeholder="Shared secret (optional)">
+        </label>
+        <label class="check">
+          <input id="sync-enabled" type="checkbox"> Auto-save to server every minute
+        </label>
+      </details>
+      <div id="sync-warn" class="sync-warn hidden">
+        ⚠ Auto-save is ON but no sync token is entered — server backups won't be saved.
+      </div>
+    </div>
+
+    <!-- Start method B, step 1: nearby stops -->
+    <div id="setup-stops" class="hidden">
+      <h2>Nearby stops</h2>
+      <div id="stops-status" class="muted"></div>
+      <div id="stops-list" class="pick-list"></div>
+      <button id="btn-stops-back" class="secondary">← Back</button>
+    </div>
+
+    <!-- Start method B, step 2: upcoming buses at the chosen stop -->
+    <div id="setup-buses" class="hidden">
+      <h2 id="buses-title">Upcoming buses</h2>
+      <div id="buses-status" class="muted"></div>
+      <div id="buses-list" class="pick-list"></div>
+      <button id="btn-buses-back" class="secondary">← Back</button>
+    </div>
+
+    <!-- Confirmation (both methods converge here) -->
+    <div id="setup-confirm" class="hidden">
+      <h2>Confirm trip</h2>
+      <div id="confirm-card" class="confirm-card"></div>
+      <button id="btn-start" class="primary big">▶ Start observation</button>
+      <button id="btn-confirm-back" class="secondary">← Back</button>
+    </div>
+  </section>
+
+  <!-- ============================ RECORDING ============================ -->
+  <section id="view-recording" class="view hidden">
+    <div id="status-bar">
+      <span id="st-elapsed">0:00</span>
+      <span id="st-gps" class="stat">GPS …</span>
+      <span id="st-accel" class="stat">Accel …</span>
+      <span id="st-rec" class="rec">REC</span>
+      <span id="st-sync" title="server sync"></span>
+    </div>
+    <div id="gps-warn" class="gps-warn hidden"></div>
+
+    <div id="next-stop" class="next-stop">
+      Next stop: <strong id="next-stop-name">–</strong>
+      <span id="next-stop-nearside" class="badge hidden"></span>
+    </div>
+
+    <div id="map-panel" class="map-panel collapsed">
+      <div id="map"></div>
+    </div>
+
+    <!-- Upcoming stops: next three + … + terminus, with ETA when available. -->
+    <div id="stops-panel" class="stops-panel collapsed">
+      <div id="upcoming-list" class="upcoming-list"></div>
+    </div>
+
+    <div class="toggle-row">
+      <button id="btn-map-toggle" class="toggle-btn">🗺 Map</button>
+      <button id="btn-stops-toggle" class="toggle-btn">🚏 Upcoming stops</button>
+      <button id="btn-note" class="toggle-btn">📝 Note</button>
+    </div>
+
+    <!-- Active-state banner. Fixed height so the button grid below never
+         shifts as the banner's contents change. The pencil opens the same
+         editor as a history tap. -->
+    <div id="active-banner" class="active-banner moving">
+      <button id="btn-edit-active" class="pencil hidden" title="Edit this event">✏️</button>
+      <div id="active-label">MOVING</div>
+      <div id="active-sub" class="active-sub"></div>
+      <div id="active-duration" class="active-duration"></div>
+
+      <div id="turn-controls" class="sub-controls hidden">
+        <span class="sub-hint">Direction:</span>
+        <button id="btn-turn-left" class="toggle">⬅ Left</button>
+        <button id="btn-turn-right" class="toggle">Right ➡</button>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- Action row above the fixed grid. Space is reserved even while moving
+         (visibility, not display) so the 6-button grid below never shifts:
+         Moving alone (full width), or — at a bus stop — Moving + Waiting-to-
+         merge side by side. -->
+    <div id="action-row" class="action-row reserved">
+      <button id="btn-moving" class="moving-btn">▶ Moving</button>
+      <button id="btn-exit" class="exit-btn hidden">🔀 Waiting to merge</button>
+    </div>
+
+    <!-- The 6 stop-reason buttons. Built once, fixed order, never reordered. -->
+    <div id="event-grid" class="event-grid"></div>
+
+    <div class="events-header">
+      <span>Events</span><span id="events-count"></span>
+    </div>
+    <div id="event-list" class="event-list"></div>
+
+    <button id="btn-end" class="danger">■ End trip</button>
+  </section>
+
+  <!-- ============================= SUMMARY ============================= -->
+  <section id="view-summary" class="view hidden">
+    <h1>Trip summary</h1>
+    <div id="summary-stats" class="summary-stats"></div>
+    <div class="export-buttons">
+      <button id="btn-dl-pings" class="primary">⬇ pings CSV</button>
+      <button id="btn-dl-events" class="primary">⬇ events CSV</button>
+      <button id="btn-dl-motion" class="primary">⬇ motion CSV</button>
+      <button id="btn-dl-meta" class="primary">⬇ trip meta JSON</button>
+    </div>
+    <div id="summary-sync" class="muted"></div>
+    <button id="btn-new-trip">＋ New trip</button>
+  </section>
+
+  <!-- ====================== EVENT EDITOR (bottom sheet) ================ -->
+  <div id="editor-backdrop" class="backdrop hidden"></div>
+  <div id="event-editor" class="sheet hidden">
+    <h2>Edit event</h2>
+    <div id="editor-times" class="muted"></div>
+    <label class="field">
+      <span>Delay type</span>
+      <select id="editor-type"></select>
+    </label>
+    <label class="field hidden" id="editor-stop-field">
+      <span>Stop</span>
+      <input id="editor-stop-input" type="text" placeholder="Search stops…"
+             autocomplete="off">
+      <div id="editor-stop-results" class="pick-list compact hidden"></div>
+    </label>
+    <label class="field">
+      <span>Notes</span>
+      <textarea id="editor-note" rows="3" placeholder="Anything worth remembering…"></textarea>
+    </label>
+    <div class="sheet-buttons">
+      <button id="editor-cancel">Cancel</button>
+      <button id="editor-save" class="primary">Save</button>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

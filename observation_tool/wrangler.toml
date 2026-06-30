@@ -1,0 +1,17 @@
+# Cloudflare Pages config for the observation tool.
+#
+# Deploy:   wrangler pages deploy .   (from observation_tool/)
+# Dev:      wrangler pages dev .
+#
+# Secrets (set in the Pages dashboard, or .dev.vars locally — never commit):
+#   CTA_KEY    — CTA Bus Tracker API key       (Chicago provider)
+#   MTA_KEY    — MTA Bus Time SIRI API key      (New York provider)
+#   SYNC_TOKEN — shared secret gating trip uploads/downloads
+
+name = "bus-observation-tool"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "."
+
+[[r2_buckets]]
+binding = "TRIPS"
+bucket_name = "cta-observation-trips"

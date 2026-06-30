@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delay Attribution Algorithm — Flowchart</title>
+  <style>
+    body { font-family: -apple-system, system-ui, "Segoe UI", sans-serif; color: #1c1c28; margin: 24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: #666; font-size: 13px; margin: 0 0 16px; }
+    .legend { font-size: 12px; color: #444; background: #f7f7fa; border: 1px solid #e3e3ea;
+              border-radius: 8px; padding: 10px 14px; margin-bottom: 18px; max-width: 920px; line-height: 1.6; }
+    .legend b { color: #111; }
+    .mermaid { background: #fff; }
+    button { font: inherit; font-size: 13px; padding: 6px 14px; border: 1px solid #888;
+             border-radius: 6px; background: #fff; cursor: pointer; margin-bottom: 14px; }
+    @media print {
+      .noprint { display: none; }
+      body { margin: 0; }
+      .legend { break-inside: avoid; }
+    }
+    @page { size: A3 portrait; margin: 12mm; }
+  </style>
+</head>
+<body>
+  <h1>Delay attribution algorithm</h1>
+  <p class="sub">As implemented in the phone-vs-archive comparison pipeline
+    (the <code>delay_decomposition</code> stack). Inputs assumed: the bus's
+    smoothed speed at every time/distance, and the location of every stop,
+    signal and crossing.</p>
+
+  <button class="noprint" onclick="window.print()">🖨 Print / Save as PDF</button>
+
+  <div class="legend">
+    <b>Thresholds used (plain numbers):</b>
+    slow = under <b>5&nbsp;mph</b> ·
+    speed sampled every <b>2&nbsp;s</b> ·
+    minimum slow-down length <b>10&nbsp;s</b> ·
+    merge slow-downs closer than <b>20&nbsp;m</b> ·
+    dwell zone <b>30&nbsp;m before → 10&nbsp;m after</b> a stop (trimmed at intersections) ·
+    crossing approach <b>50&nbsp;m before → 10&nbsp;m after</b> ·
+    signal approach <b>91&nbsp;m (300&nbsp;ft) before → 10&nbsp;m after</b> ·
+    near-side = signal within <b>90&nbsp;ft (27&nbsp;m) ahead</b> of a stop.
+  </div>
+
+  <pre class="mermaid">
+flowchart TD
+  Start["INPUTS — the bus's smooth speed at every time and distance,<br/>and the location of every bus stop, traffic signal,<br/>pedestrian signal, crossing and stop sign along the route"]:::io --> S1
+
+  subgraph SEG["1 · Build segments"]
+    direction TB
+    S1["Split the route into segments — each segment runs from one<br/>signal to the next (traffic signals AND pedestrian signals are boundaries)"]
+    S2{"At least two<br/>signals on the route?"}
+    S3["STOP — no delays can be attributed"]:::stop
+    S4["Mark a bus stop as NEAR-SIDE if a signal lies within<br/>90 ft (27 m) just AHEAD of it, in the direction of travel"]
+    S5["Assign each bus stop and each crossing<br/>to the segment that contains it"]
+    S1 --> S2
+    S2 -- No --> S3
+    S2 -- Yes --> S4 --> S5
+  end
+
+  subgraph DET["2 · Find the slow-downs"]
+    direction TB
+    D1["Read the speed every 2 seconds"] --> D2["Flag every instant the bus is under 5 mph as 'slow'"]
+    D2 --> D3["Group consecutive 'slow' instants into candidate slow-downs<br/>(each has a start &amp; end time and a start &amp; end position)"]
+    D3 --> D4["Discard any slow-down shorter than 10 seconds"]
+    D4 --> D5["Merge two slow-downs into one if the gap between them<br/>is under 20 m (the bus was just creeping forward)"]
+  end
+
+  subgraph CAT["3 · Categorize EACH slow-down — tests applied in this order"]
+    direction TB
+    C0["Find the segment where the bus spent the MOST of this<br/>slow-down's time — call it the 'home segment'"]
+    C0b{"Found a<br/>home segment?"}
+    C0skip["Skip this slow-down"]:::stop
+    Q1{"Does the slow-down's position range overlap a bus stop's<br/>DWELL ZONE? (zone = 30 m before to 10 m after the stop,<br/>trimmed at any intersection and at the segment edges)"}
+    A1["DWELL at that stop<br/>(earliest overlapping stop in travel order wins)"]:::cat
+    Q1b{"Is that stop<br/>near-side?"}
+    A1b["Also flag 'DWELL AT A NEAR-SIDE SIGNAL'<br/>(dwell vs. signal wait can't be separated here)"]:::cat
+    Q2{"Does it overlap a non-signal CROSSING's approach?<br/>(50 m before to 10 m after the crossing)"}
+    A2["CROSSING at that crossing"]:::cat
+    Q3{"Does it overlap the home segment's downstream SIGNAL<br/>approach? (300 ft / 91 m before to 10 m after the signal)"}
+    A3["SIGNAL — uniform wait — at that signal"]:::cat
+    A4["SLOWDOWN — left unattributed"]:::cat
+    done["this slow-down is now categorized"]:::join
+    C0 --> C0b
+    C0b -- No --> C0skip
+    C0b -- Yes --> Q1
+    Q1 -- Yes --> A1 --> Q1b
+    Q1b -- Yes --> A1b --> done
+    Q1b -- No --> done
+    Q1 -- No --> Q2
+    Q2 -- Yes --> A2 --> done
+    Q2 -- No --> Q3
+    Q3 -- Yes --> A3 --> done
+    Q3 -- No --> A4 --> done
+  end
+
+  subgraph OVF["4 · Signal-overflow second pass"]
+    direction TB
+    O1["Within each segment, walk its slow-downs in time order"] --> O2["For each SIGNAL slow-down, look at the slow-downs<br/>immediately before it"]
+    O2 --> O3["Re-label each consecutive 'unattributed SLOWDOWN' as<br/>SIGNAL — overflow — for the same signal; stop at the first<br/>dwell / crossing / signal already labeled"]
+  end
+
+  End["OUTPUT — every slow-down now has a category and a facility,<br/>drawn as a colored delay bar"]:::io
+
+  S5 --> D1
+  D5 --> C0
+  done --> O1
+  O3 --> End
+
+  classDef io fill:#e8f0fe,stroke:#1a73e8,color:#111;
+  classDef stop fill:#fde8e8,stroke:#c62828,color:#111;
+  classDef cat fill:#e7f5ec,stroke:#2e7d32,color:#111;
+  classDef join fill:#f0f0f4,stroke:#aaa,color:#555;
+  </pre>
+
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "neutral",
+      flowchart: { htmlLabels: true, useMaxWidth: true, nodeSpacing: 40, rankSpacing: 45 },
+    });
+  </script>
+</body>
+</html>
