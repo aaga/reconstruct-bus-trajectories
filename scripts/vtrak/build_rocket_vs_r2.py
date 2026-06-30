@@ -33,7 +33,7 @@ from bus_trajectories.vtrak import (
     pick_trip_in_window,
 )
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 GTFS = ROOT / "data" / "gtfs" / "cta_gtfs.zip"
 ROCKET_CSV = ROOT / "data" / "ROCKET_june_8_8am_10am.csv"
 R2_HOURS = [
