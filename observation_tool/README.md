@@ -1,9 +1,10 @@
 # Bus Trip Observation Tool
 
-A mobile web app for collecting ground-truth field data on CTA bus trips, to
-validate and enrich the trajectory-reconstruction pipeline in this repo. A
-rider opens the app on their phone, picks the bus they're boarding from live
-CTA Bus Tracker arrivals, and the app records:
+A mobile web app for collecting ground-truth field data on bus trips, to
+validate and enrich the trajectory-reconstruction pipeline in this repo. It is
+multi-city: a city registry (`providers/`) currently covers **CTA (Chicago)**
+and **MTA (NYC) Bus**. A rider opens the app on their phone, picks the bus
+they're boarding from live arrivals, and the app records:
 
 - **GPS pings** at ~1 Hz (≈30× denser than the CTA AVL feed),
 - **accelerometer + gyro** at ~30–60 Hz,
@@ -29,25 +30,28 @@ index.html / style.css      mobile UI: Setup → Recording → Summary
 app.js                      controller, event state machine, rehydrate-on-load
 storage.js                  IndexedDB (tripMeta, pings, motion batches, events)
 sensors.js                  watchPosition, devicemotion (+ iOS permission), WakeLock
-cta.js                      proxy client + offline nearby-stop search
+providers/index.js          city registry + provider interface
+providers/{cta,mta}.js      per-city live-data clients + offline nearby-stop search
 export.js                   the one CSV/JSON builder (app, sync, desktop all use it)
 sync.js                     60 s autosave; motion uploads as append-only chunks
 trips.html / trips.js       desktop browser for saved trips (list + download)
-functions/api/cta/…         Pages Function: CTA Bus Tracker proxy (key injection)
+functions/api/[city]/…      Pages Function: per-city live-data proxy (key injection)
 functions/api/trips/…       Pages Functions: R2 upload/download/list (token-gated)
-data/cta_bus_stops.json     all CTA bus stops (offline nearby-stop search)
-data/cta_pattern_stops.json per-pattern ordered stops + near-side flags
-scripts/build_stops.py      rebuilds both data bundles from GTFS
+data/{cta,mta}_bus_stops.json      all bus stops per city (offline nearby search)
+data/{cta,mta}_pattern_stops.json  per-pattern ordered stops + near-side flags
+scripts/build_stops.py      rebuilds the data bundles from GTFS
 scripts/build_all_intersections.py   all-CTA signalized-intersection dataset
 wrangler.toml               Pages + R2 binding config
 ```
 
 ## Setup
 
-### 1. CTA Bus Tracker API key
+### 1. Transit API keys
 
-Apply at https://www.ctabustracker.com/home (free, 10k requests/day). The key
-stays server-side; the phone only ever talks to the proxy.
+Each city's live-data proxy needs an upstream key (see `functions/api/_providers.js`
+for the per-city env-var names). CTA Bus Tracker keys: apply at
+https://www.ctabustracker.com/home (free, 10k requests/day). Keys stay
+server-side; the phone only ever talks to the proxy.
 
 ### 2. Deploy to Cloudflare Pages
 
@@ -81,7 +85,7 @@ Saved trips are browsable at `/trips.html` on a desktop.
 ## Rebuilding the data bundles
 
 ```bash
-# stop bundles (downloads cta_gtfs.zip to the repo root if missing)
+# stop bundles (downloads the city GTFS zips to data/gtfs/ if missing)
 uv run python observation_tool/scripts/build_stops.py
 ```
 
@@ -92,7 +96,7 @@ patterns have flags; all other stops show "near-side?" (unknown) in the app.
 
 ### All-CTA signalized intersections (one-time, long)
 
-Builds `cta_intersections_all.json` at the repo root — the same schema as
+Builds `caches/cta_intersections_all.json` — the same schema as
 `intersections_route22.json`, consumable by `delay_decomposition` — for every
 CTA bus shape (~763). Needs a Valhalla instance for map-matching (stage 1)
 and Overpass (stage 2). Both stages checkpoint and **resume**: re-run the
