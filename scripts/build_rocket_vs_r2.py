@@ -23,18 +23,22 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
-from bus_trajectories.io import load_gtfs_shape_with_dist
-from bus_trajectories.mapmatch import get_matcher
 from bus_trajectories.smooth import locreg_pchip
+from bus_trajectories.vtrak import (
+    best_shape as _best_shape,
+    build_shape_matcher,
+    load_r2_hours,
+    load_rocket_csv,
+    pick_trip_in_window,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
-GTFS = ROOT / "cta_gtfs.zip"
-ROCKET_CSV = ROOT / "ROCKET_june_8_8am_10am.csv"
+GTFS = ROOT / "data" / "gtfs" / "cta_gtfs.zip"
+ROCKET_CSV = ROOT / "data" / "ROCKET_june_8_8am_10am.csv"
 R2_HOURS = [
-    ROOT / "r2_cache/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
-    ROOT / "r2_cache/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
+    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
+    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
 ]
 OUTDIR = ROOT / "figures"
 
@@ -51,64 +55,27 @@ VEH_SHAPES = {
 VEH_ROUTE = {"8114": "55", "8099": "62", "8089": "94", "1566": "X49"}
 
 
+# Thin wrappers binding the shared bus_trajectories.vtrak helpers to this
+# script's constants.
 def load_r2() -> pd.DataFrame:
-    df = pd.concat([pq.read_table(str(f)).to_pandas() for f in R2_HOURS],
-                   ignore_index=True)
-    df = df[df.vehicle_id.isin(VEH_SHAPES)].copy()
-    df = df.drop_duplicates(["vehicle_id", "timestamp"])
-    df = df.sort_values(["vehicle_id", "timestamp"]).reset_index(drop=True)
-    return df
+    return load_r2_hours(R2_HOURS, veh_ids=VEH_SHAPES)
 
 
 def load_rocket() -> pd.DataFrame:
-    df = pd.read_csv(ROCKET_CSV)
-    df = df[df.VEH_ID.astype(str).isin(VEH_SHAPES)].copy()
-    # ROCKET timestamps are naive Chicago local; convert to UTC for alignment.
-    t = pd.to_datetime(df.AVL_EVENT_TIME)
-    df["ts_utc"] = t.dt.tz_localize("America/Chicago",
-                                    ambiguous="NaT",
-                                    nonexistent="NaT").dt.tz_convert("UTC")
-    df = df.dropna(subset=["ts_utc"]).sort_values(["VEH_ID", "ts_utc"])
-    return df
+    return load_rocket_csv(ROCKET_CSV, veh_ids=VEH_SHAPES)
 
 
 def build_matcher(shape_id: str):
-    poly, dist = load_gtfs_shape_with_dist(GTFS, shape_id)
-    kw = {"polyline_latlon": poly, "max_perp_m": MAX_PERP_M}
-    if dist is not None:
-        kw["dist_along_m_per_vertex"] = dist
-    return get_matcher("shape_snap", **kw)
+    return build_shape_matcher(GTFS, shape_id, MAX_PERP_M)
 
 
 def pick_trip(g: pd.DataFrame, window) -> pd.DataFrame:
-    """Pick a complete trip: fully inside this vehicle's ROCKET window, most pings."""
-    lo, hi = window
-    best = None
-    for tid, tg in g.groupby("trip_id"):
-        t0, t1 = tg.timestamp.min(), tg.timestamp.max()
-        if t0 < lo or t1 > hi:
-            continue
-        if best is None or len(tg) > len(best):
-            best = tg
-    if best is None:  # fallback: most pings regardless of containment
-        best = max((tg for _, tg in g.groupby("trip_id")), key=len)
-    return best.sort_values("timestamp").reset_index(drop=True)
+    return pick_trip_in_window(g, window)
 
 
 def best_shape(trip: pd.DataFrame, shape_ids: list[str]):
-    """Among candidate shapes, pick the one with lowest median perp distance."""
-    lats = trip.latitude.to_numpy()
-    lons = trip.longitude.to_numpy()
-    best = None
-    for sid in shape_ids:
-        m = build_matcher(sid)
-        res = m.match(lats, lons)
-        on = res.on_route
-        score = np.median(res.perp_dist_m[on]) if on.sum() else np.inf
-        cov = on.mean()
-        if best is None or (cov > 0.5 and score < best[1]):
-            best = (sid, score, cov, m)
-    return best
+    """(shape_id, median_perp, coverage, matcher) for the best-fitting shape."""
+    return _best_shape(trip, shape_ids, GTFS, MAX_PERP_M)
 
 
 def main():

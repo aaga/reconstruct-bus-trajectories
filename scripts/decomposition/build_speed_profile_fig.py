@@ -43,35 +43,21 @@ from bus_trajectories.serialize import load_records  # noqa: E402
 
 PATTERN_ID = "3936"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"
-GTFS_ZIP = REPO / "cta_gtfs.zip"
-DAYTIME_BUNDLE = REPO / "out_r2_bw5" / "trajectories.json"
-DECOMP_DIR = REPO / "out_decomposition"
+GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
+DAYTIME_BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
+DECOMP_DIR = REPO / "outputs" / "out_decomposition"
 FIG_DIR = REPO / "figures"
 TARGET_TRIP_ID = "1001350_4017_2026-05-05"
 M_PER_MILE = 1609.344
 
-COL_DWELL = "#7a9cc0"          # blue
-COL_DWELL_NEAR = "#5276a3"     # darker blue
-COL_SIGNAL_UNIFORM = "#e5896a"  # warm orange
-COL_SIGNAL_OVERFLOW = "#a8492a"  # darker orange/red
-COL_CROSSING = "#d6b56a"        # mustard
-COL_SLOWDOWN = "#b27ab2"        # purple
-COL_LOSS = "#cccccc"            # grey
-COL_SEG_POS = "#dceedb"
-COL_SEG_NEG = "#f6d0c8"
+from bus_trajectories.colors import (  # noqa: E402
+    COL_CROSSING, COL_DWELL, COL_DWELL_NEAR, COL_LOSS, COL_SEG_NEG, COL_SEG_POS,
+    COL_SIGNAL_OVERFLOW, COL_SIGNAL_UNIFORM, COL_SLOWDOWN, color_for_attribution,
+)
 
 
 def _color_for(attr: EventAttribution) -> str:
-    cat = attr.category
-    if cat == "dwell":
-        return COL_DWELL_NEAR if attr.dwell_near_signal else COL_DWELL
-    if cat == "crossing":
-        return COL_CROSSING
-    if cat == "signal_uniform":
-        return COL_SIGNAL_UNIFORM
-    if cat == "signal_overflow":
-        return COL_SIGNAL_OVERFLOW
-    return COL_SLOWDOWN
+    return color_for_attribution(attr.category, attr.dwell_near_signal)
 
 
 def _primary_seg_by_time(segments, seg_bounds, ev):

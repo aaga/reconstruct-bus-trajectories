@@ -48,10 +48,10 @@ from bus_trajectories.serialize import load_records  # noqa: E402
 
 PATTERN_ID = "3936"
 SHAPE_ID = "67803936"
-GTFS = REPO / "cta_gtfs.zip"
+GTFS = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"
-BUNDLE = REPO / "out_r2_bw5" / "trajectories.json"
-FF_TABLE_PATH = REPO / "out_decomposition" / "freeflow_segments.json"
+BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
+FF_TABLE_PATH = REPO / "outputs" / "out_decomposition" / "freeflow_segments.json"
 FIG_DIR = REPO / "figures"
 M_PER_MI = 1609.344
 
@@ -61,22 +61,10 @@ TARGET_TRIP_ID = "1001350_4017_2026-05-05"
 TARGET_TRIP_LABEL = "1001350"
 
 
-# Facility-kind colors. Aligned with decomp_* palette where applicable.
-KIND_COLOR = {
-    "stop": "#3a85d6",            # bus stop — blue
-    "stop_near_side": "#5276a3",  # near-side bus stop — darker blue
-    "signal": "#e5896a",          # traffic / ped signal — warm orange
-    "crossing": "#d6b56a",        # marked crossing / stop sign — mustard
-}
-KIND_LABEL = {
-    "stop": "bus stop",
-    "stop_near_side": "near-side stop",
-    "signal": "signal",
-    "crossing": "crossing",
-}
-KIND_ORDER = ("stop", "stop_near_side", "signal", "crossing")
-OTHER_COLOR = "#888888"
-CONG_COLOR = "#8e44ad"  # purple — per-segment residual congestion
+# Facility-kind colors, labels and ordering (shared palette).
+from bus_trajectories.colors import (  # noqa: E402
+    CONG_COLOR, KIND_COLOR, KIND_LABEL, KIND_ORDER, OTHER_COLOR,
+)
 
 
 # --------------------------------------------------------------------------

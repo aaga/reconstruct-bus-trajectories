@@ -49,8 +49,8 @@ from bus_trajectories.mapmatch import get_matcher  # noqa: E402
 from bus_trajectories.pipeline import reconstruct_trip  # noqa: E402
 from bus_trajectories.serialize import to_pchip_record  # noqa: E402
 
-GTFS = REPO / "cta_gtfs.zip"
-INTERSECTIONS = REPO / "cta_intersections_all.json"
+GTFS = REPO / "data" / "gtfs" / "cta_gtfs.zip"
+INTERSECTIONS = REPO / "caches" / "cta_intersections_all.json"
 PAGES = "https://cta-observation-tool.pages.dev/api/trips"
 CHICAGO = ZoneInfo("America/Chicago")
 MPS_TO_MPH = 2.23694

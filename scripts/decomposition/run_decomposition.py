@@ -33,9 +33,9 @@ from bus_trajectories.serialize import load_records  # noqa: E402
 
 PATTERN_ID = "3936"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"
-GTFS_ZIP = REPO / "cta_gtfs.zip"
-DAYTIME_BUNDLE = REPO / "out_r2_bw5" / "trajectories.json"
-OUT_DIR = REPO / "out_decomposition"
+GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
+DAYTIME_BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
+OUT_DIR = REPO / "outputs" / "out_decomposition"
 FF_TABLE = OUT_DIR / "freeflow_segments.json"
 
 

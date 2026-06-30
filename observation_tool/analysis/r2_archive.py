@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 
 R2_PUB = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
 REPO = Path(__file__).resolve().parents[2]
-CACHE = REPO / "r2_cache"
+CACHE = REPO / "caches" / "r2_cache"
 _UA = {"User-Agent": "bus-trajectories/analysis (research)"}
 
 

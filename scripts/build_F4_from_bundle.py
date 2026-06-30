@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 from bus_trajectories.serialize import load_records  # noqa: E402
 from build_alltrip_aligned import plot_aligned  # noqa: E402
 
-BUNDLE = REPO / "out_r2_bw5" / "trajectories.json"
+BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
 OUT = REPO / "figures" / "F4_timespace_alltrips_aligned.png"
 MAX_DURATION_MIN = 120.0  # F4-only filter; keeps the figure readable
 

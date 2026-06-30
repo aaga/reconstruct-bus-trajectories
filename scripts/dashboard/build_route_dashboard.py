@@ -64,7 +64,7 @@ from build_dashboard import (  # noqa: E402
     _cumulative_route_dist_m,
 )
 
-AGGREGATE_CSV = REPO / "out_decomposition" / "aggregate.csv"
+AGGREGATE_CSV = REPO / "outputs" / "out_decomposition" / "aggregate.csv"
 
 
 def _build_segments_payload(
@@ -271,7 +271,7 @@ def main() -> int:
     ap.add_argument("--shape-id", default="67803936")
     ap.add_argument("--pattern-id", default="3936")
     ap.add_argument("--view-id", default="sb_route")
-    ap.add_argument("--out", default=str(REPO / "out_dashboard"))
+    ap.add_argument("--out", default=str(REPO / "outputs" / "out_dashboard"))
     ap.add_argument("--bearing", type=float, default=None)
     ap.add_argument(
         "--counterpart-view-id", default="sb_1001350",

@@ -31,21 +31,20 @@ import pyarrow.parquet as pq
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
-sys.path.insert(0, str(REPO / "scripts"))
 
 from bus_trajectories.io import load_gtfs_shape_with_dist  # noqa: E402
 from bus_trajectories.mapmatch.shape_snap import SnapToShapeMatcher  # noqa: E402
-from run_r2_route22_sb import R2_PUB, fetch, to_avl_csv_format  # noqa: E402
+from bus_trajectories.r2 import to_avl_csv_format, load_all_cta_hours  # noqa: E402
 
 PATTERN_ID = "3936"
 SHAPE_ID = "67803936"
 BANDWIDTH = 5
-R2_CACHE = REPO / "r2_cache"
-GTFS_ZIP = REPO / "cta_gtfs.zip"
+R2_CACHE = REPO / "caches" / "r2_cache"
+GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 
-OUT_DIR = REPO / "out_r2_bw5"
-ALL_CSV = REPO / "r2_route22_sb_all.csv"
-OUT_DECOMP = REPO / "out_decomposition"
+OUT_DIR = REPO / "outputs" / "out_r2_bw5"
+ALL_CSV = REPO / "data" / "r2_route22_sb_all.csv"
+OUT_DECOMP = REPO / "outputs" / "out_decomposition"
 ALL_INDEX = OUT_DECOMP / "all_sb_trips_index.csv"
 
 MIN_PINGS = 30
@@ -66,24 +65,8 @@ GAP_MAX_S = 300          # 5-min max inter-ping gap on truncated series
 
 
 def _fetch_all_cta_hours() -> pd.DataFrame:
-    manifest_path = fetch(f"{R2_PUB}/_manifest.parquet",
-                         R2_CACHE / "_manifest.parquet")
-    manifest = pq.read_table(manifest_path).to_pandas()
-    cta = manifest[manifest.agency == "cta"].sort_values(
-        ["year", "month", "day", "hour"]
-    ).reset_index(drop=True)
-    print(f"Scouring R2: {len(cta)} CTA hour-file(s) across "
-          f"{cta.groupby(['year','month','day']).ngroups} day(s)")
-    parts: list[pd.DataFrame] = []
-    for i, row in cta.iterrows():
-        if i % 24 == 0:
-            print(f"  [{i+1}/{len(cta)}] {row.year:04d}-{row.month:02d}-"
-                  f"{row.day:02d} {row.hour:02d}Z")
-        local = R2_CACHE / row.path.replace("/", "__")
-        fetch(f"{R2_PUB}/{row.path}", local)
-        df = pq.ParquetFile(local).read().to_pandas()
-        parts.append(df[df.route_id == "22"])
-    return pd.concat(parts, ignore_index=True)
+    """All Route 22 pings across the entire R2 archive (cached locally)."""
+    return load_all_cta_hours(cache_dir=R2_CACHE, route_id="22")
 
 
 def _select_all_sb_trips(r22: pd.DataFrame) -> pd.DataFrame:
@@ -219,7 +202,7 @@ def _reconstruct(sb: pd.DataFrame) -> None:
     cmd = [
         sys.executable, "-m", "bus_trajectories", "reconstruct",
         str(ALL_CSV),
-        "--gtfs", str(REPO / "cta_gtfs.zip"),
+        "--gtfs", str(REPO / "data" / "gtfs" / "cta_gtfs.zip"),
         "--route", "22",
         "--pattern", PATTERN_ID,
         "--bandwidth", str(BANDWIDTH),

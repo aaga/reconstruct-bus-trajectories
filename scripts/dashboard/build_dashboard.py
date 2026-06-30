@@ -54,10 +54,10 @@ from bus_trajectories.io import (  # noqa: E402
 )
 from bus_trajectories.serialize import from_pchip_record, load_records  # noqa: E402
 
-GTFS_ZIP = REPO / "cta_gtfs.zip"
+GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"
-DAYTIME_BUNDLE = REPO / "out_r2_bw5" / "trajectories.json"
-FREEFLOW_TABLE = REPO / "out_decomposition" / "freeflow_segments.json"
+DAYTIME_BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
+FREEFLOW_TABLE = REPO / "outputs" / "out_decomposition" / "freeflow_segments.json"
 ASSETS_DIR = REPO / "scripts" / "dashboard" / "assets"
 
 M_PER_S_TO_MPH = 2.23694
@@ -432,7 +432,7 @@ def main() -> int:
     ap.add_argument("--pattern-id", default="3936")
     ap.add_argument("--view-id", default=None,
                     help="output subdirectory name (default: sb_<trip-id>)")
-    ap.add_argument("--out", default=str(REPO / "out_dashboard"))
+    ap.add_argument("--out", default=str(REPO / "outputs" / "out_dashboard"))
     ap.add_argument(
         "--bearing", type=float, default=None,
         help="MapLibre bearing in degrees; default = computed from polyline "

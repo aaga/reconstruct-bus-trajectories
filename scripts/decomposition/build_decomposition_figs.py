@@ -29,8 +29,8 @@ from bus_trajectories.delay_decomposition import build_segments_for_pattern  # n
 
 PATTERN_ID = "3936"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"
-GTFS_ZIP = REPO / "cta_gtfs.zip"
-OUT_DIR = REPO / "out_decomposition"
+GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
+OUT_DIR = REPO / "outputs" / "out_decomposition"
 FIG_DIR = REPO / "figures"
 # Trip_ids in the bundle carry _<vehicle_id>_<chicago_date> suffixes to
 # disambiguate BusTime trip_id reuse across days; the canonical "trip 1001350"

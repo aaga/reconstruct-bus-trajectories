@@ -21,18 +21,22 @@ but for sanity-checking the pipeline against shape 67803936 it's fine.
 from __future__ import annotations
 
 import argparse
-import io as _io
 import shutil
 import subprocess
 import sys
-import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
-import pyarrow.parquet as pq
 
-R2_PUB = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "src"))
+
+from bus_trajectories.r2 import (  # noqa: E402
+    R2_PUB,
+    fetch,
+    load_recent_cta_hours,
+    to_avl_csv_format,
+)
 
 # Quality thresholds for picking COMPLETE FULL-LENGTH trips:
 #   - MIN_PINGS: the bus reported enough times to give the smoother something
@@ -45,39 +49,6 @@ R2_PUB = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
 MIN_PINGS = 30
 MIN_FULL_LAT_SPAN_DEG = 0.12
 TRIP_END_MARGIN_S = 300
-
-
-def fetch(url: str, dst: Path) -> Path:
-    """Download a URL to dst (uses curl for robustness with R2 public URLs)."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() and dst.stat().st_size > 0:
-        return dst
-    print(f"  ↓ {url}")
-    subprocess.check_call(["curl", "-sSL", "-o", str(dst), url])
-    return dst
-
-
-def load_recent_cta_hours(n_hours: int, cache_dir: Path) -> pd.DataFrame:
-    """Return concatenated CTA pings from the n most recent hour-files."""
-    manifest_path = fetch(f"{R2_PUB}/_manifest.parquet", cache_dir / "_manifest.parquet")
-    manifest = pq.read_table(manifest_path).to_pandas()
-    cta = (
-        manifest[manifest.agency == "cta"]
-        .sort_values(["year", "month", "day", "hour"], ascending=False)
-        .head(n_hours)
-    )
-    if cta.empty:
-        raise SystemExit("no CTA hours in manifest")
-    print(f"Pulling {len(cta)} CTA hour(s):")
-    parts = []
-    for _, row in cta.iterrows():
-        url = f"{R2_PUB}/{row.path}"
-        # Flatten the hive-style path into a single filename so pyarrow doesn't
-        # auto-treat the cache dir as a partitioned dataset.
-        local = cache_dir / row.path.replace("/", "__")
-        fetch(url, local)
-        parts.append(pq.ParquetFile(local).read().to_pandas())
-    return pd.concat(parts, ignore_index=True)
 
 
 def select_route22_sb_trips(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
@@ -141,50 +112,6 @@ def select_route22_sb_trips(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
     return r22[r22.trip_id.isin(keep)].copy()
 
 
-def to_avl_csv_format(df: pd.DataFrame, out_csv: Path, pattern_id: str = "3936") -> Path:
-    """Write a CSV in the format expected by `bus_trajectories reconstruct`.
-
-    `load_avl_csv` only reads: trip_id, bus_id, route_id, pattern_id,
-    avl_event_time, latitude, longitude. The rest of the canonical AVL CSV
-    columns are filled with empty strings to match the parser's expectations.
-    """
-    df = df.copy()
-    df["avl_event_time"] = df.timestamp.dt.tz_convert(None).dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-    df["bus_id"] = df.vehicle_id
-    df["pattern_id"] = pattern_id
-
-    out = pd.DataFrame({
-        "id": df.entity_id.fillna("") + "_" + df.timestamp.astype(str),
-        "bus_id": df.bus_id,
-        "avl_event_time": df.avl_event_time,
-        "bt_ver": "",
-        "route_id": df.route_id,
-        "pattern_id": df.pattern_id,
-        "direction": "",
-        "deviation": "",
-        "speed": "",
-        "operator_id": "",
-        "last_ob_update": "",
-        "garage": "",
-        "run_id": "",
-        "trip_id": df.trip_id,
-        "last_trip_update": "",
-        "last_tp_passed": "",
-        "last_tp_update": "",
-        "latitude": df.latitude,
-        "longitude": df.longitude,
-        "heading": df.bearing.fillna("").astype(str),
-        "onroute": "",
-        "mmode": "",
-        "last_mmode": "",
-        "cta_inserted_dtm_usa_chi": "",
-        "service_yearmo": "",
-    })
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(out_csv, index=False)
-    return out_csv
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-hours", type=int, default=4,
@@ -193,12 +120,12 @@ def main() -> int:
     ap.add_argument("--also-include", default="",
                     help="Comma-separated trip_ids to force-include (bypasses "
                          "quality filters; useful for inspecting partial trips)")
-    ap.add_argument("--gtfs", default="cta_gtfs.zip")
+    ap.add_argument("--gtfs", default="data/gtfs/cta_gtfs.zip")
     ap.add_argument("--pattern", default="3936")
     ap.add_argument("--bandwidths", default="5,7,10,15,20")
-    ap.add_argument("--cache", default="r2_cache")
-    ap.add_argument("--csv-out", default="r2_route22_sb.csv")
-    ap.add_argument("--out-html", default="out_r2_compare.html")
+    ap.add_argument("--cache", default="caches/r2_cache")
+    ap.add_argument("--csv-out", default="data/r2_route22_sb.csv")
+    ap.add_argument("--out-html", default="data/diagnostics/out_r2_compare.html")
     ap.add_argument("--endpoint", default="http://localhost:8002",
                     help="(unused here; kept for parity)")
     args = ap.parse_args()
@@ -229,7 +156,7 @@ def main() -> int:
     bws = [int(b) for b in args.bandwidths.split(",")]
     bw_dirs: list[Path] = []
     for bw in bws:
-        out_dir = Path(f"out_r2_bw{bw}")
+        out_dir = Path(f"outputs/out_r2_bw{bw}")
         if out_dir.exists():
             shutil.rmtree(out_dir)
         cmd = [

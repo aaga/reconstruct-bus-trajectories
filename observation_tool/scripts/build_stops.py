@@ -50,7 +50,7 @@ FT_PER_M = 3.28084
 MAX_BUS_STOP_ID = 30000
 
 INTERSECTION_SOURCES = [
-    REPO / "cta_intersections_all.json",
+    REPO / "caches" / "cta_intersections_all.json",
     REPO / "intersections_route22.json",
 ]
 

@@ -25,17 +25,7 @@ from __future__ import annotations
 import io
 import json
 import math
-import subprocess
-import urllib.request
 from pathlib import Path
-
-
-def _curl_fetch(url: str, dst: Path) -> Path:
-    """R2's public dev URL blocks urllib but works with curl. Use curl."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if not dst.exists() or dst.stat().st_size == 0:
-        subprocess.check_call(["curl", "-sSL", "-o", str(dst), url])
-    return dst
 
 import contextily as cx
 import matplotlib.pyplot as plt
@@ -48,6 +38,7 @@ from scipy.interpolate import CubicHermiteSpline
 
 from bus_trajectories.intersections import load_intersections
 from bus_trajectories.io import load_gtfs_shape_with_dist, load_route_stops
+from bus_trajectories.r2 import R2_PUB, fetch as _curl_fetch
 from bus_trajectories.way_match import decode_polyline6
 
 # --- shared constants -----------------------------------------------------
@@ -93,7 +84,7 @@ def add_basemap(ax, source=CARTO_LIGHT):
     cx.add_basemap(ax, source=source, crs="EPSG:3857", attribution_size=6)
 
 
-def trip_smoothed(trip_id: str, bw_dir: str = "out_r2_bw5") -> CubicHermiteSpline:
+def trip_smoothed(trip_id: str, bw_dir: str = "outputs/out_r2_bw5") -> CubicHermiteSpline:
     """Rebuild a trip's PCHIP from its serialized record."""
     data = json.load(open(f"{bw_dir}/trajectories.json"))
     rec = next(t for t in data["trips"] if t["trip_id"] == trip_id)
@@ -104,7 +95,7 @@ def trip_smoothed(trip_id: str, bw_dir: str = "out_r2_bw5") -> CubicHermiteSplin
 
 
 def trip_raw(trip_id: str) -> pd.DataFrame:
-    df = pd.read_csv("r2_route22_sb_all.csv", dtype=str)
+    df = pd.read_csv("data/r2_route22_sb_all.csv", dtype=str)
     g = df[df.trip_id == trip_id].copy()
     g["latitude"] = g.latitude.astype(float)
     g["longitude"] = g.longitude.astype(float)
@@ -135,8 +126,8 @@ def slide_01_archive():
 
     # We have CTA cached locally. For MBTA / MTA / TFL we'll pull a recent
     # hour from R2 if not already cached.
-    pub = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
-    cache = Path("r2_cache")
+    pub = R2_PUB
+    cache = Path("caches/r2_cache")
     cache.mkdir(exist_ok=True)
     manifest_local = cache / "_manifest.parquet"
     _curl_fetch(f"{pub}/_manifest.parquet", manifest_local)
@@ -210,7 +201,7 @@ def slide_01_archive():
 def _trip_map(ax, with_shape: bool, ping_color: str = PING_COLOR):
     """Helper for slides 02 + 03."""
     raw = trip_raw(TRIP_ID)
-    poly, _ = load_gtfs_shape_with_dist("cta_gtfs.zip", SHAPE_ID)
+    poly, _ = load_gtfs_shape_with_dist("data/gtfs/cta_gtfs.zip", SHAPE_ID)
     if with_shape:
         sx, sy = latlon_to_webmercator(poly[:, 0], poly[:, 1])
         ax.plot(sx, sy, color=LINE_BG, linewidth=4.0, alpha=0.85, solid_capstyle="round",
@@ -382,7 +373,7 @@ def _draw_horizontal_lines_with_labels(ax, items, *, color, linestyle, label_xpo
 
 
 def _stops_in_window():
-    stops = load_route_stops("cta_gtfs.zip", SHAPE_ID)
+    stops = load_route_stops("data/gtfs/cta_gtfs.zip", SHAPE_ID)
     return [
         {"name": s["name"], "dist_mi": s["dist_along_m"] / M_PER_MI}
         for s in stops
@@ -455,7 +446,7 @@ def slide_10_mapmatch():
     """
     print("[10] map-matching explainer…")
     from bus_trajectories.way_match import call_valhalla, load_cache as load_way_cache
-    poly, dist = load_gtfs_shape_with_dist("cta_gtfs.zip", SHAPE_ID)
+    poly, dist = load_gtfs_shape_with_dist("data/gtfs/cta_gtfs.zip", SHAPE_ID)
 
     # Choose a sub-window of the GTFS shape — about 250 m around an
     # intersection. Pick mile 5.95 (Belmont) as the focus.
@@ -542,7 +533,7 @@ def slide_A_multitrip():
     """Stringlines for all 11 trips on one TS diagram, full route."""
     print("[A] multi-trip overlay…")
     data = json.load(open("out_r2_bw5/trajectories.json"))["trips"]
-    stops = load_route_stops("cta_gtfs.zip", SHAPE_ID)
+    stops = load_route_stops("data/gtfs/cta_gtfs.zip", SHAPE_ID)
 
     fig, ax = plt.subplots(figsize=FIG_WIDESCREEN, dpi=SLIDE_DPI)
     style_ts(ax, window_mi=(0, 11))
@@ -889,7 +880,7 @@ def slide_C_pipeline():
 def slide_E_intersections_map():
     """Render intersections on a basemap (matplotlib equivalent of intersections_22sb.html)."""
     print("[E] intersections on basemap…")
-    poly, _ = load_gtfs_shape_with_dist("cta_gtfs.zip", SHAPE_ID)
+    poly, _ = load_gtfs_shape_with_dist("data/gtfs/cta_gtfs.zip", SHAPE_ID)
     cps = load_intersections("intersections_route22.json")[SHAPE_ID]
 
     fig, ax = plt.subplots(figsize=(7, 14), dpi=SLIDE_DPI)

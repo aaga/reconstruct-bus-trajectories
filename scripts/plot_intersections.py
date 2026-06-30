@@ -27,16 +27,9 @@ import argparse
 import json
 from pathlib import Path
 
+from bus_trajectories.colors import CONTROL_TYPE_COLORS as _COLORS
 from bus_trajectories.intersections import ControlPoint, load_intersections
 from bus_trajectories.io import load_gtfs_shape_with_dist
-
-
-_COLORS = {
-    "traffic_signals": "#dc8c32",       # amber circle
-    "stop": "#cc0000",                  # red octagon (SVG below)
-    "ped_crossing_signal": "#7b3fa0",   # purple circle — signalised crosswalk
-    "ped_crossing_marked": "#00897b",   # teal circle — marked crosswalk
-}
 
 
 _LATMETER = 111320.0  # meters per degree of latitude (and approximate per

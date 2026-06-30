@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 OBS_TOOL = REPO / "observation_tool"
-GTFS_ZIP = REPO / "cta_gtfs.zip"
+GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 GTFS_URL = "https://www.transitchicago.com/downloads/sch_data/google_transit.zip"
 
 sys.path.insert(0, str(REPO / "src"))
@@ -26,12 +26,12 @@ _MTA_BASE = "https://rrgtfsfeeds.s3.amazonaws.com"
 GTFS_SOURCES: dict[str, list[tuple[str, Path]]] = {
     "cta": [(GTFS_URL, GTFS_ZIP)],
     "mta": [
-        (f"{_MTA_BASE}/gtfs_bx.zip", REPO / "gtfs_bx.zip"),      # Bronx
-        (f"{_MTA_BASE}/gtfs_b.zip", REPO / "gtfs_b.zip"),        # Brooklyn
-        (f"{_MTA_BASE}/gtfs_m.zip", REPO / "gtfs_m.zip"),        # Manhattan
-        (f"{_MTA_BASE}/gtfs_q.zip", REPO / "gtfs_q.zip"),        # Queens
-        (f"{_MTA_BASE}/gtfs_si.zip", REPO / "gtfs_si.zip"),      # Staten Island
-        (f"{_MTA_BASE}/gtfs_busco.zip", REPO / "gtfs_busco.zip"),  # MTA Bus Company
+        (f"{_MTA_BASE}/gtfs_bx.zip", REPO / "data" / "gtfs" / "gtfs_bx.zip"),      # Bronx
+        (f"{_MTA_BASE}/gtfs_b.zip", REPO / "data" / "gtfs" / "gtfs_b.zip"),        # Brooklyn
+        (f"{_MTA_BASE}/gtfs_m.zip", REPO / "data" / "gtfs" / "gtfs_m.zip"),        # Manhattan
+        (f"{_MTA_BASE}/gtfs_q.zip", REPO / "data" / "gtfs" / "gtfs_q.zip"),        # Queens
+        (f"{_MTA_BASE}/gtfs_si.zip", REPO / "data" / "gtfs" / "gtfs_si.zip"),      # Staten Island
+        (f"{_MTA_BASE}/gtfs_busco.zip", REPO / "data" / "gtfs" / "gtfs_busco.zip"),  # MTA Bus Company
     ],
 }
 

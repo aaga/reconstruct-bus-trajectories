@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.interpolate import PchipInterpolator
+from scipy.interpolate import BPoly, CubicSpline, PchipInterpolator
 
 DEFAULT_BANDWIDTH = 20  # paper's empirical choice
 DEFAULT_DEGREE = 3  # cubic local polynomial
@@ -112,16 +112,17 @@ def enforce_monotonic(x: np.ndarray) -> np.ndarray:
     return np.maximum.accumulate(np.asarray(x, dtype=float))
 
 
-def locreg_pchip(
+def _prepare_knots(
     t: np.ndarray,
     d: np.ndarray,
-    bandwidth: int = DEFAULT_BANDWIDTH,
-    degree: int = DEFAULT_DEGREE,
-) -> LocregPchipResult:
-    """End-to-end: LOCREG → monotonicity forward-fill → PCHIP.
+    bandwidth: int,
+    degree: int,
+):
+    """Shared LOCREG → monotonicity → unique-knot prep for the spline fitters.
 
-    Inputs are assumed to be sorted by ``t``; if not, they are sorted internally
-    and the returned arrays are reordered to match the input order.
+    Returns ``(t_input, d_input, x_in_input_order, unique_t, x_for_spline)``:
+    the LOCREG-smoothed, monotonized values in the caller's input order plus the
+    strictly-increasing ``(unique_t, x_for_spline)`` knots an interpolator needs.
     """
     t = np.asarray(t, dtype=float)
     d = np.asarray(d, dtype=float)
@@ -139,25 +140,75 @@ def locreg_pchip(
     # Step 2: forward-fill monotonicity violations.
     x_mono = enforce_monotonic(x_lr)
 
-    # PCHIP requires strictly increasing t; collapse exact-duplicate timestamps
-    # by averaging their x values (rare, but possible if AVL emits two pings at
-    # the same millisecond).
+    # Interpolators require strictly increasing t; collapse exact-duplicate
+    # timestamps by averaging their x values (rare, but possible if AVL emits
+    # two pings at the same millisecond).
     unique_t, inv = np.unique(ts, return_inverse=True)
     if unique_t.size != ts.size:
-        x_for_pchip = np.zeros_like(unique_t)
+        x_for_spline = np.zeros_like(unique_t)
         counts = np.zeros_like(unique_t)
-        np.add.at(x_for_pchip, inv, x_mono)
+        np.add.at(x_for_spline, inv, x_mono)
         np.add.at(counts, inv, 1.0)
-        x_for_pchip /= counts
+        x_for_spline /= counts
         # Re-enforce monotonicity post-averaging (cheap).
-        x_for_pchip = enforce_monotonic(x_for_pchip)
+        x_for_spline = enforce_monotonic(x_for_spline)
     else:
         unique_t = ts
-        x_for_pchip = x_mono
+        x_for_spline = x_mono
 
-    f = PchipInterpolator(unique_t, x_for_pchip, extrapolate=False)
-
-    # Re-order to input index space.
     x_in_input_order = np.empty_like(x_mono)
     x_in_input_order[order] = x_mono
+    return t, d, x_in_input_order, unique_t, x_for_spline
+
+
+def locreg_pchip(
+    t: np.ndarray,
+    d: np.ndarray,
+    bandwidth: int = DEFAULT_BANDWIDTH,
+    degree: int = DEFAULT_DEGREE,
+) -> LocregPchipResult:
+    """End-to-end: LOCREG → monotonicity forward-fill → PCHIP.
+
+    Inputs are assumed to be sorted by ``t``; if not, they are sorted internally
+    and the returned arrays are reordered to match the input order.
+    """
+    t, d, x_in_input_order, unique_t, x_for_spline = _prepare_knots(
+        t, d, bandwidth, degree
+    )
+    f = PchipInterpolator(unique_t, x_for_spline, extrapolate=False)
+    return LocregPchipResult(t=t, d_raw=d, x=x_in_input_order, f=f)
+
+
+def locreg_mqsi(
+    t: np.ndarray,
+    d: np.ndarray,
+    bandwidth: int = DEFAULT_BANDWIDTH,
+    degree: int = DEFAULT_DEGREE,
+) -> LocregPchipResult:
+    """End-to-end: LOCREG → monotonicity forward-fill → C² monotone quintic.
+
+    The PCHIP variant (:func:`locreg_pchip`) is monotone and ``C^1`` but its
+    acceleration ``f''`` jumps at every knot. This variant instead fits a
+    ``C^2`` quintic Hermite spline so acceleration is continuous: at each knot it
+    matches the value, the PCHIP (Fritsch–Carlson) monotone first derivative,
+    and a cubic-spline second derivative. Because consecutive intervals share
+    value/1st/2nd derivatives at each knot, the result is ``C^2``; the monotone
+    first derivatives keep it visually monotone for trajectory data.
+
+    This is a practical monotonicity-aware quintic, not the full TOMS-1031 MQSI
+    algorithm; it exists to render the PCHIP-vs-MQSI smoothness comparison.
+
+    Returns a :class:`LocregPchipResult` whose ``f`` is a quintic
+    :class:`scipy.interpolate.BPoly` (supports ``.derivative(1)``/``(2)``).
+    """
+    t, d, x_in_input_order, unique_t, x_for_spline = _prepare_knots(
+        t, d, bandwidth, degree
+    )
+    # First derivatives: PCHIP's monotone Fritsch–Carlson slopes.
+    m = PchipInterpolator(unique_t, x_for_spline).derivative(1)(unique_t)
+    # Second derivatives: from a natural cubic spline (gives C² acceleration).
+    s = CubicSpline(unique_t, x_for_spline, bc_type="natural").derivative(2)(unique_t)
+    # Quintic Hermite: match (value, 1st, 2nd) at every knot → C² by construction.
+    knot_derivs = [[x_for_spline[i], m[i], s[i]] for i in range(unique_t.size)]
+    f = BPoly.from_derivatives(unique_t, knot_derivs, extrapolate=False)
     return LocregPchipResult(t=t, d_raw=d, x=x_in_input_order, f=f)

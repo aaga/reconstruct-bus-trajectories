@@ -25,25 +25,19 @@ if PYTHONPATH_SRC not in sys.path:
     sys.path.insert(0, PYTHONPATH_SRC)
 
 from bus_trajectories.pipeline import reconstruct_csv  # noqa: E402
+from bus_trajectories.r2 import R2_PUB as R2, fetch  # noqa: E402
 
-R2 = "https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev"
-GTFS = "cta_gtfs.zip"
+GTFS = "data/gtfs/cta_gtfs.zip"
 PATTERN = "3936"
 ROUTE = "22"
 M_PER_MI = 1609.344
 BW = 5
 N_SAMPLE = 100
 SEED = 42
-CACHE = Path("r2_cache")
-CSV_OUT = Path("r2_route22_sb_100rand.csv")
+CACHE = Path("caches/r2_cache")
+CSV_OUT = Path("data/r2_route22_sb_100rand.csv")
 SLIDES = Path("figures")
 
-
-def fetch(url: str, dst: Path) -> Path:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if not dst.exists() or dst.stat().st_size == 0:
-        subprocess.check_call(["curl", "-sSL", "-o", str(dst), url])
-    return dst
 
 
 def load_all_cta() -> pd.DataFrame:

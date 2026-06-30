@@ -13,18 +13,22 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
-from bus_trajectories.io import load_gtfs_shape_with_dist
-from bus_trajectories.mapmatch import get_matcher
 from bus_trajectories.smooth import locreg_pchip
+from bus_trajectories.vtrak import (
+    best_shape as _best_shape,
+    build_shape_matcher,
+    load_r2_hours,
+    load_rocket_csv,
+    pick_trip_in_window,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
-GTFS = ROOT / "cta_gtfs.zip"
-ROCKET_CSV = ROOT / "ROCKET_june_8_8am_10am.csv"
+GTFS = ROOT / "data" / "gtfs" / "cta_gtfs.zip"
+ROCKET_CSV = ROOT / "data" / "ROCKET_june_8_8am_10am.csv"
 R2_HOURS = [
-    ROOT / "r2_cache/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
-    ROOT / "r2_cache/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
+    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=13.parquet",
+    ROOT / "caches/r2_cache/agency=cta__year=2026__month=06__day=08__hour=14.parquet",
 ]
 OUTDIR = ROOT / "figures"
 MAX_PERP_M = 50.0
@@ -38,54 +42,30 @@ VEH = {
 }
 
 
+# Thin wrappers binding the shared bus_trajectories.vtrak helpers to this
+# script's constants. Kept as module-level names because build_vtrak_speed,
+# build_pchip_vs_mqsi and build_smoothing_dashboard import them from here.
 def build_matcher(shape_id: str):
-    poly, dist = load_gtfs_shape_with_dist(GTFS, shape_id)
-    kw = {"polyline_latlon": poly, "max_perp_m": MAX_PERP_M}
-    if dist is not None:
-        kw["dist_along_m_per_vertex"] = dist
-    return get_matcher("shape_snap", **kw)
+    return build_shape_matcher(GTFS, shape_id, MAX_PERP_M)
 
 
 def load_r2():
-    df = pd.concat([pq.read_table(str(f)).to_pandas() for f in R2_HOURS],
-                   ignore_index=True)
-    df = df[df.vehicle_id.isin(VEH)].copy()
-    return df.drop_duplicates(["vehicle_id", "timestamp"]).sort_values(
-        ["vehicle_id", "timestamp"]).reset_index(drop=True)
+    return load_r2_hours(R2_HOURS, veh_ids=VEH)
 
 
 def load_rocket():
-    df = pd.read_csv(ROCKET_CSV)
-    df = df[df.VEH_ID.astype(str).isin(VEH)].copy()
-    t = pd.to_datetime(df.AVL_EVENT_TIME)
-    df["ts_utc"] = t.dt.tz_localize("America/Chicago", ambiguous="NaT",
-                                    nonexistent="NaT").dt.tz_convert("UTC")
-    return df.dropna(subset=["ts_utc"]).sort_values(["VEH_ID", "ts_utc"])
+    return load_rocket_csv(ROCKET_CSV, veh_ids=VEH)
 
 
 def pick_trip(g, window):
-    lo, hi = window
-    best = None
-    for _, tg in g.groupby("trip_id"):
-        t0, t1 = tg.timestamp.min(), tg.timestamp.max()
-        if t0 < lo or t1 > hi:
-            continue
-        if best is None or len(tg) > len(best):
-            best = tg
-    return best.sort_values("timestamp").reset_index(drop=True)
+    return pick_trip_in_window(g, window)
 
 
 def best_shape(trip, shape_ids):
-    lats, lons = trip.latitude.to_numpy(), trip.longitude.to_numpy()
-    best = None
-    for sid in shape_ids:
-        m = build_matcher(sid)
-        res = m.match(lats, lons)
-        on = res.on_route
-        score = np.median(res.perp_dist_m[on]) if on.sum() else np.inf
-        if best is None or (on.mean() > 0.5 and score < best[1]):
-            best = (sid, score, m)
-    return best
+    """(shape_id, median_perp, matcher) — drops the coverage field the shared
+    helper returns, matching the 3-tuple the importing scripts expect."""
+    sid, score, _cov, matcher = _best_shape(trip, shape_ids, GTFS, MAX_PERP_M)
+    return sid, score, matcher
 
 
 def main():
