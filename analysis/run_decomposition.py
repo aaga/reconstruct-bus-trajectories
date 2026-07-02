@@ -18,7 +18,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
 from core.decompose import (  # noqa: E402
