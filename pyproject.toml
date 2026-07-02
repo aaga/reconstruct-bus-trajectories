@@ -30,7 +30,8 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "src" for the core package; "." so the top-level analysis/ layer is importable.
+pythonpath = ["src", "."]
 
 [tool.uv]
 dev-dependencies = [

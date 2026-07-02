@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import shutil
 import sys
 from dataclasses import asdict
@@ -39,7 +38,12 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))  # so the top-level analysis/ layer is importable
 
+from analysis.prep.geometry import (  # noqa: E402
+    bearing_from_polyline as _bearing_from_polyline,
+    cumulative_route_dist_m as _cumulative_route_dist_m,
+)
 from bus_trajectories.delay_decomposition import (  # noqa: E402
     build_segments_for_pattern,
     decompose_trip,
@@ -253,26 +257,6 @@ def _bands_from_decomp(decomp) -> list[dict]:
 # ----------------------------------------------------------------------
 
 
-def _bearing_from_polyline(poly_latlon: np.ndarray) -> float:
-    """MapLibre camera bearing that makes start→end run left-to-right.
-
-    MapLibre's bearing θ means "screen-up points to compass direction θ",
-    so screen-right points to (θ + 90). For the bus's motion direction
-    (the compass bearing of start→end on the polyline) to render as
-    screen-right, we need θ = motion_compass − 90. For SB Route 22 the
-    motion is roughly south (~180°), so the camera bearing comes out at
-    ~90° (top of screen = east), which is what the user asked for.
-    """
-    lat0, lon0 = float(poly_latlon[0, 0]), float(poly_latlon[0, 1])
-    lat1, lon1 = float(poly_latlon[-1, 0]), float(poly_latlon[-1, 1])
-    dlat = lat1 - lat0
-    dlon = lon1 - lon0
-    mlat = math.cos(math.radians((lat0 + lat1) / 2))
-    # Compass bearing: 0 = north, 90 = east
-    motion_compass = (math.degrees(math.atan2(dlon * mlat, dlat)) + 360.0) % 360.0
-    return (motion_compass - 90.0 + 360.0) % 360.0
-
-
 def build_view(
     *,
     trip_id: str,
@@ -407,22 +391,6 @@ def build_view(
     print(f"[dashboard]   features: {len(features)} "
           f"(signals/stops/crossings/bus stops)")
     return out_dir
-
-
-def _cumulative_route_dist_m(poly_latlon: np.ndarray) -> np.ndarray:
-    """Equirectangular cumulative distance along a (N,2) latlon polyline."""
-    if poly_latlon.ndim != 2 or poly_latlon.shape[1] != 2:
-        raise ValueError("poly_latlon must be (N, 2)")
-    lat = poly_latlon[:, 0]
-    lon = poly_latlon[:, 1]
-    mlat_deg = 111320.0
-    mlon_deg = 111320.0 * np.cos(np.radians((lat[:-1] + lat[1:]) / 2))
-    dlat = (lat[1:] - lat[:-1]) * mlat_deg
-    dlon = (lon[1:] - lon[:-1]) * mlon_deg
-    seg_m = np.hypot(dlat, dlon)
-    out = np.zeros(len(lat))
-    out[1:] = np.cumsum(seg_m)
-    return out
 
 
 def main() -> int:

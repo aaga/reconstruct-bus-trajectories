@@ -20,7 +20,6 @@ import argparse
 import csv
 import io
 import json
-import math
 import tempfile
 import urllib.request
 from datetime import datetime, timezone
@@ -36,6 +35,11 @@ import pandas as pd
 import sys
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))  # so the top-level analysis/ layer is importable
+from analysis.prep.geometry import (  # noqa: E402
+    bearing_from_polyline as _bearing_from_polyline,
+    cumulative_route_dist_m as _cumdist_geodesic,
+)
 from bus_trajectories.realtime import load_manifest, trip_avl_pings  # noqa: E402
 from bus_trajectories.delay_decomposition.decompose import decompose_trip  # noqa: E402
 from bus_trajectories.delay_decomposition.segments import build_segments_from_records  # noqa: E402
@@ -294,26 +298,6 @@ def dense_grid(recon):
     xg = f(tg)
     vg = np.clip(f.derivative()(tg) * MPS_TO_MPH, 0, None)
     return tg, xg, vg
-
-
-def _bearing_from_polyline(poly_latlon) -> float:
-    """MapLibre camera bearing that makes start->end run left-to-right, so the
-    route fills the wide-short map pane (ported from build_dashboard.py)."""
-    lat0, lon0 = float(poly_latlon[0, 0]), float(poly_latlon[0, 1])
-    lat1, lon1 = float(poly_latlon[-1, 0]), float(poly_latlon[-1, 1])
-    mlat = math.cos(math.radians((lat0 + lat1) / 2))
-    motion = (math.degrees(math.atan2((lon1 - lon0) * mlat, lat1 - lat0)) + 360.0) % 360.0
-    return (motion - 90.0 + 360.0) % 360.0
-
-
-def _cumdist_geodesic(poly_latlon):
-    lat = poly_latlon[:, 0]
-    lon = poly_latlon[:, 1]
-    mlat = np.cos(np.radians((lat[:-1] + lat[1:]) / 2))
-    dy = (lat[1:] - lat[:-1]) * 111320.0
-    dx = (lon[1:] - lon[:-1]) * 111320.0 * mlat
-    seg = np.hypot(dx, dy)
-    return np.concatenate([[0.0], np.cumsum(seg)])
 
 
 def shape_bundle(shape_id: str):
