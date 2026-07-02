@@ -33,10 +33,10 @@ import zipfile
 import numpy as np
 import pandas as pd
 
-from realtime_archive import REPO, load_manifest, trip_avl_pings  # sets nothing global
-
 import sys
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+from bus_trajectories.realtime import load_manifest, trip_avl_pings  # noqa: E402
 from bus_trajectories.delay_decomposition.decompose import decompose_trip  # noqa: E402
 from bus_trajectories.delay_decomposition.segments import build_segments_from_records  # noqa: E402
 from bus_trajectories.intersections import (  # noqa: E402
@@ -544,7 +544,7 @@ def main() -> int:
     args = ap.parse_args()
 
     OUT.mkdir(parents=True, exist_ok=True)
-    manifest = load_manifest()
+    manifest = load_manifest(refresh=True)
     route_shapes = route_shape_map(GTFS)
     keys = args.trips or good_trips(args.token)
     print(f"building {len(keys)} trip(s)\n")

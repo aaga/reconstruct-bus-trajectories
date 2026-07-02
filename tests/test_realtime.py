@@ -10,7 +10,8 @@ from __future__ import annotations
 import pandas as pd
 
 from bus_trajectories.io import load_avl_csv
-from bus_trajectories.realtime import to_avl_csv_format
+from bus_trajectories import realtime
+from bus_trajectories.realtime import to_avl_csv_format, trip_avl_pings
 
 
 def _r2_pings():
@@ -57,3 +58,47 @@ def test_to_avl_csv_format_event_time_is_naive_microsecond(tmp_path):
     raw = pd.read_csv(out, dtype=str)
     # tz dropped, microsecond precision retained, matches load_avl_csv's format
     assert raw.avl_event_time.iloc[0] == "2026-05-05 12:00:00.000000"
+
+
+def test_trip_avl_pings_filters_by_trip_and_reshapes(monkeypatch):
+    """trip_avl_pings selects one trip across the spanned hours (no network)."""
+    pings = _r2_pings()
+    other = pings.copy()
+    other["trip_id"] = "9999999"  # a different trip in the same hour-file
+    hour_frame = pd.concat([pings, other], ignore_index=True)
+    # Stub the network fetch: any requested hour returns our synthetic frame.
+    monkeypatch.setattr(realtime, "load_hour", lambda path, cache_dir=None: hour_frame)
+
+    start = pd.Timestamp("2026-05-05 12:00:00", tz="UTC")
+    manifest = pd.DataFrame({
+        "agency": ["cta"], "year": [start.year], "month": [start.month],
+        "day": [start.day], "hour": [start.hour],
+        "path": ["agency=cta__year=2026__month=05__day=05__hour=12.parquet"],
+    })
+    start_ms = int(start.value // 1_000_000)
+    end_ms = int((start + pd.Timedelta(seconds=30)).value // 1_000_000)
+
+    out = trip_avl_pings("22", "4017", "1001350", start_ms, end_ms, manifest=manifest)
+
+    assert list(out.trip_id.unique()) == ["1001350"]  # other trip filtered out
+    assert list(out.columns) == [
+        "trip_id", "bus_id", "route_id", "avl_event_time",
+        "latitude", "longitude", "heading", "epoch_ms",
+    ]
+    assert len(out) == 2
+    assert out.bus_id.iloc[0] == "4017"
+    assert out.avl_event_time.iloc[0] == "2026-05-05 12:00:00.000000"
+    assert out.epoch_ms.iloc[0] == start_ms
+    assert out.latitude.iloc[0] == 42.019
+
+
+def test_trip_avl_pings_missing_trip_returns_empty(monkeypatch):
+    monkeypatch.setattr(realtime, "load_hour", lambda path, cache_dir=None: _r2_pings())
+    start = pd.Timestamp("2026-05-05 12:00:00", tz="UTC")
+    manifest = pd.DataFrame({
+        "agency": ["cta"], "year": [start.year], "month": [start.month],
+        "day": [start.day], "hour": [start.hour], "path": ["p.parquet"],
+    })
+    ms = int(start.value // 1_000_000)
+    out = trip_avl_pings("22", "4017", "0000000", ms, ms, manifest=manifest)
+    assert out.empty
