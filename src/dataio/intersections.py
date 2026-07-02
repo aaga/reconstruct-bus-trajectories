@@ -43,7 +43,7 @@ from typing import Iterable
 import numpy as np
 
 from .io import load_gtfs_shape_with_dist
-from .mapmatch.shape_snap import SnapToShapeMatcher
+from core.mapmatch.shape_snap import SnapToShapeMatcher
 from .way_match import WaySegment, load_cache as load_way_cache
 
 # How far back from an intersection (along the bus's way) to look for a

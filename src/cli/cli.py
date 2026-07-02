@@ -8,17 +8,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .pipeline import reconstruct_csv
-from .plot import plot_speed_profile, plot_time_space
-from .serialize import save_records, save_records_npz, to_pchip_record
-from .viz import make_interactive_html
-from .viz_compare import make_comparison_html
-from .way_match import (
+from core.pipeline import reconstruct_csv
+from viz.plot import plot_speed_profile, plot_time_space
+from core.serialize import save_records, save_records_npz, to_pchip_record
+from viz.viz import make_interactive_html
+from viz.viz_compare import make_comparison_html
+from dataio.way_match import (
     ValhallaUnreachable,
     build_cache as build_way_cache,
     save_cache as save_way_cache,
 )
-from .intersections import (
+from dataio.intersections import (
     OverpassUnreachable,
     build_intersections,
     save_intersections,

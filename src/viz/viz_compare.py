@@ -23,8 +23,8 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from scipy.interpolate import CubicHermiteSpline
 
-from .io import load_route_stops, shape_id_for_pattern
-from .serialize import from_pchip_record, load_records
+from dataio.io import load_route_stops, shape_id_for_pattern
+from core.serialize import from_pchip_record, load_records
 
 _M_PER_MI = 1609.344
 _DEFAULT_DEPART_THRESHOLD_M = 0.03 * _M_PER_MI  # ~50m, matches earlier analysis
