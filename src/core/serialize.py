@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from scipy.interpolate import CubicHermiteSpline
 
-from .pipeline import TripReconstruction
+from .reconstruct import TripReconstruction
 
 
 def to_pchip_record(recon: TripReconstruction) -> dict:

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from dataio.io import load_avl_csv, load_gtfs_shape_with_dist, shape_id_for_pattern
+from dataio.gtfs import load_avl_csv, load_gtfs_shape_with_dist, shape_id_for_pattern
 from .mapmatch import MapMatcher, MatchResult, get_matcher
 from .smooth import LocregPchipResult, locreg_pchip
 

@@ -23,7 +23,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from scipy.interpolate import CubicHermiteSpline
 
-from dataio.io import load_route_stops, shape_id_for_pattern
+from dataio.gtfs import load_route_stops, shape_id_for_pattern
 from core.serialize import from_pchip_record, load_records
 
 _M_PER_MI = 1609.344

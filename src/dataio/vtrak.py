@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from .io import load_gtfs_shape_with_dist
+from .gtfs import load_gtfs_shape_with_dist
 from core.mapmatch import get_matcher
 
 DEFAULT_MAX_PERP_M = 50.0

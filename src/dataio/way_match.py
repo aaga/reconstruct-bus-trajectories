@@ -40,7 +40,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .io import list_bus_shapes, load_gtfs_shape_with_dist
+from .gtfs import list_bus_shapes, load_gtfs_shape_with_dist
 from core.mapmatch.shape_snap import SnapToShapeMatcher
 
 

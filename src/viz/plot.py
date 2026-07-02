@@ -7,7 +7,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from core.pipeline import TripReconstruction
+from core.reconstruct import TripReconstruction
 
 _M_PER_MI = 1609.344
 

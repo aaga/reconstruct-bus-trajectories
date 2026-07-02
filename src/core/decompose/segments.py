@@ -18,7 +18,7 @@ from dataio.intersections import (
     classify_near_side_stops,
     load_intersections,
 )
-from dataio.io import load_route_stops, shape_id_for_pattern
+from dataio.gtfs import load_route_stops, shape_id_for_pattern
 
 NEAR_SIDE_THRESHOLD_M = 90 / 3.28084  # 90 ft
 

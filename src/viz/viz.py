@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 
-from core.pipeline import TripReconstruction
+from core.reconstruct import TripReconstruction
 
 _M_PER_MI = 1609.344
 
