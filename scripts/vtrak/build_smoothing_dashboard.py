@@ -18,8 +18,8 @@ import pandas as pd
 
 from build_vtrak_smooth import (VEH, ROOT, GTFS, load_r2, load_rocket,
                                 pick_trip, best_shape)
-from bus_trajectories.io import load_route_stops
-from bus_trajectories.smooth import locreg_pchip, locreg_mqsi
+from dataio.gtfs import load_route_stops
+from core.smooth import locreg_pchip, locreg_mqsi
 
 BANDWIDTHS = [5, 10, 15, 20, 25, 30, 40, 50]
 N_DENSE = 2500

@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from bus_trajectories.intersections import (
+from dataio.intersections import (
     ControlPoint,
     build_intersections,
     cluster_signals,
@@ -22,7 +22,7 @@ from bus_trajectories.intersections import (
     load_intersections,
     save_intersections,
 )
-from bus_trajectories.way_match import WaySegment
+from dataio.way_match import WaySegment
 
 
 # ---------- helpers --------------------------------------------------------

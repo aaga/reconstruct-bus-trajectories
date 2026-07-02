@@ -25,8 +25,8 @@ PYTHONPATH_SRC = str((Path(__file__).resolve().parents[2] / "src"))
 if PYTHONPATH_SRC not in sys.path:
     sys.path.insert(0, PYTHONPATH_SRC)
 
-from bus_trajectories.pipeline import reconstruct_csv  # noqa: E402
-from bus_trajectories.realtime import ARCHIVE_URL, fetch  # noqa: E402
+from core.reconstruct import reconstruct_csv  # noqa: E402
+from dataio.realtime import ARCHIVE_URL, fetch  # noqa: E402
 
 GTFS = "data/gtfs/cta_gtfs.zip"
 PATTERN = "3936"

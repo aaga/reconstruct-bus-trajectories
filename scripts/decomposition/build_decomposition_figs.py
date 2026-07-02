@@ -25,7 +25,7 @@ from matplotlib.patches import Patch
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.delay_decomposition import build_segments_for_pattern  # noqa: E402
+from core.decompose import build_segments_for_pattern  # noqa: E402
 
 PATTERN_ID = "3936"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"

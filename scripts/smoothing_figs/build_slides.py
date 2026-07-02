@@ -36,10 +36,10 @@ import pyarrow.parquet as pq
 from matplotlib.collections import LineCollection
 from scipy.interpolate import CubicHermiteSpline
 
-from bus_trajectories.intersections import load_intersections
-from bus_trajectories.io import load_gtfs_shape_with_dist, load_route_stops
-from bus_trajectories.realtime import ARCHIVE_URL, fetch as _curl_fetch
-from bus_trajectories.way_match import decode_polyline6
+from dataio.intersections import load_intersections
+from dataio.gtfs import load_gtfs_shape_with_dist, load_route_stops
+from dataio.realtime import ARCHIVE_URL, fetch as _curl_fetch
+from dataio.way_match import decode_polyline6
 
 # --- shared constants -----------------------------------------------------
 SHAPE_ID = "67803936"
@@ -445,7 +445,7 @@ def slide_10_mapmatch():
     GTFS shape.
     """
     print("[10] map-matching explainer…")
-    from bus_trajectories.way_match import call_valhalla, load_cache as load_way_cache
+    from dataio.way_match import call_valhalla, load_cache as load_way_cache
     poly, dist = load_gtfs_shape_with_dist("data/gtfs/cta_gtfs.zip", SHAPE_ID)
 
     # Choose a sub-window of the GTFS shape — about 250 m around an

@@ -44,19 +44,19 @@ from analysis.prep.geometry import (  # noqa: E402
     bearing_from_polyline as _bearing_from_polyline,
     cumulative_route_dist_m as _cumulative_route_dist_m,
 )
-from bus_trajectories.delay_decomposition import (  # noqa: E402
+from core.decompose import (  # noqa: E402
     build_segments_for_pattern,
     decompose_trip,
 )
-from bus_trajectories.delay_decomposition.travel_time import (  # noqa: E402
+from core.decompose.travel_time import (  # noqa: E402
     load_freeflow_table,
 )
-from bus_trajectories.intersections import load_intersections  # noqa: E402
-from bus_trajectories.io import (  # noqa: E402
+from dataio.intersections import load_intersections  # noqa: E402
+from dataio.gtfs import (  # noqa: E402
     load_gtfs_shape_with_dist,
     load_route_stops,
 )
-from bus_trajectories.serialize import from_pchip_record, load_records  # noqa: E402
+from core.serialize import from_pchip_record, load_records  # noqa: E402
 
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"

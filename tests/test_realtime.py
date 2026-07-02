@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from bus_trajectories.io import load_avl_csv
-from bus_trajectories import realtime
-from bus_trajectories.realtime import to_avl_csv_format, trip_avl_pings
+from dataio.gtfs import load_avl_csv
+from dataio import realtime
+from dataio.realtime import to_avl_csv_format, trip_avl_pings
 
 
 def _r2_pings():

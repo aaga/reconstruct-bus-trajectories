@@ -40,18 +40,18 @@ from analysis.prep.geometry import (  # noqa: E402
     bearing_from_polyline as _bearing_from_polyline,
     cumulative_route_dist_m as _cumdist_geodesic,
 )
-from bus_trajectories.realtime import load_manifest, trip_avl_pings  # noqa: E402
-from bus_trajectories.delay_decomposition.decompose import decompose_trip  # noqa: E402
-from bus_trajectories.delay_decomposition.segments import build_segments_from_records  # noqa: E402
-from bus_trajectories.intersections import (  # noqa: E402
+from dataio.realtime import load_manifest, trip_avl_pings  # noqa: E402
+from core.decompose.decompose import decompose_trip  # noqa: E402
+from core.decompose.segments import build_segments_from_records  # noqa: E402
+from dataio.intersections import (  # noqa: E402
     SIGNALIZED_CONTROL_TYPES, load_intersections,
 )
-from bus_trajectories.io import (  # noqa: E402
+from dataio.gtfs import (  # noqa: E402
     load_avl_csv, load_gtfs_shape_with_dist, load_route_stops, shape_id_for_pattern,
 )
-from bus_trajectories.mapmatch import get_matcher  # noqa: E402
-from bus_trajectories.pipeline import reconstruct_trip  # noqa: E402
-from bus_trajectories.serialize import to_pchip_record  # noqa: E402
+from core.mapmatch import get_matcher  # noqa: E402
+from core.reconstruct import reconstruct_trip  # noqa: E402
+from core.serialize import to_pchip_record  # noqa: E402
 
 GTFS = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 INTERSECTIONS = REPO / "caches" / "cta" / "intersections.json"

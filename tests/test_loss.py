@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from bus_trajectories.delay_decomposition.loss import loss_shoulders_for_event
+from core.decompose.loss import loss_shoulders_for_event
 
 
 def _ramp_profile():

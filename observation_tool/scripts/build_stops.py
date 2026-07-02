@@ -18,7 +18,7 @@ Pattern identity is per-city:
   MTA — "<route_id>_<direction_id>", matching providers/mta.js.
 
 Near-side classification (CTA only) reuses
-bus_trajectories.intersections.classify_near_side_stops against
+dataio.intersections.classify_near_side_stops against
 caches/cta/intersections.json (built by build_all_intersections.py), with
 intersections_route22.json as a fallback. MTA ships is_near_side: null.
 
@@ -38,11 +38,11 @@ from pathlib import Path
 
 from gtfs_util import OBS_TOOL, REPO, ensure_city_gtfs  # noqa: E402 (sets sys.path)
 
-from bus_trajectories.intersections import (  # noqa: E402
+from dataio.intersections import (  # noqa: E402
     classify_near_side_stops,
     load_intersections,
 )
-from bus_trajectories.io import list_bus_shapes  # noqa: E402
+from dataio.gtfs import list_bus_shapes  # noqa: E402
 
 DATA_DIR = OBS_TOOL / "data"
 FT_PER_M = 3.28084

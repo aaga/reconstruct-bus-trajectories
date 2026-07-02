@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from bus_trajectories.smooth import enforce_monotonic, locreg, locreg_pchip
+from core.smooth import enforce_monotonic, locreg, locreg_pchip
 
 
 def test_enforce_monotonic_forward_fills_decreases():

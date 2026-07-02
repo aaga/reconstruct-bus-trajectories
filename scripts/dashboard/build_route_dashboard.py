@@ -39,17 +39,17 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from bus_trajectories.delay_decomposition import (  # noqa: E402
+from core.decompose import (  # noqa: E402
     build_facility_index,
     build_segments_for_pattern,
     decompose_trip,
     per_facility_seconds,
 )
-from bus_trajectories.delay_decomposition.travel_time import (  # noqa: E402
+from core.decompose.travel_time import (  # noqa: E402
     load_freeflow_table,
 )
-from bus_trajectories.io import load_gtfs_shape_with_dist  # noqa: E402
-from bus_trajectories.serialize import load_records  # noqa: E402
+from dataio.gtfs import load_gtfs_shape_with_dist  # noqa: E402
+from core.serialize import load_records  # noqa: E402
 
 # Reuse single-trip helpers that don't depend on a trip record.
 from build_dashboard import (  # noqa: E402

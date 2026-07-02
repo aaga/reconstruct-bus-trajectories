@@ -23,12 +23,12 @@ import pyarrow.parquet as pq
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.delay_decomposition import build_segments_for_pattern  # noqa: E402
-from bus_trajectories.delay_decomposition.travel_time import (  # noqa: E402
+from core.decompose import build_segments_for_pattern  # noqa: E402
+from core.decompose.travel_time import (  # noqa: E402
     save_freeflow_table,
     segment_freeflow_table,
 )
-from bus_trajectories.realtime import to_avl_csv_format, load_all_cta_hours  # noqa: E402
+from dataio.realtime import to_avl_csv_format, load_all_cta_hours  # noqa: E402
 
 PATTERN_ID = "3936"
 SHAPE_ID = "67803936"
@@ -118,7 +118,7 @@ def _reconstruct_latenight(sb: pd.DataFrame) -> None:
         shutil.rmtree(LATENIGHT_DIR)
 
     cmd = [
-        sys.executable, "-m", "bus_trajectories", "reconstruct",
+        sys.executable, "-m", "cli", "reconstruct",
         str(LATENIGHT_CSV),
         "--gtfs", str(GTFS_ZIP),
         "--route", "22",

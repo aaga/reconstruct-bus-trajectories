@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from bus_trajectories.delay_decomposition import (
+from core.decompose import (
     AbsoluteSpeedThreshold,
     AVLDwellAttributor,
     Event,
@@ -17,12 +17,12 @@ from bus_trajectories.delay_decomposition import (
     decompose_trip,
     detect_events,
 )
-from bus_trajectories.delay_decomposition.decompose import _evaluate_dense  # noqa
-from bus_trajectories.delay_decomposition.dwell import _clip_zone
-from bus_trajectories.delay_decomposition.segments import (
+from core.decompose.decompose import _evaluate_dense  # noqa
+from core.decompose.dwell import _clip_zone
+from core.decompose.segments import (
     build_segments_from_records,
 )
-from bus_trajectories.intersections import (
+from dataio.intersections import (
     ControlPoint,
     classify_near_side_stops,
 )
@@ -229,7 +229,7 @@ def test_overflow_pass_converts_preceding_slowdown():
     """A slowdown immediately preceding a signal_uniform (same primary
     segment, no dwell/crossing in between) should be re-labeled
     signal_overflow."""
-    from bus_trajectories.delay_decomposition.decompose import _apply_overflow_pass
+    from core.decompose.decompose import _apply_overflow_pass
 
     cps = [
         _cp(1, 0.0, "traffic_signals"),
@@ -256,7 +256,7 @@ def test_overflow_pass_converts_preceding_slowdown():
 
 def test_overflow_pass_stops_at_dwell():
     """A dwell between slowdown and signal_uniform should block overflow."""
-    from bus_trajectories.delay_decomposition.decompose import _apply_overflow_pass
+    from core.decompose.decompose import _apply_overflow_pass
 
     cps = [
         _cp(1, 0.0, "traffic_signals"),

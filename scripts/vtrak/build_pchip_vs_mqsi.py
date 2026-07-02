@@ -19,7 +19,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from build_vtrak_smooth import VEH, OUTDIR, load_r2, load_rocket, pick_trip, best_shape
-from bus_trajectories.smooth import locreg_pchip, locreg_mqsi
+from core.smooth import locreg_pchip, locreg_mqsi
 
 MPS_TO_MPH = 2.2369363
 BW = 25

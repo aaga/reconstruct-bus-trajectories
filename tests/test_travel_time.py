@@ -18,7 +18,7 @@ from scipy.interpolate import PchipInterpolator
 # grid spacing (~1e-3 over these trips) rather than exactly.
 _GRID_TOL = 2e-3
 
-from bus_trajectories.delay_decomposition.travel_time import (
+from core.decompose.travel_time import (
     _last_t_at_x,
     segment_observed_time,
 )

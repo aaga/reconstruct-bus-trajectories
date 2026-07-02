@@ -16,7 +16,7 @@ PYTHONPATH_SRC = str((Path(__file__).resolve().parents[2] / "src"))
 if PYTHONPATH_SRC not in sys.path:
     sys.path.insert(0, PYTHONPATH_SRC)
 
-from bus_trajectories.smooth import tricube  # noqa: E402
+from core.smooth import tricube  # noqa: E402
 
 SLIDES = Path("figures")
 M_PER_MI = 1609.344

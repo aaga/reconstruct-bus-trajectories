@@ -34,17 +34,17 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.delay_decomposition import (  # noqa: E402
+from core.decompose import (  # noqa: E402
     build_facility_index,
     build_segments_for_pattern,
     decompose_trip,
     per_facility_seconds,
 )
-from bus_trajectories.delay_decomposition.travel_time import (  # noqa: E402
+from core.decompose.travel_time import (  # noqa: E402
     load_freeflow_table,
 )
-from bus_trajectories.io import load_gtfs_shape_with_dist  # noqa: E402
-from bus_trajectories.serialize import load_records  # noqa: E402
+from dataio.gtfs import load_gtfs_shape_with_dist  # noqa: E402
+from core.serialize import load_records  # noqa: E402
 
 PATTERN_ID = "3936"
 SHAPE_ID = "67803936"
@@ -62,7 +62,7 @@ TARGET_TRIP_LABEL = "1001350"
 
 
 # Facility-kind colors, labels and ordering (shared palette).
-from bus_trajectories.colors import (  # noqa: E402
+from viz.colors import (  # noqa: E402
     CONG_COLOR, KIND_COLOR, KIND_LABEL, KIND_ORDER, OTHER_COLOR,
 )
 

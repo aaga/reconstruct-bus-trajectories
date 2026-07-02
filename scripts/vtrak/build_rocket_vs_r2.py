@@ -24,8 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from bus_trajectories.smooth import locreg_pchip
-from bus_trajectories.vtrak import (
+from core.smooth import locreg_pchip
+from dataio.vtrak import (
     best_shape as _best_shape,
     build_shape_matcher,
     load_r2_hours,
@@ -55,7 +55,7 @@ VEH_SHAPES = {
 VEH_ROUTE = {"8114": "55", "8099": "62", "8089": "94", "1566": "X49"}
 
 
-# Thin wrappers binding the shared bus_trajectories.vtrak helpers to this
+# Thin wrappers binding the shared dataio.vtrak helpers to this
 # script's constants.
 def load_r2() -> pd.DataFrame:
     return load_r2_hours(ARCHIVE_HOURS, veh_ids=VEH_SHAPES)

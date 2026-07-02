@@ -27,9 +27,9 @@ import argparse
 import json
 from pathlib import Path
 
-from bus_trajectories.colors import CONTROL_TYPE_COLORS as _COLORS
-from bus_trajectories.intersections import ControlPoint, load_intersections
-from bus_trajectories.io import load_gtfs_shape_with_dist
+from viz.colors import CONTROL_TYPE_COLORS as _COLORS
+from dataio.intersections import ControlPoint, load_intersections
+from dataio.gtfs import load_gtfs_shape_with_dist
 
 
 _LATMETER = 111320.0  # meters per degree of latitude (and approximate per

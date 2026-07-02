@@ -43,15 +43,15 @@ from pathlib import Path
 
 from gtfs_util import GTFS_ZIP, REPO, ensure_gtfs  # noqa: E402 (sets sys.path)
 
-from bus_trajectories.intersections import (  # noqa: E402
+from dataio.intersections import (  # noqa: E402
     DEFAULT_OVERPASS_ENDPOINT,
     OverpassError,
     OverpassUnreachable,
     find_intersections_for_shape,
     query_overpass,
 )
-from bus_trajectories.io import list_bus_shapes, load_gtfs_shape_with_dist  # noqa: E402
-from bus_trajectories.way_match import (  # noqa: E402
+from dataio.gtfs import list_bus_shapes, load_gtfs_shape_with_dist  # noqa: E402
+from dataio.way_match import (  # noqa: E402
     ValhallaUnreachable,
     load_cache,
     match_shape,

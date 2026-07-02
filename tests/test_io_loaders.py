@@ -1,4 +1,4 @@
-"""Unit tests for the GTFS / AVL-CSV loaders in bus_trajectories.io.
+"""Unit tests for the GTFS / AVL-CSV loaders in dataio.gtfs.
 
 These are pure parsers (no network); they were previously untested. Covers the
 deadhead drop and per-trip time sort in ``load_avl_csv``, the feet->meter
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from bus_trajectories.io import (
+from dataio.gtfs import (
     load_avl_csv,
     load_gtfs_shape_with_dist,
     shape_id_for_pattern,

@@ -32,9 +32,9 @@ import pyarrow.parquet as pq
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.io import load_gtfs_shape_with_dist  # noqa: E402
-from bus_trajectories.mapmatch.shape_snap import SnapToShapeMatcher  # noqa: E402
-from bus_trajectories.realtime import to_avl_csv_format, load_all_cta_hours  # noqa: E402
+from dataio.gtfs import load_gtfs_shape_with_dist  # noqa: E402
+from core.mapmatch.shape_snap import SnapToShapeMatcher  # noqa: E402
+from dataio.realtime import to_avl_csv_format, load_all_cta_hours  # noqa: E402
 
 PATTERN_ID = "3936"
 SHAPE_ID = "67803936"
@@ -200,7 +200,7 @@ def _reconstruct(sb: pd.DataFrame) -> None:
         shutil.rmtree(OUT_DIR)
 
     cmd = [
-        sys.executable, "-m", "bus_trajectories", "reconstruct",
+        sys.executable, "-m", "cli", "reconstruct",
         str(ALL_CSV),
         "--gtfs", str(REPO / "data" / "gtfs" / "cta_gtfs.zip"),
         "--route", "22",

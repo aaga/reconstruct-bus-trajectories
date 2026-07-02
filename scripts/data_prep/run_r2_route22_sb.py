@@ -31,7 +31,7 @@ import pandas as pd
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.realtime import (  # noqa: E402
+from dataio.realtime import (  # noqa: E402
     ARCHIVE_URL,
     fetch,
     load_recent_cta_hours,
@@ -160,7 +160,7 @@ def main() -> int:
         if out_dir.exists():
             shutil.rmtree(out_dir)
         cmd = [
-            sys.executable, "-m", "bus_trajectories", "reconstruct",
+            sys.executable, "-m", "cli", "reconstruct",
             str(csv), "--gtfs", args.gtfs,
             "--route", "22", "--pattern", args.pattern,
             "--bandwidth", str(bw),
@@ -175,7 +175,7 @@ def main() -> int:
     # Build comparison HTML.
     raw_dir = bw_dirs[0]
     cmd = [
-        sys.executable, "-m", "bus_trajectories", "compare",
+        sys.executable, "-m", "cli", "compare",
         *[str(d) for d in bw_dirs],
         "--raw-dir", str(raw_dir),
         "--gtfs", args.gtfs, "--pattern", args.pattern,

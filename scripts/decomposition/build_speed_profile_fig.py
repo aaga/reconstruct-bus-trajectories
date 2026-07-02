@@ -25,21 +25,21 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.delay_decomposition import (  # noqa: E402
+from core.decompose import (  # noqa: E402
     AbsoluteSpeedThreshold,
     ProximityDwellAttributor,
     build_segments_for_pattern,
     detect_events,
 )
-from bus_trajectories.delay_decomposition.attribution import (  # noqa: E402
+from core.decompose.attribution import (  # noqa: E402
     EventAttribution, attribute_event,
 )
-from bus_trajectories.delay_decomposition.decompose import (  # noqa: E402
+from core.decompose.decompose import (  # noqa: E402
     _apply_overflow_pass, _evaluate_dense,
 )
-from bus_trajectories.delay_decomposition.loss import loss_shoulders_for_event  # noqa: E402
-from bus_trajectories.delay_decomposition.travel_time import _last_t_at_x  # noqa: E402
-from bus_trajectories.serialize import load_records  # noqa: E402
+from core.decompose.loss import loss_shoulders_for_event  # noqa: E402
+from core.decompose.travel_time import _last_t_at_x  # noqa: E402
+from core.serialize import load_records  # noqa: E402
 
 PATTERN_ID = "3936"
 INTERSECTIONS_JSON = REPO / "intersections_route22.json"
@@ -50,7 +50,7 @@ FIG_DIR = REPO / "figures"
 TARGET_TRIP_ID = "1001350_4017_2026-05-05"
 M_PER_MILE = 1609.344
 
-from bus_trajectories.colors import (  # noqa: E402
+from viz.colors import (  # noqa: E402
     COL_CROSSING, COL_DWELL, COL_DWELL_NEAR, COL_LOSS, COL_SEG_NEG, COL_SEG_POS,
     COL_SIGNAL_OVERFLOW, COL_SIGNAL_UNIFORM, COL_SLOWDOWN, color_for_attribution,
 )

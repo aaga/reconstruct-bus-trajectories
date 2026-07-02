@@ -20,7 +20,7 @@ from scipy.interpolate import CubicHermiteSpline
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
-from bus_trajectories.serialize import load_records  # noqa: E402
+from core.serialize import load_records  # noqa: E402
 
 BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
 OUT = REPO / "figures" / "C4_alltrips_aligned.png"

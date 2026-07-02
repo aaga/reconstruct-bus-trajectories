@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from bus_trajectories.smooth import locreg_pchip
-from bus_trajectories.vtrak import (
+from core.smooth import locreg_pchip
+from dataio.vtrak import (
     best_shape as _best_shape,
     build_shape_matcher,
     load_r2_hours,
@@ -42,7 +42,7 @@ VEH = {
 }
 
 
-# Thin wrappers binding the shared bus_trajectories.vtrak helpers to this
+# Thin wrappers binding the shared dataio.vtrak helpers to this
 # script's constants. Kept as module-level names because build_vtrak_speed,
 # build_pchip_vs_mqsi and build_smoothing_dashboard import them from here.
 def build_matcher(shape_id: str):

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from bus_trajectories.smooth import locreg_mqsi, locreg_pchip
+from core.smooth import locreg_mqsi, locreg_pchip
 
 
 def _monotone_trip():
