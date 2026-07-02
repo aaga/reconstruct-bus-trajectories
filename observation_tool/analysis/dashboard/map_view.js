@@ -5,11 +5,11 @@
 
 import maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/+esm";
 import { projectCursorToRoute, visibleRouteRange, distToLonLat } from "./projection.js";
-// Single source of truth for the token, in the parent dashboard's assets.
-// (This analysis dashboard is a repo-local dev viewer served from the repo
-// root, so the relative hop is safe; it collapses fully when the two
-// dashboards are merged.)
-import { MAPBOX_TOKEN } from "../../../scripts/dashboard/assets/mapbox_token.js";
+// Mapbox public token, vendored into this folder so the bundle is
+// self-contained when deployed standalone (Cloudflare Pages, the VM, or a
+// plain static server). Kept in sync with scripts/dashboard/assets/mapbox_token.js
+// until the two dashboards are merged.
+import { MAPBOX_TOKEN } from "./mapbox_token.js";
 
 const MARKER_STYLE = {
   traffic_signals:       { color: "#cc0000", radius: 7, label: "Traffic signal" },
