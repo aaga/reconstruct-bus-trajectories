@@ -6,8 +6,11 @@
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 import {
   $, makeSvg, installInteraction, interp, color, fmtClock,
-  defaultXExtent, defaultDistExtentM,
+  defaultXExtent, defaultDistExtentM, getSource,
 } from "../chart_util.js";
+
+// delay_row.key → the checkbox toggle key in index.html.
+const ROW_TOGGLE = { avl: "dAVL", observed: "dWeb", phone: "dPhone", r2: "dR2" };
 import { distToLonLat } from "../projection.js";
 
 export class SpeedView {
@@ -22,7 +25,7 @@ export class SpeedView {
       this.placeBus(S.busHi, null, false);
     } else {
       this.placeBus(S.busHi, S.tToDist ? S.tToDist(v) : null, S.toggles.busHi);
-      this.placeBus(S.busLo, S.r2ToDist ? S.r2ToDist(v) : null, S.toggles.busLo && !!S.trip.r2);
+      this.placeBus(S.busLo, S.r2ToDist ? S.r2ToDist(v) : null, S.toggles.busLo && !!getSource(S.trip, "r2"));
     }
   }
 
@@ -94,23 +97,25 @@ export class SpeedView {
     // AVL covers the whole trip; in distance mode keep only stops the observed
     // trajectory can place (within its time span), since pre-boarding stops have
     // no route distance. In time mode show them all (full-trip view reveals them).
-    const pT = t.phone.curve.t;
-    const avlRows = distMode
-      ? (t.avl_delays || []).filter((b) => b.t_start >= pT[0] && b.t_start <= pT[pT.length - 1])
-      : (t.avl_delays || []);
-    const rows = [
-      { key: "dAVL", label: "AVL", delays: avlRows, src: t.phone.curve, avl: true },
-      { key: "dWeb", label: "Observed", delays: t.webapp_delays, src: t.phone.curve },
-      { key: "dPhone", label: "High-Freq", delays: t.phone ? t.phone.delays : [], src: t.phone.curve },
-      { key: "dR2", label: "Low-Freq", delays: t.r2 ? t.r2.delays : [], src: t.r2 ? t.r2.curve : null },
-    ];
+    const pT = getSource(t, "phone").curve.t;
+    // Build the delay-bar rows from the unified delay_rows[]. Each row's src is
+    // the curve of its source (for distance-mode x placement); AVL rows get the
+    // rich passenger tooltip and, in distance mode, are clipped to the observed
+    // trajectory's time span (pre-boarding stops have no route distance).
+    const rows = t.delay_rows.map((dr) => {
+      const source = getSource(t, dr.source_key);
+      const avl = dr.role === "avl";
+      let items = dr.items || [];
+      if (distMode && avl) items = items.filter((b) => b.t_start >= pT[0] && b.t_start <= pT[pT.length - 1]);
+      return { key: ROW_TOGGLE[dr.key] || dr.key, label: dr.label, delays: items, src: source ? source.curve : null, avl };
+    });
     const stripH = rows.length * (rowH + rowGap);
     const axisY = height - 24;
     const speedH = axisY - stripH - 12;
     const rowTop = speedH + 12;
 
     let maxV = 5;
-    for (const s of [t.phone, t.r2]) if (s) maxV = Math.max(maxV, d3.max(s.curve.speed_mph));
+    for (const s of t.sources) maxV = Math.max(maxV, d3.max(s.curve.speed_mph));
     const xFull = distMode ? defaultDistExtentM(S) : defaultXExtent(S);
     const view = S.view.speed || (S.view.speed = { x: xFull.slice() });
     const fmtX = distMode ? (v) => (v / 1000).toFixed(1) : fmt;
@@ -154,8 +159,8 @@ export class SpeedView {
         .call(d3.axisBottom(x).ticks(8).tickSize(-(axisY - M.t)).tickFormat(""));
       gGrid.selectAll(".domain").remove();
 
-      drawSpeed(gPhone, t.phone, "phone", S.toggles.phoneSpeed);
-      drawSpeed(gR2, t.r2, "r2", S.toggles.r2Speed);
+      drawSpeed(gPhone, getSource(t, "phone"), "phone", S.toggles.phoneSpeed);
+      drawSpeed(gR2, getSource(t, "r2"), "r2", S.toggles.r2Speed);
 
       rows.forEach((r, i) => {
         const ry = rowTop + i * (rowH + rowGap);

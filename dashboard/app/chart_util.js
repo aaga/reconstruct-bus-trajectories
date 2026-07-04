@@ -54,15 +54,22 @@ export function fmtClock(trip, tSec) {
   return d.toLocaleTimeString("en-US", { hour12: false, timeZone: "America/Chicago" });
 }
 
+// Unified-schema source access. The "primary" source (phone if present, else
+// the first) sets the cropped default extents, as the phone GPS window did.
+export const getSource = (trip, key) => trip.sources.find((s) => s.key === key);
+export const primaryCurve = (trip) => (getSource(trip, "phone") || trip.sources[0]).curve;
+
 export function timeExtent(trip) {
   let lo = Infinity, hi = -Infinity;
   const span = (arr) => arr.forEach((v) => { if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } });
-  for (const src of [trip.phone, trip.r2]) {
-    if (!src) continue;
-    span([src.curve.t[0], src.curve.t.at(-1)]);
-    src.delays.forEach((d) => span([d.t_start, d.t_end]));
+  for (const s of trip.sources) span([s.curve.t[0], s.curve.t.at(-1)]);
+  // Match the original: inferred delays contribute [t_start,t_end]; observed
+  // rows [t_start, t_end ?? t_start+5]; AVL rows don't extend the full window.
+  for (const row of trip.delay_rows) {
+    if (row.role === "avl") continue;
+    const open = row.role === "observed";
+    row.items.forEach((d) => span([d.t_start, open ? (d.t_end ?? d.t_start + 5) : d.t_end]));
   }
-  trip.webapp_delays.forEach((d) => span([d.t_start, d.t_end ?? d.t_start + 5]));
   if (!isFinite(lo)) { lo = 0; hi = 1; }
   return [lo, hi];
 }
@@ -72,10 +79,10 @@ export function pad([lo, hi], frac = 0.03) {
   return [lo - d, hi + d];
 }
 
-// Default x-extent: the phone-GPS window (cropped) unless "show full trip" is on.
+// Default x-extent: the primary-source window (cropped) unless "show full trip".
 export function defaultXExtent(S) {
   if (S.showFull) return timeExtent(S.trip);
-  const c = S.trip.phone.curve;
+  const c = primaryCurve(S.trip);
   return pad([c.t[0], c.t.at(-1)], 0.02);
 }
 
@@ -84,23 +91,23 @@ export function defaultDistExtentM(S) {
   const t = S.trip;
   if (S.showFull) {
     let m = 0;
-    for (const s of [t.phone, t.r2]) if (s) m = Math.max(m, d3.max(s.curve.dist_m));
+    for (const s of t.sources) m = Math.max(m, d3.max(s.curve.dist_m));
     return [0, m];
   }
-  const dm = t.phone.curve.dist_m;
+  const dm = primaryCurve(t).dist_m;
   return pad([d3.min(dm), d3.max(dm)], 0.02);
 }
 
-// Default y-extent (km) for the trajectory tab: phone's distance span when
-// cropped, the whole route when showing the full trip.
+// Default y-extent (km) for the trajectory tab: primary-source distance span
+// when cropped, the whole route when showing the full trip.
 export function defaultYExtentKm(S) {
   const t = S.trip;
   if (S.showFull) {
     let maxD = 0;
-    for (const s of [t.phone, t.r2]) if (s) maxD = Math.max(maxD, d3.max(s.curve.dist_m));
+    for (const s of t.sources) maxD = Math.max(maxD, d3.max(s.curve.dist_m));
     return [0, maxD / 1000];
   }
-  const dm = t.phone.curve.dist_m;
+  const dm = primaryCurve(t).dist_m;
   return pad([d3.min(dm) / 1000, d3.max(dm) / 1000], 0.04);
 }
 

@@ -12,7 +12,7 @@ import maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/+esm";
 import { State } from "./state.js";
 import { MapView } from "./map_view.js";
 import { StreetViewPopup } from "./street_view.js";
-import { $, busElement, interp } from "./chart_util.js";
+import { $, busElement, interp, getSource } from "./chart_util.js";
 import { TrajectoryView } from "./views/trajectory_view.js";
 import { SpeedView } from "./views/speed_view.js";
 
@@ -39,6 +39,29 @@ const S = {
 
 const trajView = new TrajectoryView(S);
 const speedView = new SpeedView(S);
+
+// Display modes. Rich = every source + delay row; Lite = the primary source +
+// its inferred delays only (emulating the single-trip route dashboard). Modes
+// are just preset toggle states over the shared views — no separate chart code.
+const MODE_PRESETS = {
+  rich: { phoneCurve: true, phoneRaw: false, r2Curve: true, r2Raw: false, stops: false,
+          phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true, dPhone: true, dR2: true, busHi: true, busLo: true },
+  lite: { phoneCurve: true, phoneRaw: false, r2Curve: false, r2Raw: false, stops: false,
+          phoneSpeed: true, r2Speed: false, dAVL: false, dWeb: false, dPhone: true, dR2: false, busHi: true, busLo: false },
+};
+const TOGGLE_IDS = {
+  "t-phoneCurve": "phoneCurve", "t-phoneRaw": "phoneRaw", "t-r2Curve": "r2Curve", "t-r2Raw": "r2Raw", "t-stops": "stops",
+  "s-phoneSpeed": "phoneSpeed", "s-r2Speed": "r2Speed", "s-dAVL": "dAVL", "s-dWeb": "dWeb",
+  "s-dPhone": "dPhone", "s-dR2": "dR2", "s-busHi": "busHi", "s-busLo": "busLo",
+};
+
+function setMode(mode) {
+  S.mode = mode;
+  Object.assign(S.toggles, MODE_PRESETS[mode]);
+  for (const [id, key] of Object.entries(TOGGLE_IDS)) { const el = $(id); if (el) el.checked = S.toggles[key]; }
+  document.querySelectorAll("#modes button").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  render();
+}
 
 // ----------------------------------------------------------- map lifecycle
 
@@ -81,27 +104,51 @@ async function loadTrip(key) {
   S.view = { trajectory: null, speed: null };
   S.lastV = null;
   const t = S.trip;
+  const phone = getSource(t, "phone");
+  const r2 = getSource(t, "r2");
   // Trajectory time<->distance (dist_m monotonic), for cursor/buses/street view.
-  const c = t.phone.curve;
+  const c = phone.curve;
   S.tToDist = (tSec) => interp(c.t, c.dist_m, tSec);
   S.distToT = (dM) => interp(c.dist_m, c.t, dM);
-  S.r2ToDist = t.r2 ? ((tSec) => interp(t.r2.curve.t, t.r2.curve.dist_m, tSec)) : null;
-  const r2n = t.r2 ? `${t.r2.n_on_route}/${t.r2.n_pings}` : "none";
+  S.r2ToDist = r2 ? ((tSec) => interp(r2.curve.t, r2.curve.dist_m, tSec)) : null;
+  const r2n = r2 ? `${r2.n_on_route}/${r2.n_pings}` : "none";
   $("trip-meta").textContent =
     `trip ${t.trip_id} · bus #${t.bus_id} · pattern ${t.pattern_id} · ` +
-    `High-Freq ${t.phone.n_on_route}/${t.phone.n_pings} on-route · Low-Freq ${r2n} · observer ${t.observer || "—"}`;
+    `High-Freq ${phone.n_on_route}/${phone.n_pings} on-route · Low-Freq ${r2n} · observer ${t.observer || "—"}`;
   render();
+}
+
+// Aggregate items (kind:"aggregate") — the Segments/Stems delay view is wired
+// in the next increment; for now show a placeholder so the catalog is complete.
+function showAggregate(item) {
+  teardownMap();
+  S.trip = null;
+  document.body.classList.remove("show-map");
+  $("trip-meta").textContent = `${item.label} · ${item.n_trips} trips`;
+  $("chart").innerHTML =
+    `<div style="padding:2rem;color:#555;max-width:40rem">` +
+    `<b>Aggregate delay view</b> — Segments &amp; Stems (mean minutes per segment, ` +
+    `per-facility p95 buffer) render here. Wiring DelayView against the unified ` +
+    `schema is the next increment.</div>`;
+}
+
+async function loadItem(key, items) {
+  const item = items.find((i) => i.key === key);
+  if (item && item.kind === "aggregate") showAggregate(item);
+  else await loadTrip(key);
 }
 
 async function init() {
   const idx = await fetch("../data/index.json", { cache: "no-store" }).then((r) => r.json());
+  const items = idx.items;
   const sel = $("trip-select");
-  for (const tr of idx.trips) {
+  for (const it of items) {
     const o = document.createElement("option");
-    o.value = tr.key; o.textContent = tr.label;
+    o.value = it.key;
+    o.textContent = (it.kind === "aggregate" ? "▦ " : "") + it.label;
     sel.appendChild(o);
   }
-  sel.onchange = () => loadTrip(sel.value);
+  sel.onchange = () => loadItem(sel.value, items);
 
   document.querySelectorAll("#tabs button").forEach((b) =>
     b.onclick = () => {
@@ -117,6 +164,7 @@ async function init() {
   bind("s-phoneSpeed", "phoneSpeed"); bind("s-r2Speed", "r2Speed");
   bind("s-dAVL", "dAVL"); bind("s-dWeb", "dWeb"); bind("s-dPhone", "dPhone"); bind("s-dR2", "dR2");
   bind("s-busHi", "busHi"); bind("s-busLo", "busLo");
+  document.querySelectorAll("#modes button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
   document.querySelectorAll('input[name="speedx"]').forEach((r) =>
     r.onchange = (e) => {
       if (!e.target.checked) return;
@@ -143,7 +191,7 @@ async function init() {
   };
   window.addEventListener("resize", render);
 
-  if (idx.trips.length) { sel.value = idx.trips[0].key; await loadTrip(idx.trips[0].key); }
+  if (items.length) { sel.value = items[0].key; await loadItem(items[0].key, items); }
 }
 
 init().catch((err) => {

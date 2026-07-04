@@ -5,7 +5,7 @@
 
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 import {
-  makeSvg, installInteraction, fmtClock, defaultXExtent, defaultYExtentKm,
+  makeSvg, installInteraction, fmtClock, defaultXExtent, defaultYExtentKm, getSource,
 } from "../chart_util.js";
 
 export class TrajectoryView {
@@ -55,8 +55,8 @@ export class TrajectoryView {
           .attr("x1", M.l).attr("x2", width - M.r)
           .attr("y1", (d) => y(d.dist_m / 1000)).attr("y2", (d) => y(d.dist_m / 1000));
       }
-      drawSource(gPhone, t.phone, "phone", S.toggles.phoneCurve, S.toggles.phoneRaw);
-      drawSource(gR2, t.r2, "r2", S.toggles.r2Curve, S.toggles.r2Raw);
+      drawSource(gPhone, getSource(t, "phone"), "phone", S.toggles.phoneCurve, S.toggles.phoneRaw);
+      drawSource(gR2, getSource(t, "r2"), "r2", S.toggles.r2Curve, S.toggles.r2Raw);
     }
 
     function drawSource(g, src, cls, showCurve, showRaw) {
