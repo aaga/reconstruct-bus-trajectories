@@ -57,6 +57,7 @@ figures/*_copy.png
 *.html
 !scripts/dashboard/assets/*_index.html
 !observation_tool/**/*.html
+!dashboard/**/*.html
 
 # --- Externally-managed subprojects ---------------------------------------
 routing-valhalla/
