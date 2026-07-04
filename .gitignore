@@ -78,3 +78,6 @@ observation_tool/.wrangler/
 observation_tool/analysis/dashboard/data/
 # downloaded bus-state-history CSVs
 observation_tool/analysis/AVL data/
+
+# Merged dashboard payloads are built by analysis/ (Phase 6) or copied locally
+dashboard/data/
