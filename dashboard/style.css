@@ -134,3 +134,11 @@ body.streetview-dragging .streetview-drag-overlay { display: block; cursor: move
 #modes { display: inline-flex; gap: 2px; margin: 0 6px; }
 #modes button { font-size: 12px; padding: 2px 9px; border: 1px solid #ccc; background: #f5f5f7; cursor: pointer; border-radius: 4px; }
 #modes button.active { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
+
+/* Two-level tabs: main (Single trip / Average trip) + sub-tabs */
+#main-tabs { display: inline-flex; gap: 4px; margin: 0 10px; }
+#main-tabs button { font-size: 13px; font-weight: 600; padding: 4px 12px; border: 1px solid #bbb; background: #eef1f5; cursor: pointer; border-radius: 5px; }
+#main-tabs button.active { background: #1a365d; color: #fff; border-color: #1a365d; }
+.mainbar { display: inline-flex; align-items: center; gap: 8px; }
+.mainbar.hidden, .subtabs.hidden, #controls.hidden { display: none; }
+.stub { padding: 2rem; color: #555; max-width: 42rem; font-size: 14px; line-height: 1.5; }

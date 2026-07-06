@@ -17,8 +17,11 @@ import { TrajectoryView } from "./views/trajectory_view.js";
 import { SpeedView } from "./views/speed_view.js";
 
 const S = {
+  main: "single",          // "single" | "average"
   trip: null,
-  tab: "trajectory",
+  agg: null,               // loaded aggregate payload (average trip)
+  tab: "trajectory",       // single-trip sub-tab: "trajectory" | "speed"
+  atab: "overall",         // average-trip sub-tab: "overall" | "segment"
   showFull: false, // false = crop both tabs to the phone-GPS window
   speedX: "time",  // "time" | "distance" for the speed tab x-axis
   // Persisted visible domains per tab (null = default extent). Survive resize.
@@ -89,6 +92,11 @@ function teardownMap() {
 }
 
 function render() {
+  if (S.main === "average") { renderAverage(); return; }
+  renderSingle();
+}
+
+function renderSingle() {
   $("controls").querySelectorAll(".ctrl-group").forEach((g) =>
     g.classList.toggle("hidden", g.dataset.for !== S.tab));
   const isSpeed = S.tab === "speed";
@@ -96,6 +104,21 @@ function render() {
   if (!S.trip) return;
   if (isSpeed) speedView.render(); else trajView.render();
   if (isSpeed) { ensureMap(); setTimeout(() => S.mapView?.resize(), 60); }
+}
+
+// Average-trip rendering. Overall-delay (F3 breakdown) and delay-per-segment
+// (map-mirrored Segments/Stems) are wired in the next increments; placeholders
+// for now so the tab structure is navigable.
+function renderAverage() {
+  teardownMap();
+  document.body.classList.remove("show-map");
+  if (!S.agg) return;
+  const seg = S.atab === "segment";
+  $("chart").innerHTML = seg
+    ? `<div class="stub"><b>Delay per segment</b> — map-mirrored Segments/Stems bars ` +
+      `(route ${S.agg.route_id}, ${S.agg.segments.length} segments). Wiring next.</div>`
+    : `<div class="stub"><b>Overall delay</b> — F3-style category breakdown across ` +
+      `${S.agg.n_trips} trips. Wiring next.</div>`;
 }
 
 async function loadTrip(key) {
@@ -118,45 +141,69 @@ async function loadTrip(key) {
   render();
 }
 
-// Aggregate items (kind:"aggregate") — the Segments/Stems delay view is wired
-// in the next increment; for now show a placeholder so the catalog is complete.
-function showAggregate(item) {
+async function loadAggregate(key) {
   teardownMap();
-  S.trip = null;
-  document.body.classList.remove("show-map");
-  $("trip-meta").textContent = `${item.label} · ${item.n_trips} trips`;
-  $("chart").innerHTML =
-    `<div style="padding:2rem;color:#555;max-width:40rem">` +
-    `<b>Aggregate delay view</b> — Segments &amp; Stems (mean minutes per segment, ` +
-    `per-facility p95 buffer) render here. Wiring DelayView against the unified ` +
-    `schema is the next increment.</div>`;
+  S.agg = await fetch(`../data/${key}.json`, { cache: "no-store" }).then((r) => r.json());
+  $("trip-meta").textContent = `${S.agg.label} · ${S.agg.n_trips} trips`;
+  render();
 }
 
-async function loadItem(key, items) {
-  const item = items.find((i) => i.key === key);
-  if (item && item.kind === "aggregate") showAggregate(item);
-  else await loadTrip(key);
+// Switch main tab: toggle the per-main selector bars, sub-tabs, and controls.
+function setMain(main) {
+  S.main = main;
+  document.querySelectorAll("#main-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.main === main));
+  for (const el of document.querySelectorAll(".mainbar, .subtabs, #controls")) {
+    el.classList.toggle("hidden", el.dataset.main !== main);
+  }
+  $("trip-meta").textContent = "";
+  render();
 }
 
 async function init() {
   const idx = await fetch("../data/index.json", { cache: "no-store" }).then((r) => r.json());
   const items = idx.items;
-  const sel = $("trip-select");
-  for (const it of items) {
-    const o = document.createElement("option");
-    o.value = it.key;
-    o.textContent = (it.kind === "aggregate" ? "▦ " : "") + it.label;
-    sel.appendChild(o);
-  }
-  sel.onchange = () => loadItem(sel.value, items);
+  const trips = items.filter((i) => i.kind === "trip");
+  const aggs = items.filter((i) => i.kind === "aggregate");
 
+  const tripSel = $("trip-select");
+  for (const it of trips) {
+    const o = document.createElement("option");
+    o.value = it.key; o.textContent = it.label;
+    tripSel.appendChild(o);
+  }
+  tripSel.onchange = () => loadTrip(tripSel.value);
+
+  const routeSel = $("route-select");
+  for (const it of aggs) {
+    const o = document.createElement("option");
+    o.value = it.key; o.textContent = it.label;
+    routeSel.appendChild(o);
+  }
+  routeSel.onchange = () => loadAggregate(routeSel.value);
+
+  // Main tabs (single / average). First switch to average loads the aggregate.
+  document.querySelectorAll("#main-tabs button").forEach((b) =>
+    (b.onclick = () => {
+      setMain(b.dataset.main);
+      if (b.dataset.main === "average" && !S.agg && aggs.length) {
+        routeSel.value = aggs[0].key; loadAggregate(aggs[0].key);
+      }
+    }));
+
+  // Single-trip sub-tabs
   document.querySelectorAll("#tabs button").forEach((b) =>
-    b.onclick = () => {
+    (b.onclick = () => {
       document.querySelectorAll("#tabs button").forEach((x) => x.classList.remove("active"));
       b.classList.add("active");
-      S.tab = b.dataset.tab;
-      render();
-    });
+      S.tab = b.dataset.tab; render();
+    }));
+  // Average-trip sub-tabs
+  document.querySelectorAll("#atabs button").forEach((b) =>
+    (b.onclick = () => {
+      document.querySelectorAll("#atabs button").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      S.atab = b.dataset.atab; render();
+    }));
 
   const bind = (id, key) => { $(id).onchange = (e) => { S.toggles[key] = e.target.checked; render(); }; };
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");
@@ -191,7 +238,7 @@ async function init() {
   };
   window.addEventListener("resize", render);
 
-  if (items.length) { sel.value = items[0].key; await loadItem(items[0].key, items); }
+  if (trips.length) { tripSel.value = trips[0].key; await loadTrip(trips[0].key); }
 }
 
 init().catch((err) => {

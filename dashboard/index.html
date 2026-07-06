@@ -3,31 +3,53 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Phone vs R2 — Trip Comparison</title>
+  <title>Bus trip dashboard</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <header>
     <h1>Bus&nbsp;trip dashboard</h1>
-    <select id="trip-select"></select>
-    <span id="modes" title="Rich = all sources + delay rows; Lite = one source + inferred delays only">
-      <button data-mode="rich" class="active">Rich</button>
-      <button data-mode="lite">Lite</button>
+
+    <nav id="main-tabs">
+      <button data-main="single" class="active">Single trip</button>
+      <button data-main="average">Average trip</button>
+    </nav>
+
+    <!-- Single-trip selector bar -->
+    <span class="mainbar" data-main="single">
+      <select id="trip-select"></select>
+      <span id="modes" title="Rich = all sources + delay rows; Lite = one source + inferred delays only">
+        <button data-mode="rich" class="active">Rich</button>
+        <button data-mode="lite">Lite</button>
+      </span>
+      <label id="global-controls" title="Crop both tabs to the phone-GPS window, or show the whole vehicle trip">
+        <input type="checkbox" id="show-full"> Show full trip
+      </label>
     </span>
+
+    <!-- Average-trip selector bar (route 22 only for now; routes + corridors later) -->
+    <span class="mainbar hidden" data-main="average">
+      <select id="route-select"></select>
+    </span>
+
     <div id="trip-meta" class="trip-meta"></div>
-    <label id="global-controls" title="Crop both tabs to the phone-GPS window, or show the whole vehicle trip">
-      <input type="checkbox" id="show-full"> Show full trip
-    </label>
   </header>
 
-  <nav id="tabs">
+  <!-- Single-trip sub-tabs -->
+  <nav id="tabs" class="subtabs" data-main="single">
     <button data-tab="trajectory" class="active">Trajectory (time–space)</button>
     <button data-tab="speed">Speed &amp; delays</button>
   </nav>
 
-  <!-- Controls; groups show/hide per tab -->
-  <div id="controls">
+  <!-- Average-trip sub-tabs -->
+  <nav id="atabs" class="subtabs hidden" data-main="average">
+    <button data-atab="overall" class="active">Overall delay</button>
+    <button data-atab="segment">Delay per segment</button>
+  </nav>
+
+  <!-- Controls; groups show/hide per sub-tab. Single-trip only for now. -->
+  <div id="controls" data-main="single">
     <div class="ctrl-group" data-for="trajectory">
       <span class="legend phone">High-Freq (bw=20)</span>
       <label><input type="checkbox" id="t-phoneCurve" checked> curve</label>
@@ -63,7 +85,7 @@
     <div id="map"></div>
   </div>
   <div id="tooltip" class="tooltip hidden"></div>
-  <p class="hint">Trajectory: scroll = zoom (Shift = vertical, ⌘/Ctrl = horizontal),
+  <p class="hint" id="hint">Trajectory: scroll = zoom (Shift = vertical, ⌘/Ctrl = horizontal),
     drag = pan. Speed: scroll/drag = time. On the speed tab, hover the chart to
     move the bus on the map; click for Street View; M/S toggle the basemap.</p>
 
