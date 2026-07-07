@@ -39,10 +39,11 @@ from scipy.interpolate import CubicHermiteSpline
 from dataio.intersections import load_intersections
 from dataio.gtfs import load_gtfs_shape_with_dist, load_route_stops
 from dataio.realtime import ARCHIVE_URL, fetch as _curl_fetch
+import corridor  # noqa: E402 -- centralized study-corridor constants
 from dataio.way_match import decode_polyline6
 
 # --- shared constants -----------------------------------------------------
-SHAPE_ID = "67803936"
+SHAPE_ID = corridor.SHAPE_ID
 TRIP_ID = "1001350_4017_2026-05-05"  # disambiguated _vehicle_id_chicago-date
 M_PER_MI = 1609.344
 WINDOW_MI = (6.0, 8.0)
@@ -382,7 +383,7 @@ def _stops_in_window():
 
 
 def _intersections_in_window():
-    ints = load_intersections("intersections_route22.json")[SHAPE_ID]
+    ints = load_intersections(corridor.INTERSECTIONS_FILE)[SHAPE_ID]
     out = []
     for cp in ints:
         d_mi = cp.dist_along_route_m / M_PER_MI
@@ -881,7 +882,7 @@ def slide_E_intersections_map():
     """Render intersections on a basemap (matplotlib equivalent of intersections_22sb.html)."""
     print("[E] intersections on basemap…")
     poly, _ = load_gtfs_shape_with_dist("data/gtfs/cta_gtfs.zip", SHAPE_ID)
-    cps = load_intersections("intersections_route22.json")[SHAPE_ID]
+    cps = load_intersections(corridor.INTERSECTIONS_FILE)[SHAPE_ID]
 
     fig, ax = plt.subplots(figsize=(7, 14), dpi=SLIDE_DPI)
     sx, sy = latlon_to_webmercator(poly[:, 0], poly[:, 1])

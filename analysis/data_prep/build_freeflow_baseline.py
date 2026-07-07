@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+import corridor  # noqa: E402 -- centralized study-corridor constants
 
 from core.decompose import build_segments_for_pattern  # noqa: E402
 from core.decompose.travel_time import (  # noqa: E402
@@ -30,10 +31,10 @@ from core.decompose.travel_time import (  # noqa: E402
 )
 from dataio.realtime import to_avl_csv_format, load_all_cta_hours  # noqa: E402
 
-PATTERN_ID = "3936"
-SHAPE_ID = "67803936"
+PATTERN_ID = corridor.PATTERN_ID
+SHAPE_ID = corridor.SHAPE_ID
 BANDWIDTH = 5
-INTERSECTIONS_JSON = REPO / "intersections_route22.json"
+INTERSECTIONS_JSON = REPO / corridor.INTERSECTIONS_FILE
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 ARCHIVE_CACHE = REPO / "caches" / "realtime_archive"
 
@@ -53,7 +54,7 @@ CHI_HOUR_END = 5     # 05:00 Chicago (exclusive upper)
 
 def _fetch_all_cta_hours() -> pd.DataFrame:
     """All Route 22 pings across the entire R2 archive (cached locally)."""
-    return load_all_cta_hours(cache_dir=ARCHIVE_CACHE, route_id="22")
+    return load_all_cta_hours(cache_dir=ARCHIVE_CACHE, route_id=corridor.ROUTE_ID)
 
 
 def _select_latenight_sb_trips(r22: pd.DataFrame) -> pd.DataFrame:
@@ -121,7 +122,7 @@ def _reconstruct_latenight(sb: pd.DataFrame) -> None:
         sys.executable, "-m", "cli", "reconstruct",
         str(LATENIGHT_CSV),
         "--gtfs", str(GTFS_ZIP),
-        "--route", "22",
+        "--route", corridor.ROUTE_ID,
         "--pattern", PATTERN_ID,
         "--bandwidth", str(BANDWIDTH),
         "--serialize",

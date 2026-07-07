@@ -30,6 +30,7 @@ import pandas as pd
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+import corridor  # noqa: E402 -- centralized study-corridor constants
 
 from dataio.realtime import (  # noqa: E402
     ARCHIVE_URL,
@@ -66,7 +67,7 @@ def select_route22_sb_trips(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
     stale positions when a vehicle stops reporting, producing duplicate rows
     that pollute the smoother's input.
     """
-    r22 = df[df.route_id == "22"].copy()
+    r22 = df[df.route_id == corridor.ROUTE_ID].copy()
     r22 = (
         r22.drop_duplicates(subset=["vehicle_id", "timestamp"])
            .sort_values(["trip_id", "timestamp"])
@@ -121,7 +122,7 @@ def main() -> int:
                     help="Comma-separated trip_ids to force-include (bypasses "
                          "quality filters; useful for inspecting partial trips)")
     ap.add_argument("--gtfs", default="data/gtfs/cta_gtfs.zip")
-    ap.add_argument("--pattern", default="3936")
+    ap.add_argument("--pattern", default=corridor.PATTERN_ID)
     ap.add_argument("--bandwidths", default="5,7,10,15,20")
     ap.add_argument("--cache", default="caches/realtime_archive")
     ap.add_argument("--csv-out", default="data/r2_route22_sb.csv")
@@ -138,7 +139,7 @@ def main() -> int:
     extras = [t.strip() for t in args.also_include.split(",") if t.strip()]
     if extras:
         extra_df = (
-            df[df.route_id == "22"]
+            df[df.route_id == corridor.ROUTE_ID]
               .drop_duplicates(["vehicle_id", "timestamp"])
               .query("trip_id in @extras")
               .sort_values(["trip_id", "timestamp"])
@@ -162,7 +163,7 @@ def main() -> int:
         cmd = [
             sys.executable, "-m", "cli", "reconstruct",
             str(csv), "--gtfs", args.gtfs,
-            "--route", "22", "--pattern", args.pattern,
+            "--route", corridor.ROUTE_ID, "--pattern", args.pattern,
             "--bandwidth", str(bw),
             "--serialize",
             "--out", str(out_dir),

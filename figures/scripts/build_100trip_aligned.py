@@ -24,11 +24,12 @@ PYTHONPATH_SRC = str((Path(__file__).resolve().parents[2] / "src"))
 if PYTHONPATH_SRC not in sys.path:
     sys.path.insert(0, PYTHONPATH_SRC)
 
+import corridor  # noqa: E402 -- centralized study-corridor constants
 from core.reconstruct import reconstruct_csv  # noqa: E402
 from dataio.realtime import ARCHIVE_URL, fetch  # noqa: E402
 
 GTFS = "data/gtfs/cta_gtfs.zip"
-PATTERN = "3936"
+PATTERN = corridor.PATTERN_ID
 ROUTE = "22"
 M_PER_MI = 1609.344
 BW = 5
@@ -59,7 +60,7 @@ def select_sb_trips(df: pd.DataFrame) -> pd.DataFrame:
     Trip key includes the date (UTC) of the first ping, since CTA reuses
     trip_id across days. The returned frame has a `trip_uid` column.
     """
-    r22 = df[df.route_id == "22"].copy()
+    r22 = df[df.route_id == corridor.ROUTE_ID].copy()
     r22 = r22.drop_duplicates(["vehicle_id", "timestamp"]).sort_values(
         ["trip_id", "timestamp"]
     ).reset_index(drop=True)

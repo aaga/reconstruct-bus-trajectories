@@ -20,6 +20,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
+import corridor  # noqa: E402 -- centralized study-corridor constants
 
 from core.decompose import (  # noqa: E402
     aggregate_trips,
@@ -31,8 +32,8 @@ from core.decompose.travel_time import (  # noqa: E402
 )
 from core.serialize import load_records  # noqa: E402
 
-PATTERN_ID = "3936"
-INTERSECTIONS_JSON = REPO / "intersections_route22.json"
+PATTERN_ID = corridor.PATTERN_ID
+INTERSECTIONS_JSON = REPO / corridor.INTERSECTIONS_FILE
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 DAYTIME_BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
 OUT_DIR = REPO / "outputs" / "out_decomposition"

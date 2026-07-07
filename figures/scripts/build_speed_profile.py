@@ -24,6 +24,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+import corridor  # noqa: E402 -- centralized study-corridor constants
 
 from core.decompose import (  # noqa: E402
     AbsoluteSpeedThreshold,
@@ -41,13 +42,13 @@ from core.decompose.loss import loss_shoulders_for_event  # noqa: E402
 from core.decompose.travel_time import _last_t_at_x  # noqa: E402
 from core.serialize import load_records  # noqa: E402
 
-PATTERN_ID = "3936"
-INTERSECTIONS_JSON = REPO / "intersections_route22.json"
+PATTERN_ID = corridor.PATTERN_ID
+INTERSECTIONS_JSON = REPO / corridor.INTERSECTIONS_FILE
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 DAYTIME_BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
 DECOMP_DIR = REPO / "outputs" / "out_decomposition"
 FIG_DIR = REPO / "figures"
-TARGET_TRIP_ID = "1001350_4017_2026-05-05"
+TARGET_TRIP_ID = corridor.REFERENCE_TRIP_ID
 M_PER_MILE = 1609.344
 
 from viz.colors import (  # noqa: E402

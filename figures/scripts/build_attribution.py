@@ -33,6 +33,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+import corridor  # noqa: E402 -- centralized study-corridor constants
 
 from core.decompose import (  # noqa: E402
     build_facility_index,
@@ -46,10 +47,10 @@ from core.decompose.travel_time import (  # noqa: E402
 from dataio.gtfs import load_gtfs_shape_with_dist  # noqa: E402
 from core.serialize import load_records  # noqa: E402
 
-PATTERN_ID = "3936"
-SHAPE_ID = "67803936"
+PATTERN_ID = corridor.PATTERN_ID
+SHAPE_ID = corridor.SHAPE_ID
 GTFS = REPO / "data" / "gtfs" / "cta_gtfs.zip"
-INTERSECTIONS_JSON = REPO / "intersections_route22.json"
+INTERSECTIONS_JSON = REPO / corridor.INTERSECTIONS_FILE
 BUNDLE = REPO / "outputs" / "out_r2_bw5" / "trajectories.json"
 FF_TABLE_PATH = REPO / "outputs" / "out_decomposition" / "freeflow_segments.json"
 FIG_DIR = REPO / "figures"
@@ -57,8 +58,8 @@ M_PER_MI = 1609.344
 
 # Disambiguated trip-id for the canonical "trip 1001350" — vehicle 4017,
 # 2026-05-05 Chicago.
-TARGET_TRIP_ID = "1001350_4017_2026-05-05"
-TARGET_TRIP_LABEL = "1001350"
+TARGET_TRIP_ID = corridor.REFERENCE_TRIP_ID
+TARGET_TRIP_LABEL = corridor.REFERENCE_TRIP_LABEL
 
 
 # Facility-kind colors, labels and ordering (shared palette).

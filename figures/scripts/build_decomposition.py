@@ -24,19 +24,20 @@ from matplotlib.patches import Patch
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+import corridor  # noqa: E402 -- centralized study-corridor constants
 
 from core.decompose import build_segments_for_pattern  # noqa: E402
 
-PATTERN_ID = "3936"
-INTERSECTIONS_JSON = REPO / "intersections_route22.json"
+PATTERN_ID = corridor.PATTERN_ID
+INTERSECTIONS_JSON = REPO / corridor.INTERSECTIONS_FILE
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 OUT_DIR = REPO / "outputs" / "out_decomposition"
 FIG_DIR = REPO / "figures"
 # Trip_ids in the bundle carry _<vehicle_id>_<chicago_date> suffixes to
 # disambiguate BusTime trip_id reuse across days; the canonical "trip 1001350"
 # is the original vehicle 4017 / 2026-05-05 instance.
-TARGET_TRIP_ID = "1001350_4017_2026-05-05"
-TARGET_TRIP_LABEL = "1001350"  # short label for titles + filenames
+TARGET_TRIP_ID = corridor.REFERENCE_TRIP_ID
+TARGET_TRIP_LABEL = corridor.REFERENCE_TRIP_LABEL  # short label for titles + filenames
 
 # Colors per delay component.
 COL_T_FF = "#a8d4a6"             # muted green
