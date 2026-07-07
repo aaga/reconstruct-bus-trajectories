@@ -15,6 +15,8 @@ import { StreetViewPopup } from "./street_view.js";
 import { $, busElement, interp, getSource } from "./chart_util.js";
 import { TrajectoryView } from "./views/trajectory_view.js";
 import { SpeedView } from "./views/speed_view.js";
+import { OverallDelayView } from "./views/overall_delay_view.js";
+import { DelayView } from "./views/delay_view.js";
 
 const S = {
   main: "single",          // "single" | "average"
@@ -41,6 +43,7 @@ const S = {
 
 const trajView = new TrajectoryView(S);
 const speedView = new SpeedView(S);
+const overallView = new OverallDelayView(S);
 
 // Display modes. Rich = every source + delay row; Lite = the primary source +
 // its inferred delays only (emulating the single-trip route dashboard). Modes
@@ -131,6 +134,7 @@ function render() {
 }
 
 function renderSingle() {
+  teardownAggViews(); // clean up the average-trip map/DelayView if we came from it
   $("controls").querySelectorAll(".ctrl-group").forEach((g) =>
     g.classList.toggle("hidden", g.dataset.for !== S.tab));
   const isSpeed = S.tab === "speed";
@@ -148,19 +152,38 @@ function renderSingle() {
   }
 }
 
-// Average-trip rendering. Overall-delay (F3 breakdown) and delay-per-segment
-// (map-mirrored Segments/Stems) are wired in the next increments; placeholders
-// for now so the tab structure is navigable.
+// Average-trip: Overall delay (F3 breakdown) or Delay per segment (DelayView
+// Segments/Stems mirrored to the shared map, coupled via a per-aggregate State).
 function renderAverage() {
-  teardownMap();
-  document.body.classList.remove("show-map");
-  if (!S.agg) return;
-  const seg = S.atab === "segment";
-  $("chart").innerHTML = seg
-    ? `<div class="stub"><b>Delay per segment</b> — map-mirrored Segments/Stems bars ` +
-      `(route ${S.agg.route_id}, ${S.agg.segments.length} segments). Wiring next.</div>`
-    : `<div class="stub"><b>Overall delay</b> — F3-style category breakdown across ` +
-      `${S.agg.n_trips} trips. Wiring next.</div>`;
+  teardownMap(); // tear down any single-trip map/buses
+  if (!S.agg) { teardownAggViews(); document.body.classList.remove("show-map"); $("chart").innerHTML = ""; return; }
+  if (S.atab === "segment") {
+    document.body.classList.add("show-map");
+    teardownAggViews();
+    ensureAggViews();
+  } else {
+    teardownAggViews();
+    document.body.classList.remove("show-map");
+    overallView.render();
+  }
+}
+
+function ensureAggViews() {
+  if (S.delayView) return;
+  $("chart").innerHTML = "";
+  S.aggState = new State();
+  S.delayView = new DelayView($("chart"), S.agg, S.aggState);
+  S.aggMap = new MapView($("map"), S.agg, S.aggState);
+  S.aggStreet = new StreetViewPopup(S.agg, S.aggState);
+  S.aggMap.map.once("idle", () => S.aggMap?.resize());
+  setTimeout(() => S.aggMap?.resize(), 60);
+}
+
+function teardownAggViews() {
+  S.aggMap?.destroy();
+  S.aggStreet?.destroy();
+  if (S.delayView) $("chart").innerHTML = ""; // DelayView has no destroy()
+  S.aggMap = S.aggStreet = S.aggState = S.delayView = null;
 }
 
 async function loadTrip(key) {
@@ -261,12 +284,22 @@ async function init() {
       S.cursor = null;      // x-value units changed -> drop persisted cursor
       render();
     });
-  // M / S basemap shortcuts (speed tab, when the map exists)
+  // Keyboard: single-trip M/S basemap; average-trip B/E (Segments/Stems),
+  // H (hide unattributed), M/S (basemap).
   document.addEventListener("keydown", (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || !S.mapView) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea" || tag === "select") return;
     const k = e.key.toLowerCase();
+    if (S.main === "average" && S.aggState) {
+      if (k === "b") S.aggState.publish("delayMode:changed", { value: "segments" });
+      else if (k === "e") S.aggState.publish("delayMode:changed", { value: "stems" });
+      else if (k === "h") { S._hideUnattr = !S._hideUnattr; S.aggState.publish("hideUnattributed:changed", { value: S._hideUnattr }); }
+      else if (k === "m") S.aggState.publish("basemap:changed", { value: "map" });
+      else if (k === "s") S.aggState.publish("basemap:changed", { value: "satellite" });
+      return;
+    }
+    if (!S.mapView) return;
     if (k === "m") S.mapState.publish("basemap:changed", { value: "map" });
     else if (k === "s") S.mapState.publish("basemap:changed", { value: "satellite" });
   });

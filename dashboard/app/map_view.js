@@ -88,6 +88,28 @@ export class MapView {
       state.subscribe("basemap:changed", ({ value }) => this._setBasemap(value)),
       state.subscribe("range:changed", (e) => { if (e.source !== "map") this._fitToRange(e.visibleDistRangeM); }),
     ];
+    // Aggregate (delay-per-segment) view has no bus markers, so the map shows a
+    // cursor dot that the DelayView drives via dist:hovered.
+    if (data.kind === "aggregate") {
+      this._cursorEl = document.createElement("div");
+      this._cursorEl.className = "map-cursor-dot";
+      this._cursorEl.style.display = "none";
+      this._cursor = new maplibregl.Marker({ element: this._cursorEl, anchor: "center" })
+        .setLngLat(data.shape.polyline_lonlat[0]).addTo(this.map);
+      this._unsub.push(
+        state.subscribe("dist:hovered", (e) => this._showCursor(e.distM)),
+        state.subscribe("dist:cleared", () => { this._cursorEl.style.display = "none"; }),
+      );
+    }
+  }
+
+  _showCursor(distM) {
+    if (!this._cursor || distM == null || Number.isNaN(distM)) {
+      if (this._cursorEl) this._cursorEl.style.display = "none";
+      return;
+    }
+    this._cursor.setLngLat(distToLonLat(distM, this.data.shape.polyline_lonlat, this.data.shape.cumdist_m));
+    this._cursorEl.style.display = "";
   }
 
   destroy() {

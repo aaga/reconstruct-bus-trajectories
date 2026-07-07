@@ -145,3 +145,17 @@ body.streetview-dragging .streetview-drag-overlay { display: block; cursor: move
 .mainbar { display: inline-flex; align-items: center; gap: 8px; }
 .mainbar.hidden, .subtabs.hidden, #controls.hidden { display: none; }
 .stub { padding: 2rem; color: #555; max-width: 42rem; font-size: 14px; line-height: 1.5; }
+
+/* Average-trip: DelayView band tooltip + map cursor dot */
+.band-tooltip {
+  position: absolute; z-index: 50; pointer-events: none;
+  background: #1c1c28; color: #fff; font-size: 12px; line-height: 1.4;
+  padding: 6px 9px; border-radius: 6px; max-width: 260px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.band-tooltip .ttl-cat { font-weight: 600; margin-bottom: 2px; }
+.band-tooltip .ttl-where { color: #cbd5e1; margin-bottom: 1px; }
+.band-tooltip .ttl-dur { color: #9aa5b1; }
+.map-cursor-dot {
+  width: 13px; height: 13px; border-radius: 50%; background: #1a73e8;
+  border: 2px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,0.55); pointer-events: none;
+}

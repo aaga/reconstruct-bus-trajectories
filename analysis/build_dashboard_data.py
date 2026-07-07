@@ -93,6 +93,7 @@ def aggregate_payload(route: dict, *, key: str, route_id: str) -> dict:
         "kind": "aggregate",
         "key": key,
         "label": route.get("view_title", key),
+        "view_title": route.get("view_title", key),  # DelayView reads this
         "route_id": route_id,
         "n_trips": route.get("n_trips"),
         "shape": route["shape"],
