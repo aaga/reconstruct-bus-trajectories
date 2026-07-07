@@ -42,12 +42,16 @@ visualization, ④ dashboard) plus the standalone recording app. See
 src/                         ① importable packages (pythonpath=src; the tested core)
   ├─ core/                   pure business logic — no I/O, no plotting
   │    ├─ smooth.py          LOCREG, monotonicity, PCHIP + MQSI smoothers
-  │    ├─ reconstruct.py     end-to-end trajectory reconstruction
+  │    ├─ reconstruct.py     end-to-end trajectory reconstruction (pure)
   │    ├─ serialize.py       compact PCHIP (de)serialization
+  │    ├─ control_points.py  the ControlPoint model + pure near-side classifier
   │    ├─ mapmatch/          projection onto the GTFS shape (+ Valhalla stub)
   │    └─ decompose/         signal-to-signal segmentation + per-segment delay buckets
   ├─ dataio/                 external I/O — gtfs.py (GTFS/AVL), realtime.py (R2
-  │                          archive), intersections.py, way_match.py, vtrak.py
+  │    │                     archive), intersections.py, way_match.py, vtrak.py
+  │    ├─ records_io.py      disk/GTFS-backed wrappers (reconstruct_csv, build_segments)
+  │    └─ sources/           pluggable GPS-trace adapters → one canonical trace
+  ├─ corridor.py             the study route/pattern/shape in one place (scripts read it)
   ├─ viz/                    matplotlib/plotly renderers + colour palette
   └─ cli/                    `bus-trajectories reconstruct | compare | build-*`
 
@@ -58,10 +62,12 @@ analysis/                    ② results & dashboard payloads
   └─ data_prep/              scour the realtime archive → reconstruction bundles
 
 figures/                     ③ visualization
-  ├─ scripts/                all figure generators (smoothing / vtrak / decomposition)
+  ├─ scripts/                all figure generators (+ render_architecture.py)
   └─ <family>.png            rendered figures, families A1..H7 (see below)
 
-dashboard/                   ④ one merged MapLibre + D3 dashboard (Single trip / Average trip)
+dashboard/                   ④ one merged MapLibre + D3 dashboard
+  ├─ app/  views/            Single trip (Trajectory · Speed) + Average trip (Overall · Segment)
+  └─ data/                   catalog index.json + per-view payloads (trips + aggregates)
 record-a-ride/               field-data collection web app + Cloudflare Pages API
 tests/                       pytest suite (mirrors src/)
 intersections_route22.json   precomputed enrichment for shape 67803936 + variants
