@@ -44,6 +44,13 @@ import numpy as np
 
 from .gtfs import load_gtfs_shape_with_dist
 from core.mapmatch.shape_snap import SnapToShapeMatcher
+# The ControlPoint model + pure helpers live in core; re-exported here so the
+# many `from dataio.intersections import ControlPoint` call sites keep working.
+from core.control_points import (  # noqa: F401
+    ControlPoint,
+    SIGNALIZED_CONTROL_TYPES,
+    classify_near_side_stops,
+)
 from .way_match import WaySegment, load_cache as load_way_cache
 
 # How far back from an intersection (along the bus's way) to look for a
@@ -89,54 +96,6 @@ DEFAULT_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ControlPoint:
-    """One controlled feature along a route.
-
-    For traffic_signals / stop / give_way, the ``intersection_node_id`` is
-    the topological intersection vertex on the bus's way (the node OSM
-    shares between the bus's road and a cross-street).
-
-    For ped_crossing_signal / ped_crossing_marked the ``intersection_node_id``
-    is the crossing's own OSM node id; the *intersection* it belongs to
-    (if any) is recorded separately in ``anchor_intersection_node_id``.
-    """
-
-    intersection_node_id: int
-    lat: float
-    lon: float
-    dist_along_route_m: float
-    on_way_id: int
-    control_type: str  # "traffic_signals" | "stop" | "give_way" | "ped_crossing_signal" | "ped_crossing_marked"
-    cross_street_names: tuple[str, ...]
-    # When ControlPoints get merged (e.g., two signal nodes that are
-    # really one physical intersection split across two OSM ways), this
-    # tracks the OSM node_ids that were folded into this representative.
-    merged_node_ids: tuple[int, ...] = ()
-
-    # Pedestrian-crossing metadata. Populated only for ped_crossing_*
-    # ControlPoints; default-empty for everything else.
-    #
-    # ``anchor_intersection_node_id`` — the intersection vertex on the bus's
-    # way that this crossing belongs to, or ``None`` for a true mid-block
-    # crossing with no intersection vertex nearby. Multiple crossings at
-    # the same physical intersection share the same anchor id.
-    #
-    # ``signalized`` — derived from ``control_type`` for ped_crossing_*
-    # but stored explicitly so downstream code can filter on a single
-    # boolean without parsing the type string.
-    #
-    # ``markings`` — the value of OSM ``crossing:markings`` (e.g. "zebra",
-    # "lines", "dashes", "ladder", "yes"). Empty string if absent.
-    #
-    # ``has_island`` — true iff OSM ``crossing:island=yes`` (a pedestrian
-    # refuge in the middle of the crossing).
-    anchor_intersection_node_id: int | None = None
-    signalized: bool = False
-    markings: str = ""
-    has_island: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -777,39 +736,6 @@ def save_intersections(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload))
     return out
-
-
-SIGNALIZED_CONTROL_TYPES = frozenset({"traffic_signals", "ped_crossing_signal"})
-
-
-def classify_near_side_stops(
-    stops: list[dict],
-    control_points: list[ControlPoint],
-    threshold_m: float = 90 / 3.28084,  # 90 ft
-) -> set[str]:
-    """Return the set of ``stop_id`` values that are "near-side" — i.e. have any
-    signalized ControlPoint (``traffic_signals`` or ``ped_crossing_signal``)
-    within ``threshold_m`` *downstream* (larger ``dist_along_route_m``).
-
-    For near-side stops, the dwell vs. signal portion of any stopping activity
-    is ambiguous from GPS alone; downstream consumers should flag attributions
-    to these stops as uncertain.
-    """
-    signal_xs = sorted(
-        cp.dist_along_route_m for cp in control_points
-        if cp.control_type in SIGNALIZED_CONTROL_TYPES
-    )
-    flagged: set[str] = set()
-    for stop in stops:
-        x_stop = stop["dist_along_m"]
-        for x_sig in signal_xs:
-            if x_sig < x_stop:
-                continue
-            if x_sig - x_stop > threshold_m:
-                break  # sorted; no further signals can be within threshold
-            flagged.add(str(stop["stop_id"]))
-            break
-    return flagged
 
 
 def load_intersections(in_path: str | Path) -> dict[str, list[ControlPoint]]:

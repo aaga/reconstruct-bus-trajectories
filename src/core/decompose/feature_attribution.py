@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from dataio.intersections import ControlPoint
+from core.control_points import ControlPoint
 from .decompose import TripDecomp
 from .segments import Segment
 
