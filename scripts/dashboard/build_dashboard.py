@@ -44,8 +44,8 @@ from analysis.prep.geometry import (  # noqa: E402
     bearing_from_polyline as _bearing_from_polyline,
     cumulative_route_dist_m as _cumulative_route_dist_m,
 )
+from dataio.records_io import build_segments_for_pattern  # noqa: E402
 from core.decompose import (  # noqa: E402
-    build_segments_for_pattern,
     decompose_trip,
 )
 from core.decompose.travel_time import (  # noqa: E402

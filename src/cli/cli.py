@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from core.reconstruct import reconstruct_csv
+from dataio.records_io import reconstruct_csv
 from viz.plot import plot_speed_profile, plot_time_space
 from core.serialize import save_records, save_records_npz, to_pchip_record
 from viz.viz import make_interactive_html

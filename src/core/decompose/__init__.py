@@ -16,8 +16,6 @@ from .segments import (
     NEAR_SIDE_THRESHOLD_M,
     Segment,
     StopOnRoute,
-    build_segments,
-    build_segments_for_pattern,
     build_segments_from_records,
 )
 from .events import (
@@ -50,8 +48,6 @@ __all__ = [
     "NEAR_SIDE_THRESHOLD_M",
     "Segment",
     "StopOnRoute",
-    "build_segments",
-    "build_segments_for_pattern",
     "build_segments_from_records",
     "AbsoluteSpeedThreshold",
     "Event",

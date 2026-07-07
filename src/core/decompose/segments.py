@@ -9,16 +9,12 @@ per chapter §3.2.3 and the user's specification).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Iterable
 
 from core.control_points import (
     SIGNALIZED_CONTROL_TYPES,
     ControlPoint,
     classify_near_side_stops,
 )
-from dataio.intersections import load_intersections
-from dataio.gtfs import load_route_stops, shape_id_for_pattern
 
 NEAR_SIDE_THRESHOLD_M = 90 / 3.28084  # 90 ft
 
@@ -106,35 +102,3 @@ def build_segments_from_records(
             )
         )
     return segments
-
-
-def build_segments(
-    shape_id: str,
-    intersections_path: Path,
-    gtfs_zip_path: Path,
-    *,
-    near_side_threshold_m: float = NEAR_SIDE_THRESHOLD_M,
-) -> list[Segment]:
-    """Load ControlPoints + stops for a shape and build the segment list."""
-    all_cps = load_intersections(intersections_path)
-    if shape_id not in all_cps:
-        raise KeyError(f"shape_id {shape_id!r} not present in {intersections_path}")
-    stops = load_route_stops(gtfs_zip_path, shape_id)
-    return build_segments_from_records(
-        all_cps[shape_id], stops, near_side_threshold_m=near_side_threshold_m
-    )
-
-
-def build_segments_for_pattern(
-    pattern_id: str,
-    intersections_path: Path,
-    gtfs_zip_path: Path,
-    **kwargs,
-) -> list[Segment]:
-    """Convenience: resolve shape_id from pattern_id via the GTFS-derived prefix."""
-    return build_segments(
-        shape_id_for_pattern(pattern_id),
-        intersections_path,
-        gtfs_zip_path,
-        **kwargs,
-    )

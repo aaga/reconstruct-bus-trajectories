@@ -26,10 +26,10 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 import corridor  # noqa: E402 -- centralized study-corridor constants
 
+from dataio.records_io import build_segments_for_pattern  # noqa: E402
 from core.decompose import (  # noqa: E402
     AbsoluteSpeedThreshold,
     ProximityDwellAttributor,
-    build_segments_for_pattern,
     detect_events,
 )
 from core.decompose.attribution import (  # noqa: E402

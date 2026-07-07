@@ -26,7 +26,7 @@ if PYTHONPATH_SRC not in sys.path:
     sys.path.insert(0, PYTHONPATH_SRC)
 
 import corridor  # noqa: E402 -- centralized study-corridor constants
-from core.reconstruct import reconstruct_csv  # noqa: E402
+from dataio.records_io import reconstruct_csv  # noqa: E402
 from dataio.realtime import ARCHIVE_URL, fetch  # noqa: E402
 
 GTFS = "data/gtfs/cta_gtfs.zip"

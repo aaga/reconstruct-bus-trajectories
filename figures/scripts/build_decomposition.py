@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 import corridor  # noqa: E402 -- centralized study-corridor constants
 
-from core.decompose import build_segments_for_pattern  # noqa: E402
+from dataio.records_io import build_segments_for_pattern  # noqa: E402
 
 PATTERN_ID = corridor.PATTERN_ID
 INTERSECTIONS_JSON = REPO / corridor.INTERSECTIONS_FILE
