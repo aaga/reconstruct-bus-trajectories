@@ -7,7 +7,7 @@ per-facility stats folded onto ``features``.
 
 For now this is a **converter** over already-built artifacts (so no network
 pipeline re-run is needed):
-  * observation trips  ← observation_tool/analysis/dashboard/data/*.json
+  * observation trips  ← outputs/obs_trips/*.json
   * route aggregate    ← outputs/out_dashboard/sb_route/data.json
 
 Wiring it directly onto the live pipelines (comparison.py as a phone+R2+AVL
@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-OBS_DATA = REPO / "observation_tool" / "analysis" / "dashboard" / "data"
+OBS_DATA = REPO / "outputs" / "obs_trips"
 ROUTE_AGG = REPO / "outputs" / "out_dashboard" / "sb_route" / "data.json"
 OUT = REPO / "dashboard" / "data"
 

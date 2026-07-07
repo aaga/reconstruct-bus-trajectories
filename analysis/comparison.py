@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 
 import sys
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))  # so the top-level analysis/ layer is importable
 from analysis.prep.geometry import (  # noqa: E402
@@ -58,7 +58,7 @@ INTERSECTIONS = REPO / "caches" / "cta" / "intersections.json"
 PAGES = "https://cta-observation-tool.pages.dev/api/trips"
 CHICAGO = ZoneInfo("America/Chicago")
 MPS_TO_MPH = 2.23694
-OUT = Path(__file__).resolve().parent / "dashboard" / "data"
+OUT = REPO / "outputs" / "obs_trips"
 AVL_DIR = Path(__file__).resolve().parent / "AVL data"  # CTA bus_state_history dumps
 
 # Attribution reuses the pipeline's delay_decomposition stack unchanged, so an

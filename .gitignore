@@ -70,15 +70,15 @@ Reconstructing_Transit_Vehicle_Trajectory_Using_High-Resolution_GPS_Data.pdf
 # --- Claude Code session state --------------------------------------------
 .claude/
 
-# --- observation_tool: secrets + build artifacts --------------------------
+# --- record-a-ride: secrets + build artifacts --------------------------
 # Cloudflare secrets — never commit
-observation_tool/.dev.vars
+record-a-ride/.dev.vars
 # Miniflare local R2/sqlite/pages dev state
-observation_tool/.wrangler/
-# generated comparison payloads (rebuilt by analysis/build_comparison.py)
-observation_tool/analysis/dashboard/data/
+record-a-ride/.wrangler/
+# generated comparison payloads (rebuilt by analysis/comparison.py)
+outputs/obs_trips/
 # downloaded bus-state-history CSVs
-observation_tool/analysis/AVL data/
+analysis/AVL data/
 
 # Merged dashboard payloads are built by analysis/ (Phase 6) or copied locally
 dashboard/data/
