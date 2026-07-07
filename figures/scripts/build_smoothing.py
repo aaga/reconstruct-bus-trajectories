@@ -17,7 +17,7 @@ Produces 14 PNGs in `slides/`:
   E1_map.png — Route 22 SB intersections rendered on a basemap
 
 Run:
-    PYTHONPATH=src .venv/bin/python scripts/build_slides.py
+    PYTHONPATH=src .venv/bin/python scripts/build_smoothing.py
 """
 
 from __future__ import annotations

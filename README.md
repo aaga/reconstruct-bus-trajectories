@@ -34,44 +34,44 @@ minutes of trip time.
 
 ## Repository layout
 
+The repo is organized into four layers (① core logic, ② analysis, ③
+visualization, ④ dashboard) plus the standalone recording app. See
+[`ARCHITECTURE.png`](ARCHITECTURE.png) for the dependency diagram.
+
 ```
-src/bus_trajectories/        core package (installed; the only code with tests)
-  ├─ smooth.py               LOCREG, monotonicity fix-up, PCHIP + MQSI smoothers
-  ├─ pipeline.py             end-to-end reconstruction from a CSV of pings
-  ├─ mapmatch/shape_snap.py  one-step projection onto the GTFS shape
-  ├─ mapmatch/valhalla.py    optional Valhalla-based matcher (paper's path)
-  ├─ way_match.py            cache OSM ways the shape traverses (Valhalla)
-  ├─ intersections.py        Overpass enrichment → ControlPoint records
-  ├─ delay_decomposition/    signal-to-signal segmentation + per-segment buckets
-  ├─ io.py                   GTFS / AVL-CSV loaders
-  ├─ realtime.py             shared client for the public realtime ping archive (R2-hosted)
-  ├─ colors.py               shared figure/dashboard palettes
-  ├─ vtrak.py                shared dense-VTRAK (ROCKET) loaders + shape picker
-  ├─ viz.py / viz_compare.py interactive Plotly comparison viewers
-  ├─ plot.py                 static matplotlib helpers
-  └─ cli.py                  `bus-trajectories reconstruct | compare | build-*`
+src/                         ① importable packages (pythonpath=src; the tested core)
+  ├─ core/                   pure business logic — no I/O, no plotting
+  │    ├─ smooth.py          LOCREG, monotonicity, PCHIP + MQSI smoothers
+  │    ├─ reconstruct.py     end-to-end trajectory reconstruction
+  │    ├─ serialize.py       compact PCHIP (de)serialization
+  │    ├─ mapmatch/          projection onto the GTFS shape (+ Valhalla stub)
+  │    └─ decompose/         signal-to-signal segmentation + per-segment delay buckets
+  ├─ dataio/                 external I/O — gtfs.py (GTFS/AVL), realtime.py (R2
+  │                          archive), intersections.py, way_match.py, vtrak.py
+  ├─ viz/                    matplotlib/plotly renderers + colour palette
+  └─ cli/                    `bus-trajectories reconstruct | compare | build-*`
 
-scripts/                     build & figure-rendering pipeline (see scripts/README.md)
-  ├─ data_prep/              scour the realtime archive → reconstruction bundles
-  ├─ smoothing_figs/         LOCREG-PCHIP smoothing & time-space figures
-  ├─ vtrak/                  dense-VTRAK validation figures
-  ├─ decomposition/          delay-decomposition figures
-  └─ dashboard/              interactive MapLibre + D3 dashboards
+analysis/                    ② results & dashboard payloads
+  ├─ run_decomposition.py    per-trip decomposition → trip_*.json + aggregate.csv
+  ├─ build_dashboard_data.py unified dashboard payload builder (+ prep/ helpers)
+  ├─ comparison.py           phone+R2+AVL fusion → outputs/obs_trips/
+  └─ data_prep/              scour the realtime archive → reconstruction bundles
 
-observation_tool/            field-data collection web app + analysis (see its README)
-tests/                       pytest suite
-figures/                     curated report figures, families A1..H7 (see below)
-intersections_route22.json   precomputed enrichment for shape 67803936 + 6 variants
+figures/                     ③ visualization
+  ├─ scripts/                all figure generators (smoothing / vtrak / decomposition)
+  └─ <family>.png            rendered figures, families A1..H7 (see below)
 
-data/  outputs/  caches/     gitignored — regenerable inputs, bundles, and caches
-docs/                        reference papers (gitignored, not redistributable)
+dashboard/                   ④ one merged MapLibre + D3 dashboard (Single trip / Average trip)
+record-a-ride/               field-data collection web app + Cloudflare Pages API
+tests/                       pytest suite (mirrors src/)
+intersections_route22.json   precomputed enrichment for shape 67803936 + variants
+data/ outputs/ caches/       gitignored — regenerable inputs, bundles, and caches
+docs/                        reference papers + attribution flowchart
 ```
 
-The `scripts/` tree is versioned and grouped by purpose; each script is a
-convenience wrapper around the `bus_trajectories` package. Their inputs and
-outputs live in the gitignored `data/`, `outputs/`, and `caches/` folders. See
-[`scripts/README.md`](scripts/README.md) for what each group does and the
-end-to-end run order.
+Scripts run with `src` on the path (they insert it themselves); the console
+entry point is `bus-trajectories` (`cli.cli:main`). Inputs and outputs live in
+the gitignored `data/`, `outputs/`, and `caches/` folders.
 
 ### Figures
 
@@ -80,14 +80,14 @@ iteration (a number), each produced by the script noted:
 
 | Family | Content | Script |
 | ------ | ------- | ------ |
-| `A1..A10` | archive → map-match pipeline walkthrough | `smoothing_figs/build_slides.py` |
-| `B1..B6`  | speed reconstruction | `smoothing_figs/build_slides.py` |
-| `C1..C5`  | time-space (50/100/all trips, multitrip) | `smoothing_figs/build_{50trip,100trip,F4_from_bundle}.py` |
-| `D1..D2`  | smoothing explainers (LOCREG, pipeline) | `smoothing_figs/build_locreg_explainer.py`, `build_slides.py` |
-| `E1`      | intersection map | `smoothing_figs/build_slides.py` |
-| `F1..F5`  | delay decomposition | `decomposition/build_decomposition_figs.py`, `build_speed_profile_fig.py` |
-| `G1..G3`  | per-trip attribution (waterfall/bar/stem) | `decomposition/build_attribution_slides.py` |
-| `H1..H7`  | corridor-aggregate attribution | `decomposition/build_attribution_slides.py` |
+| `A1..A10` | archive → map-match pipeline walkthrough | `figures/scripts/build_smoothing.py` |
+| `B1..B6`  | speed reconstruction | `figures/scripts/build_smoothing.py` |
+| `C1..C5`  | time-space (50/100/all trips, multitrip) | `figures/scripts/build_{50trip,100trip,F4_from_bundle}.py` |
+| `D1..D2`  | smoothing explainers (LOCREG, pipeline) | `figures/scripts/build_locreg_explainer.py`, `build_smoothing.py` |
+| `E1`      | intersection map | `figures/scripts/build_smoothing.py` |
+| `F1..F5`  | delay decomposition | `figures/scripts/build_decomposition.py`, `build_speed_profile.py` |
+| `G1..G3`  | per-trip attribution (waterfall/bar/stem) | `figures/scripts/build_attribution.py` |
+| `H1..H7`  | corridor-aggregate attribution | `figures/scripts/build_attribution.py` |
 
 ## Quickstart
 
@@ -96,12 +96,12 @@ uv sync                               # install runtime + dev deps
 uv run pytest                         # run the test suite
 
 # reconstruct from a CSV of pings (route 22, pattern 3936) at bandwidth 5
-PYTHONPATH=src uv run python -m bus_trajectories reconstruct \
+uv run bus-trajectories reconstruct \
     your_pings.csv --gtfs data/gtfs/cta_gtfs.zip \
     --route 22 --pattern 3936 --bandwidth 5 --serialize --out outputs/out_bw5
 
 # build the interactive bandwidth-comparison HTML over multiple bandwidths
-PYTHONPATH=src uv run python -m bus_trajectories compare \
+uv run bus-trajectories compare \
     outputs/out_bw5 outputs/out_bw10 outputs/out_bw20 \
     --gtfs data/gtfs/cta_gtfs.zip --pattern 3936 --out compare.html
 ```
@@ -144,8 +144,8 @@ single trip:
 
 ## Delay attribution
 
-The **chapter-3 decomposition** (`src/bus_trajectories/delay_decomposition/`
-package + `scripts/decomposition/`) follows Huang (2023), *Chapter 3 — Transit
+The **chapter-3 decomposition** (`src/core/decompose/`
+package + `figures/scripts/`) follows Huang (2023), *Chapter 3 — Transit
 Delay Analysis* (`docs/chapter 3 delay analysis.pdf`): signal-to-signal
 segmentation, per-segment
 `T_obs = T_ff + T_dwell + D_signal + D_crossing + D_congestion` with `T_ff`
@@ -168,21 +168,21 @@ Run the decomposition end-to-end:
 ```bash
 # 1. Build the late-night free-flow baseline (scours R2, reconstructs at bw=5,
 #    writes p5 per segment).
-PYTHONPATH=src uv run python scripts/data_prep/build_freeflow_baseline.py
+PYTHONPATH=src uv run python analysis/data_prep/build_freeflow_baseline.py
 
 # 2. Decompose every trip (or one with --trip-id <id>).
-PYTHONPATH=src uv run python scripts/decomposition/run_decomposition.py
+PYTHONPATH=src uv run python analysis/run_decomposition.py
 
 # 3. Render figures.
-PYTHONPATH=src uv run python scripts/decomposition/build_decomposition_figs.py
+PYTHONPATH=src uv run python figures/scripts/build_decomposition.py
 ```
 
 ## Sub-projects
 
-- **`observation_tool/`** — a mobile web app for collecting ground-truth field
+- **`record-a-ride/`** — a mobile web app for collecting ground-truth field
   data (1 Hz GPS, accelerometer/gyro, hand-tagged delay events) to validate the
   reconstruction pipeline, plus a Python analysis side that compares phone
-  tracks against the realtime archive. See [`observation_tool/README.md`](observation_tool/README.md).
+  tracks against the realtime archive. See [`record-a-ride/README.md`](record-a-ride/README.md).
 
 ## License
 

@@ -19,7 +19,7 @@ Outputs (all in ``figures/``):
   H7_3d_map_stem.png                 – 3D stem over a basemap
 
 Usage:
-    PYTHONPATH=src uv run python scripts/decomposition/build_attribution_slides.py
+    PYTHONPATH=src uv run python figures/scripts/build_attribution.py
 """
 
 from __future__ import annotations

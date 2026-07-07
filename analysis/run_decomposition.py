@@ -6,8 +6,8 @@ writes per-trip JSON to ``out_decomposition/trip_<id>.json`` and an aggregate
 CSV at ``out_decomposition/aggregate.csv``.
 
 Usage:
-    PYTHONPATH=src uv run python scripts/decomposition/run_decomposition.py
-    PYTHONPATH=src uv run python scripts/decomposition/run_decomposition.py --trip-id 1001350
+    PYTHONPATH=src uv run python analysis/run_decomposition.py
+    PYTHONPATH=src uv run python analysis/run_decomposition.py --trip-id 1001350
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def main() -> int:
     if not FF_TABLE.exists():
         raise SystemExit(
             f"missing {FF_TABLE}; run "
-            f"scripts/decomposition/build_freeflow_baseline.py first"
+            f"figures/scripts/build_freeflow_baseline.py first"
         )
     ff = load_freeflow_table(FF_TABLE)
     print(f"Loaded free-flow table: {len(ff)} segments")

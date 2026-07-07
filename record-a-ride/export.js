@@ -3,7 +3,7 @@
 // (server autosave) and trips.js (desktop rebuild) all import from here so
 // the formats can never drift apart.
 //
-// pings_<trip_id>.csv is shaped for src/bus_trajectories/io.py:load_avl_csv:
+// pings_<trip_id>.csv is shaped for src/dataio/gtfs.py:load_avl_csv:
 // it needs columns trip_id, route_id, latitude, longitude and an
 // avl_event_time formatted "%Y-%m-%d %H:%M:%S.%f" (6-digit microseconds).
 // Extra columns are carried along harmlessly (io.py reads dtype=str).

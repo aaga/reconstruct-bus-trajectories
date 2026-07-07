@@ -19,7 +19,7 @@ For every observed trip with dense, accurate phone GPS:
 1. **Match** — pull the webapp pings/events/meta from the Pages backup API, and
    find the same trip in the R2 archive by `(route_id, vehicle_id, trip_id)`.
 2. **Reconstruct both** on the *same* GTFS shape — phone @ `bw=20`, R2 @ `bw=5`
-   (the repo's CTA convention) — via `bus_trajectories.pipeline.reconstruct_trip`.
+   (the repo's CTA convention) — via `core.reconstruct.reconstruct_trip`.
 3. **Attribute delays** on each reconstructed trajectory with the slowdown-window
    method (`detect_events`, v<5 mph) → each window labelled by the nearest
    stop/signal (dwell / dwell-near-signal / signal / crossing / congestion).
@@ -44,11 +44,11 @@ Two robustness features the trips forced:
 
 ```bash
 # build payloads for all good-GPS trips (auto-selected), or pass explicit keys
-python observation_tool/analysis/build_comparison.py --token ridethebus
-python observation_tool/analysis/build_comparison.py --trips 1781534420859_1391
+python record-a-ride/analysis/build_comparison.py --token ridethebus
+python record-a-ride/analysis/build_comparison.py --trips 1781534420859_1391
 
 # view (local only — trip data incl. GPS traces stays on your machine)
-cd observation_tool/analysis/dashboard && python -m http.server 8123
+cd record-a-ride/analysis/dashboard && python -m http.server 8123
 # open http://localhost:8123
 ```
 

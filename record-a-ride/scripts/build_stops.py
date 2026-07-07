@@ -23,7 +23,7 @@ caches/cta/intersections.json (built by build_all_intersections.py), with
 intersections_route22.json as a fallback. MTA ships is_near_side: null.
 
 Usage:
-    python observation_tool/scripts/build_stops.py [--city cta|mta]
+    python record-a-ride/scripts/build_stops.py [--city cta|mta]
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ import math
 import zipfile
 from pathlib import Path
 
-from gtfs_util import OBS_TOOL, REPO, ensure_city_gtfs  # noqa: E402 (sets sys.path)
+from gtfs_util import APP_ROOT, REPO, ensure_city_gtfs  # noqa: E402 (sets sys.path)
 
 from dataio.intersections import (  # noqa: E402
     classify_near_side_stops,
@@ -44,7 +44,7 @@ from dataio.intersections import (  # noqa: E402
 )
 from dataio.gtfs import list_bus_shapes  # noqa: E402
 
-DATA_DIR = OBS_TOOL / "data"
+DATA_DIR = APP_ROOT / "data"
 FT_PER_M = 3.28084
 # CTA stop_id convention: 1-29999 bus stops, 30000+ rail stations/platforms.
 MAX_BUS_STOP_ID = 30000

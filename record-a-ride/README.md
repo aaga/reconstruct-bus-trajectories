@@ -18,7 +18,7 @@ beyond the CTA lookups) and exported as CSVs at trip end. With server backup
 enabled, the trip also autosaves to Cloudflare R2 every 60 s.
 
 `pings_<trip_id>.csv` loads directly through
-`src/bus_trajectories/io.py:load_avl_csv` — columns and the
+`src/io.py:load_avl_csv` — columns and the
 `YYYY-MM-DD HH:MM:SS.ffffff` time format match the AVL archive CSVs, and the
 CTA selection fills `trip_id` / `bus_id` (vehicle #) / `route_id` /
 `pattern_id` so reconstruction works without modification.
@@ -56,7 +56,7 @@ server-side; the phone only ever talks to the proxy.
 ### 2. Deploy to Cloudflare Pages
 
 ```bash
-cd observation_tool
+cd record-a-ride
 npx wrangler pages deploy .            # first run creates the project
 ```
 
@@ -67,7 +67,7 @@ Then in the Cloudflare dashboard (or via `wrangler pages secret put`):
 - create an R2 bucket named **cta-observation-trips** and confirm the
   `TRIPS` binding from `wrangler.toml` is attached
 
-Local dev: put both vars in `observation_tool/.dev.vars` (never commit it)
+Local dev: put both vars in `record-a-ride/.dev.vars` (never commit it)
 and run `npx wrangler pages dev .` — Miniflare simulates R2 locally.
 Geolocation works on `localhost`; devicemotion is empty on desktop.
 
@@ -86,7 +86,7 @@ Saved trips are browsable at `/trips.html` on a desktop.
 
 ```bash
 # stop bundles (downloads the city GTFS zips to data/gtfs/ if missing)
-uv run python observation_tool/scripts/build_stops.py
+uv run python record-a-ride/scripts/build_stops.py
 ```
 
 Near-side flags (a stop with a signalized intersection ≤90 ft downstream —
@@ -104,15 +104,15 @@ same command after any failure and it picks up where it left off.
 
 ```bash
 # machinery check on a couple of shapes first:
-uv run python observation_tool/scripts/build_all_intersections.py \
+uv run python record-a-ride/scripts/build_all_intersections.py \
     --valhalla http://localhost:8002 --shape-ids 67803936,67803939
 
 # full run (hours; re-run freely to resume):
-uv run python observation_tool/scripts/build_all_intersections.py \
+uv run python record-a-ride/scripts/build_all_intersections.py \
     --valhalla http://localhost:8002
 
 # then refresh the per-pattern near-side flags the app bundles:
-uv run python observation_tool/scripts/build_stops.py
+uv run python record-a-ride/scripts/build_stops.py
 ```
 
 Notes:

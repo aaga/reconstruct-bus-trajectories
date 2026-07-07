@@ -1,5 +1,5 @@
 """Shared bits for the observation-tool build scripts: repo paths, sys.path
-setup for the bus_trajectories package, and on-demand GTFS download.
+setup for the core/dataio packages, and on-demand GTFS download.
 
 CTA ships a single GTFS zip. MTA Bus splits its schedule across the five NYCT
 borough feeds plus the MTA Bus Company feed, so a city maps to a *list* of
@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-OBS_TOOL = REPO / "observation_tool"
+APP_ROOT = REPO / "record-a-ride"
 GTFS_ZIP = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 GTFS_URL = "https://www.transitchicago.com/downloads/sch_data/google_transit.zip"
 

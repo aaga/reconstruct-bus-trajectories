@@ -5,7 +5,7 @@
 // valid token the satellite toggle silently falls back to a blank layer and
 // the dashboard still works on the Carto basemap.
 //
-// Both the trip/route dashboards (this folder) and the observation_tool
+// Both the trip/route dashboards (this folder) and the merged
 // comparison dashboard import this module, so the token lives in exactly one
 // place until those dashboards are merged.
 export const MAPBOX_TOKEN =

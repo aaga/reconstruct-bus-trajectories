@@ -24,11 +24,11 @@ delay_decomposition.load_intersections consumes it unchanged):
 
 Usage (full run; expect hours, re-run freely to resume):
 
-    python observation_tool/scripts/build_all_intersections.py \
+    python record-a-ride/scripts/build_all_intersections.py \
         --valhalla http://localhost:8002
 
     # machinery check on a few shapes first:
-    python observation_tool/scripts/build_all_intersections.py \
+    python record-a-ride/scripts/build_all_intersections.py \
         --valhalla http://localhost:8002 --shape-ids 67803936,67803939
 """
 

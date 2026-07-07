@@ -7,7 +7,7 @@ fastest) of segment travel times across the late-night sample. Cached to
 ``out_decomposition/freeflow_segments.json``.
 
 Usage:
-    PYTHONPATH=src uv run python scripts/decomposition/build_freeflow_baseline.py
+    PYTHONPATH=src uv run python figures/scripts/build_freeflow_baseline.py
 """
 
 from __future__ import annotations

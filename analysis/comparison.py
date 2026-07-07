@@ -11,7 +11,7 @@ For each observed (phone-app) trip:
      per-trip global t0), consumed by the static dashboard in ./dashboard/.
 
 Run:
-  python observation_tool/analysis/build_comparison.py --token ridethebus
+  python analysis/comparison.py --token ridethebus
 """
 
 from __future__ import annotations
