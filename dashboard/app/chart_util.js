@@ -6,13 +6,23 @@ import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 
 export const $ = (id) => document.getElementById(id);
 
-// Bus icon, source-coloured: High-Freq green, Low-Freq yellow.
+// Source colours: High-Freq = purple, Low-Freq = green. A map-hover or
+// distance-mode bus is neutral grey (same location for both sources).
+export const SRC_COLOR = { phone: "#52c41a", r2: "#c026d3" };
+export const BUS_GRAY = "#b0b0b0";
+
+// Bus icon with a leader line dropping to the exact route point. The marker is
+// anchored "bottom" with no offset, so the SVG's bottom (the leader tip at
+// viewBox y≈41) lands on the polyline position. setBus() recolours the body
+// rect, the leader line, and the tip together.
 export function busElement(fill) {
   const el = document.createElement("div");
   el.className = "cursor-bus";
   el.style.display = "none";
   el.innerHTML = `
-    <svg viewBox="0 0 36 24" width="32" height="22" aria-hidden="true">
+    <svg viewBox="0 0 36 42" width="32" height="37" aria-hidden="true">
+      <line class="bus-leader" x1="18" y1="18" x2="18" y2="41" stroke="${fill}" stroke-width="1.4"/>
+      <circle class="bus-tip" cx="18" cy="41" r="1.5" fill="${fill}" stroke="#fff" stroke-width="0.5"/>
       <rect x="1" y="2" width="32" height="16" rx="3" fill="${fill}" stroke="#222" stroke-width="1.1"/>
       <rect x="3" y="5" width="4" height="5" fill="#bce3ff" stroke="#222" stroke-width="0.7"/>
       <rect x="8.5" y="5" width="4" height="5" fill="#bce3ff" stroke="#222" stroke-width="0.7"/>

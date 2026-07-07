@@ -60,22 +60,16 @@
       <label class="sep"><input type="checkbox" id="t-stops"> stop lines</label>
     </div>
     <div class="ctrl-group hidden" data-for="speed">
-      <span class="seg">x-axis:
+      <span class="seg"><span class="grouplbl">x-axis:</span>
         <label><input type="radio" name="speedx" value="time" checked> time</label>
         <label><input type="radio" name="speedx" value="distance"> distance</label>
       </span>
-      <span class="legend phone">High-Freq</span>
-      <label><input type="checkbox" id="s-phoneSpeed" checked> speed</label>
-      <span class="legend r2">Low-Freq</span>
-      <label><input type="checkbox" id="s-r2Speed" checked> speed</label>
-      <span class="sep">Buses:</span>
-      <label><input type="checkbox" id="s-busHi" checked> High-Freq 🟢</label>
-      <label><input type="checkbox" id="s-busLo" checked> Low-Freq 🟡</label>
+      <span class="sep">GPS source:</span>
+      <label><input type="checkbox" id="s-phoneSpeed" checked> <span class="legend phone">High-Freq</span></label>
+      <label><input type="checkbox" id="s-r2Speed" checked> <span class="legend r2">Low-Freq</span></label>
       <span class="sep">Delays:</span>
       <label><input type="checkbox" id="s-dAVL" checked> AVL</label>
       <label><input type="checkbox" id="s-dWeb" checked> observed</label>
-      <label><input type="checkbox" id="s-dPhone" checked> High-Freq</label>
-      <label><input type="checkbox" id="s-dR2" checked> Low-Freq</label>
     </div>
     <button id="reset-zoom" title="Reset zoom">⤢ reset</button>
   </div>

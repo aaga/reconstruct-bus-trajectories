@@ -5,7 +5,7 @@
 
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 import {
-  makeSvg, installInteraction, fmtClock, defaultXExtent, defaultYExtentKm, getSource,
+  makeSvg, installInteraction, fmtClock, defaultXExtent, defaultYExtentKm, timeExtent, getSource,
 } from "../chart_util.js";
 
 export class TrajectoryView {
@@ -18,9 +18,14 @@ export class TrajectoryView {
     const M = { l: 56, r: 16, t: 14, b: 38 };
     const { svg, width, height } = makeSvg();
 
-    const xFull = defaultXExtent(S);
-    const yFull = defaultYExtentKm(S);
-    const view = S.view.trajectory || (S.view.trajectory = { x: xFull.slice(), y: yFull.slice() });
+    const xDefault = defaultXExtent(S);
+    const yDefault = defaultYExtentKm(S);
+    // Default view crops to the primary window; the pan/zoom CLAMP is the whole
+    // trip (both sources), so you can scroll into the low-freq-only region.
+    const xClamp = timeExtent(t);
+    let maxD = 0; for (const s of t.sources) maxD = Math.max(maxD, d3.max(s.curve.dist_m));
+    const yClamp = [0, maxD / 1000];
+    const view = S.view.trajectory || (S.view.trajectory = { x: xDefault.slice(), y: yDefault.slice() });
 
     const x = d3.scaleLinear().range([M.l, width - M.r]);
     const y = d3.scaleLinear().range([height - M.b, M.t]);
@@ -50,7 +55,7 @@ export class TrajectoryView {
 
       gStops.selectAll("line").remove();
       if (S.toggles.stops) {
-        gStops.selectAll("line").data(t.features.filter((f) => f.kind === "stop"))
+        gStops.selectAll("line").data(t.features.filter((f) => f.kind === "bus_stop"))
           .join("line").attr("class", "stopline")
           .attr("x1", M.l).attr("x2", width - M.r)
           .attr("y1", (d) => y(d.dist_m / 1000)).attr("y2", (d) => y(d.dist_m / 1000));
@@ -75,7 +80,7 @@ export class TrajectoryView {
 
     x.domain(view.x); y.domain(view.y);
     installInteraction(svg,
-      { x: { scale: x, full: xFull }, y: { scale: y, full: yFull } },
+      { x: { scale: x, full: xClamp }, y: { scale: y, full: yClamp } },
       view,
       (e) => ({ x: !e.shiftKey, y: !(e.metaKey || e.ctrlKey) }), // shift=y, cmd=x, none=both
       true, redraw);

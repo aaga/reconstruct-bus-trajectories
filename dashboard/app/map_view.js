@@ -81,10 +81,12 @@ export class MapView {
       this._buildLegend(container);
     });
 
-    // The trajectory bus markers are owned by main.js; MapView keeps only the
-    // basemap wiring (no street-view ghost any more).
+    // The trajectory bus markers are owned by main.js; MapView keeps the basemap
+    // wiring + the bidirectional zoom coupling (range:changed) shared with the
+    // chart above it.
     this._unsub = [
       state.subscribe("basemap:changed", ({ value }) => this._setBasemap(value)),
+      state.subscribe("range:changed", (e) => { if (e.source !== "map") this._fitToRange(e.visibleDistRangeM); }),
     ];
   }
 
@@ -156,6 +158,59 @@ export class MapView {
     });
     // Single click does nothing; double click opens Street View.
     this.map.on("dblclick", (e) => this._onDblClick(e));
+    // Bidirectional zoom coupling: map pan/zoom → publish the visible route
+    // distance range so the chart above can follow.
+    this.map.on("move", () => this._publishRange());
+    this.map.on("moveend", () => this._publishRange());
+  }
+
+  _publishRange() {
+    // Suppressed while the chart is driving the zoom (_fitToRange), so the
+    // map's post-jumpTo visible range doesn't echo back and widen the chart.
+    if (this._suppressPublish) return;
+    if (!this.map.isStyleLoaded || !this.map.isStyleLoaded()) return;
+    const [lo, hi] = visibleRouteRange(this.map, this.data.shape.polyline_lonlat, this.data.shape.cumdist_m);
+    if (this._lastLo === lo && this._lastHi === hi) return;
+    this._lastLo = lo; this._lastHi = hi;
+    this.state.publish("range:changed", { visibleDistRangeM: [lo, hi], source: "map" });
+  }
+
+  // Chart drives the zoom: fit the route section [loM,hiM] on screen. We let
+  // MapLibre report the section's true rendered pixel extent at the current
+  // zoom (accounts for bearing + polyline curvature), then bump the zoom by
+  // log2(desired/actual) so it fits exactly.
+  _fitToRange([loM, hiM]) {
+    if (!this.map.isStyleLoaded || !this.map.isStyleLoaded()) return;
+    const poly = this.data.shape.polyline_lonlat;
+    const cum = this.data.shape.cumdist_m;
+    const center = distToLonLat((loM + hiM) / 2, poly, cum);
+    let minX = +Infinity, maxX = -Infinity, minY = +Infinity, maxY = -Infinity, found = false;
+    for (let i = 0; i < poly.length; i++) {
+      if (cum[i] < loM || cum[i] > hiM) continue;
+      const p = this.map.project(poly[i]);
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      found = true;
+    }
+    for (const pt of [distToLonLat(loM, poly, cum), distToLonLat(hiM, poly, cum)]) {
+      const p = this.map.project(pt);
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      found = true;
+    }
+    if (!found) return;
+    const canvas = this.map.getCanvas();
+    const padding = 20;
+    const factor = Math.min(
+      Math.max(1, canvas.clientWidth - 2 * padding) / Math.max(1, maxX - minX),
+      Math.max(1, canvas.clientHeight - 2 * padding) / Math.max(1, maxY - minY),
+    );
+    const newZoom = Math.min(22, this.map.getZoom() + Math.log2(factor));
+    this._suppressPublish = true;
+    const release = () => { this._suppressPublish = false; };
+    const tid = setTimeout(release, 200);
+    this.map.once("moveend", () => { clearTimeout(tid); release(); });
+    this.map.jumpTo({ center, zoom: newZoom, bearing: this.data.shape.bearing_deg });
   }
 
   _onDblClick(e) {

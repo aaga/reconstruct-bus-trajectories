@@ -28,14 +28,13 @@ const S = {
   view: { trajectory: null, speed: null },
   toggles: {
     phoneCurve: true, phoneRaw: false, r2Curve: true, r2Raw: false, stops: false,
-    phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true, dPhone: true, dR2: true,
-    busHi: true, busLo: true,
+    phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true,
   },
   // map (speed tab): pub/sub + ported views, rebuilt per trip
   mapState: null, mapView: null, streetView: null,
   busHi: null, busLo: null,     // maplibre markers (High-Freq green / Low-Freq yellow)
-  speedCursor: null,            // {showDist, hide} for the current speed svg
-  lastV: null,                  // last hovered x-value (current speed units) — buses persist here
+  speedCursor: null,            // { render(spec), hide() } for the current speed svg
+  cursor: null,                 // persisted cursor: {kind:"chart",v} | {kind:"map",distM}
   tToDist: null, distToT: null, // High-Freq (phone) time<->distance
   r2ToDist: null,               // Low-Freq (R2) time->distance
 };
@@ -48,14 +47,13 @@ const speedView = new SpeedView(S);
 // are just preset toggle states over the shared views — no separate chart code.
 const MODE_PRESETS = {
   rich: { phoneCurve: true, phoneRaw: false, r2Curve: true, r2Raw: false, stops: false,
-          phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true, dPhone: true, dR2: true, busHi: true, busLo: true },
+          phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true },
   lite: { phoneCurve: true, phoneRaw: false, r2Curve: false, r2Raw: false, stops: false,
-          phoneSpeed: true, r2Speed: false, dAVL: false, dWeb: false, dPhone: true, dR2: false, busHi: true, busLo: false },
+          phoneSpeed: true, r2Speed: false, dAVL: false, dWeb: false },
 };
 const TOGGLE_IDS = {
   "t-phoneCurve": "phoneCurve", "t-phoneRaw": "phoneRaw", "t-r2Curve": "r2Curve", "t-r2Raw": "r2Raw", "t-stops": "stops",
   "s-phoneSpeed": "phoneSpeed", "s-r2Speed": "r2Speed", "s-dAVL": "dAVL", "s-dWeb": "dWeb",
-  "s-dPhone": "dPhone", "s-dR2": "dR2", "s-busHi": "busHi", "s-busLo": "busLo",
 };
 
 function setMode(mode) {
@@ -73,16 +71,52 @@ function ensureMap() {
   S.mapState = new State();
   S.streetView = new StreetViewPopup(S.trip, S.mapState);
   S.mapView = new MapView($("map"), S.trip, S.mapState);
-  // Two source-coloured buses, driven by the speed-chart cursor.
-  S.busHi = new maplibregl.Marker({ element: busElement("#2e9e4f"),
-    rotationAlignment: "viewport", pitchAlignment: "viewport", offset: [0, -16], anchor: "bottom" })
+  // Two source-coloured buses, driven by the speed-chart cursor. Low-Freq is
+  // added first so the High-Freq bus (added last) renders in front; both are
+  // 75% opaque (CSS) so an overlapping bus shows through.
+  S.busLo = new maplibregl.Marker({ element: busElement("#c026d3"),
+    rotationAlignment: "viewport", pitchAlignment: "viewport", offset: [0, 0], anchor: "bottom" })
     .setLngLat(S.trip.shape.polyline_lonlat[0]).addTo(S.mapView.map);
-  S.busLo = new maplibregl.Marker({ element: busElement("#f4b400"),
-    rotationAlignment: "viewport", pitchAlignment: "viewport", offset: [0, -16], anchor: "bottom" })
+  S.busHi = new maplibregl.Marker({ element: busElement("#52c41a"),
+    rotationAlignment: "viewport", pitchAlignment: "viewport", offset: [0, 0], anchor: "bottom" })
     .setLngLat(S.trip.shape.polyline_lonlat[0]).addTo(S.mapView.map);
   // map hover -> chart cursor preview (the cursor + buses otherwise persist)
-  S.mapState.subscribe("dist:hovered", (e) => { if (e.source === "map") S.speedCursor?.showDist(e.distM); });
+  S.mapState.subscribe("dist:hovered", (e) => {
+    if (e.source !== "map") return;
+    S.cursor = { kind: "map", distM: e.distM };
+    S.speedCursor?.render(S.cursor);
+  });
+  // map pan/zoom -> chart x-range (converting distance→time when in time mode)
+  S.mapState.subscribe("range:changed", (e) => {
+    if (e.source !== "map" || S.tab !== "speed") return;
+    const distMode = S.speedX === "distance";
+    let [lo, hi] = e.visibleDistRangeM;
+    let a = distMode ? lo : S.distToT(lo);
+    let b = distMode ? hi : S.distToT(hi);
+    if (a > b) [a, b] = [b, a];
+    S._applyingMapRange = true;
+    S.view.speed = { x: [a, b] };
+    render();
+    S._applyingMapRange = false;
+  });
+  // Once the map has first rendered (idle → canvas correctly sized), resize and
+  // fit it to the chart's current range, so a trip is framed on load without
+  // needing a manual pan first.
+  S.mapView.map.once("idle", () => { S.mapView?.resize(); publishChartRange(); });
   setTimeout(() => S.mapView?.resize(), 60);
+}
+
+// Push the speed chart's visible route-distance range to the map (used to sync
+// the map to the chart on map load; ongoing sync happens inside SpeedView.redraw).
+function publishChartRange() {
+  if (!S.mapState || S._applyingMapRange || S.main !== "single" || S.tab !== "speed") return;
+  const vx = S.view.speed?.x;
+  if (!vx) return;
+  const distMode = S.speedX === "distance";
+  let a = distMode ? vx[0] : S.tToDist(vx[0]);
+  let b = distMode ? vx[1] : S.tToDist(vx[1]);
+  if (a > b) [a, b] = [b, a];
+  S.mapState.publish("range:changed", { visibleDistRangeM: [a, b], source: "chart" });
 }
 
 function teardownMap() {
@@ -103,7 +137,15 @@ function renderSingle() {
   document.body.classList.toggle("show-map", isSpeed);
   if (!S.trip) return;
   if (isSpeed) speedView.render(); else trajView.render();
-  if (isSpeed) { ensureMap(); setTimeout(() => S.mapView?.resize(), 60); }
+  // Map-side effects (create/resize the map, re-sync its range) only when the
+  // chart or a tab switch drives the render. When the MAP is driving (a pan/zoom
+  // gesture), we just re-render the chart — calling resize() mid-drag would
+  // interrupt the map's own drag gesture.
+  if (isSpeed && !S._applyingMapRange) {
+    ensureMap();
+    setTimeout(() => S.mapView?.resize(), 60);
+    publishChartRange();
+  }
 }
 
 // Average-trip rendering. Overall-delay (F3 breakdown) and delay-per-segment
@@ -125,7 +167,7 @@ async function loadTrip(key) {
   teardownMap();
   S.trip = await fetch(`../data/${key}.json`, { cache: "no-store" }).then((r) => r.json());
   S.view = { trajectory: null, speed: null };
-  S.lastV = null;
+  S.cursor = null;
   const t = S.trip;
   const phone = getSource(t, "phone");
   const r2 = getSource(t, "r2");
@@ -209,15 +251,14 @@ async function init() {
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");
   bind("t-r2Curve", "r2Curve"); bind("t-r2Raw", "r2Raw"); bind("t-stops", "stops");
   bind("s-phoneSpeed", "phoneSpeed"); bind("s-r2Speed", "r2Speed");
-  bind("s-dAVL", "dAVL"); bind("s-dWeb", "dWeb"); bind("s-dPhone", "dPhone"); bind("s-dR2", "dR2");
-  bind("s-busHi", "busHi"); bind("s-busLo", "busLo");
+  bind("s-dAVL", "dAVL"); bind("s-dWeb", "dWeb");
   document.querySelectorAll("#modes button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
   document.querySelectorAll('input[name="speedx"]').forEach((r) =>
     r.onchange = (e) => {
       if (!e.target.checked) return;
       S.speedX = e.target.value;
       S.view.speed = null; // units changed -> recompute default extent
-      S.lastV = null;      // x-value units changed -> drop persisted cursor
+      S.cursor = null;      // x-value units changed -> drop persisted cursor
       render();
     });
   // M / S basemap shortcuts (speed tab, when the map exists)

@@ -1,31 +1,54 @@
-// Speed tab: speed vs time (or distance), with four stacked delay-bar rows
-// (AVL / Observed / High-Freq / Low-Freq) and a vertical cursor that drives the
-// source-coloured bus marker(s) on the map; click pans, double-click opens
-// Street View. Body is the original renderSpeed()/tooltip helpers, keyed off S.
+// Speed tab: speed vs time (or distance), with stacked delay-bar rows (AVL /
+// Observed / High-Freq / Low-Freq) and a cursor that drops coloured dots on each
+// speed curve and drives the bus marker(s) on the map. High-Freq = purple,
+// Low-Freq = green. A map-hover cursor (or distance-mode cursor) is a single
+// light-grey bus — the same route location for both sources.
 
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 import {
   $, makeSvg, installInteraction, interp, color, fmtClock,
-  defaultXExtent, defaultDistExtentM, getSource,
+  defaultXExtent, defaultDistExtentM, timeExtent, getSource, SRC_COLOR, BUS_GRAY,
 } from "../chart_util.js";
-
-// delay_row.key → the checkbox toggle key in index.html.
-const ROW_TOGGLE = { avl: "dAVL", observed: "dWeb", phone: "dPhone", r2: "dR2" };
 import { distToLonLat } from "../projection.js";
+
+// delay_row.key → the toggle that controls its row. AVL/Observed have their own
+// checkboxes; the inferred rows follow whether that source's speed curve shows.
+const ROW_TOGGLE = { avl: "dAVL", observed: "dWeb", phone: "phoneSpeed", r2: "r2Speed" };
 
 export class SpeedView {
   constructor(S) { this.S = S; }
 
-  // Position the bus marker(s) for an x-value in the current speed units.
-  placeBusesAt(v) {
+  // Move a bus marker to a route distance with a given colour (or hide it).
+  setBus(marker, distM, col, show) {
+    if (!marker) return;
+    const el = marker.getElement();
+    if (!show || distM == null || Number.isNaN(distM)) { el.style.display = "none"; return; }
+    const body = el.querySelector("rect");
+    if (body) body.setAttribute("fill", col);
+    const leader = el.querySelector(".bus-leader");
+    if (leader) leader.setAttribute("stroke", col);
+    const tip = el.querySelector(".bus-tip");
+    if (tip) tip.setAttribute("fill", col);
+    marker.setLngLat(distToLonLat(distM, this.S.trip.shape.polyline_lonlat, this.S.trip.shape.cumdist_m));
+    el.style.display = "";
+  }
+
+  // Position the bus marker(s) for a cursor spec:
+  //   chart hover + time → two colour-coded buses at each source's position;
+  //   chart hover + distance, or map hover → one grey bus (shared location).
+  placeBuses(spec) {
     const S = this.S;
-    if (!S.busLo || v == null) return;
-    if (S.speedX === "distance") { // distance is the shared invariant -> one bus
-      this.placeBus(S.busLo, v, true);
-      this.placeBus(S.busHi, null, false);
+    if (!S.busHi) return;
+    const distMode = S.speedX === "distance";
+    const phoneOn = S.toggles.phoneSpeed;
+    const r2On = S.toggles.r2Speed && !!getSource(S.trip, "r2");
+    if (spec.kind === "chart" && !distMode) {
+      this.setBus(S.busHi, phoneOn && S.tToDist ? S.tToDist(spec.v) : null, SRC_COLOR.phone, phoneOn);
+      this.setBus(S.busLo, r2On && S.r2ToDist ? S.r2ToDist(spec.v) : null, SRC_COLOR.r2, r2On);
     } else {
-      this.placeBus(S.busHi, S.tToDist ? S.tToDist(v) : null, S.toggles.busHi);
-      this.placeBus(S.busLo, S.r2ToDist ? S.r2ToDist(v) : null, S.toggles.busLo && !!getSource(S.trip, "r2"));
+      const distM = spec.kind === "map" ? spec.distM : spec.v; // distance-mode v is a distance
+      this.setBus(S.busHi, distM, BUS_GRAY, phoneOn || r2On);
+      this.setBus(S.busLo, null, BUS_GRAY, false);
     }
   }
 
@@ -36,16 +59,6 @@ export class SpeedView {
     S.mapView.map.panTo(
       distToLonLat(distM, S.trip.shape.polyline_lonlat, S.trip.shape.cumdist_m),
       { duration: 500 });
-  }
-
-  // Place a bus marker at a route distance, or hide it.
-  placeBus(marker, distM, show) {
-    const S = this.S;
-    if (!marker) return;
-    const el = marker.getElement();
-    if (!show || distM == null || Number.isNaN(distM)) { el.style.display = "none"; return; }
-    marker.setLngLat(distToLonLat(distM, S.trip.shape.polyline_lonlat, S.trip.shape.cumdist_m));
-    el.style.display = "";
   }
 
   showTip(e, rowLabel, d) {
@@ -61,7 +74,6 @@ export class SpeedView {
 
   hideTip() { $("tooltip").classList.add("hidden"); }
 
-  // Rich AVL stop tooltip: dwell + passenger load before/after + door flows.
   showAvlTip(e, d) {
     const t = this.S.trip;
     const head =
@@ -94,20 +106,17 @@ export class SpeedView {
     const M = { l: 56, r: 16, t: 14 };
     const { svg, width, height } = makeSvg();
     const rowH = 26, rowGap = 6;
-    // AVL covers the whole trip; in distance mode keep only stops the observed
-    // trajectory can place (within its time span), since pre-boarding stops have
-    // no route distance. In time mode show them all (full-trip view reveals them).
     const pT = getSource(t, "phone").curve.t;
-    // Build the delay-bar rows from the unified delay_rows[]. Each row's src is
-    // the curve of its source (for distance-mode x placement); AVL rows get the
-    // rich passenger tooltip and, in distance mode, are clipped to the observed
-    // trajectory's time span (pre-boarding stops have no route distance).
+    // Rows from the unified delay_rows[]; AVL gets the rich tooltip and, in
+    // distance mode, is clipped to the observed trajectory's time span.
     const rows = t.delay_rows.map((dr) => {
       const source = getSource(t, dr.source_key);
       const avl = dr.role === "avl";
       let items = dr.items || [];
       if (distMode && avl) items = items.filter((b) => b.t_start >= pT[0] && b.t_start <= pT[pT.length - 1]);
-      return { key: ROW_TOGGLE[dr.key] || dr.key, label: dr.label, delays: items, src: source ? source.curve : null, avl };
+      // Inferred rows are tinted in their source colour (magenta/green) when shown.
+      const srcColor = dr.role === "inferred" ? SRC_COLOR[dr.source_key] : null;
+      return { key: ROW_TOGGLE[dr.key] || dr.key, label: dr.label, delays: items, src: source ? source.curve : null, avl, srcColor };
     });
     const stripH = rows.length * (rowH + rowGap);
     const axisY = height - 24;
@@ -116,10 +125,13 @@ export class SpeedView {
 
     let maxV = 5;
     for (const s of t.sources) maxV = Math.max(maxV, d3.max(s.curve.speed_mph));
-    const xFull = distMode ? defaultDistExtentM(S) : defaultXExtent(S);
-    const view = S.view.speed || (S.view.speed = { x: xFull.slice() });
+    // Default view crops to the primary-source window; the pan/zoom CLAMP is the
+    // whole trip, so you can scroll past it into the low-freq-only region.
+    const xDefault = distMode ? defaultDistExtentM(S) : defaultXExtent(S);
+    let fullDist = 0; for (const s of t.sources) fullDist = Math.max(fullDist, d3.max(s.curve.dist_m));
+    const xClamp = distMode ? [0, fullDist] : timeExtent(t);
+    const view = S.view.speed || (S.view.speed = { x: xDefault.slice() });
     const fmtX = distMode ? (v) => (v / 1000).toFixed(1) : fmt;
-    // Map a delay's time onto the current x-axis (distance via its own source).
     const delayX = (row, tSec) => (distMode ? interp(row.src.t, row.src.dist_m, tSec) : tSec);
 
     const x = d3.scaleLinear().range([M.l, width - M.r]);
@@ -134,7 +146,7 @@ export class SpeedView {
     rows.forEach((r, i) => {
       const ry = rowTop + i * (rowH + rowGap);
       svg.append("text").attr("class", "rowlabel").attr("x", M.l - 6).attr("y", ry + rowH / 2 + 3)
-        .attr("text-anchor", "end").text(r.label);
+        .attr("text-anchor", "end").style("fill", r.srcColor || null).text(r.label);
     });
 
     const gGrid = svg.append("g").attr("class", "grid");
@@ -146,11 +158,16 @@ export class SpeedView {
       .attr("x", M.l).attr("y", M.t).attr("width", width - M.l - M.r).attr("height", axisY - M.t);
     for (const g of [gPhone, gR2, ...gRows]) g.attr("clip-path", "url(#clip-spd)");
 
-    // 5 mph slowdown-detection threshold reference line (static; y is fixed).
     svg.append("line").attr("class", "threshold-line")
       .attr("x1", M.l).attr("x2", width - M.r).attr("y1", y(5)).attr("y2", y(5));
     svg.append("text").attr("class", "threshold-label")
       .attr("x", width - M.r - 2).attr("y", y(5) - 3).attr("text-anchor", "end").text("5 mph");
+
+    // Cursor: a vertical line (chart hover) + one coloured dot per displayed
+    // source's speed curve. Dots + line are clipped to the plot area.
+    const cursorLine = svg.append("line").attr("class", "chart-cursor")
+      .attr("y1", M.t).attr("y2", axisY).style("display", "none");
+    const gDots = svg.append("g").attr("clip-path", "url(#clip-spd)");
 
     function redraw() {
       x.domain(view.x);
@@ -167,7 +184,9 @@ export class SpeedView {
         const g = gRows[i]; g.selectAll("*").remove();
         const on = S.toggles[r.key];
         g.append("rect").attr("x", M.l).attr("y", ry).attr("width", width - M.r - M.l)
-          .attr("height", rowH).attr("fill", on ? "#fcfcfd" : "#f3f3f5").attr("stroke", "#eee");
+          .attr("height", rowH)
+          .attr("fill", on ? (r.srcColor ? r.srcColor + "33" : "#fcfcfd") : "#f3f3f5") // 33 = ~20% alpha
+          .attr("stroke", "#eee");
         if (!on || (distMode && !r.src)) return;
         const x0 = (d) => x(delayX(r, d.t_start));
         const x1 = (d) => x(delayX(r, d.t_end ?? d.t_start + 5));
@@ -187,7 +206,16 @@ export class SpeedView {
             return w > 26 ? lab.slice(0, Math.floor(w / 6)) : "";
           });
       });
-      if (S.lastV != null) showCursorVal(S.lastV); // keep cursor aligned through zoom/pan
+      if (S.cursor) renderCursor(S.cursor); // keep cursor aligned through zoom/pan
+      // Coupling: push the chart's visible route-distance range to the map
+      // (converting from time when in time mode). Suppressed while the map drives.
+      if (S.mapState && !S._applyingMapRange) {
+        const [xlo, xhi] = view.x;
+        let a = distMode ? xlo : S.tToDist(xlo);
+        let b = distMode ? xhi : S.tToDist(xhi);
+        if (a > b) [a, b] = [b, a];
+        S.mapState.publish("range:changed", { visibleDistRangeM: [a, b], source: "chart" });
+      }
     }
 
     function drawSpeed(g, src, cls, show) {
@@ -198,37 +226,66 @@ export class SpeedView {
       g.append("path").attr("class", `curve ${cls}`).attr("d", line(pts));
     }
 
-    // Vertical cursor (in current x units) that drives the map bus icon(s).
-    const cursorLine = svg.append("line").attr("class", "chart-cursor")
-      .attr("y1", M.t).attr("y2", axisY).style("display", "none");
-    const showCursorVal = (v) => {
-      const px = x(v);
-      if (px < M.l || px > width - M.r) { cursorLine.style("display", "none"); return; }
-      cursorLine.attr("x1", px).attr("x2", px).style("display", null);
-    };
+    // Pixel position of the dot on a source's speed curve for a cursor spec.
+    function curvePointPx(src, spec) {
+      let xd, yd;
+      if (spec.kind === "chart") {
+        xd = spec.v;
+        const arr = distMode ? src.curve.dist_m : src.curve.t;
+        yd = interp(arr, src.curve.speed_mph, xd);
+      } else if (distMode) {
+        xd = spec.distM; yd = interp(src.curve.dist_m, src.curve.speed_mph, spec.distM);
+      } else {
+        xd = interp(src.curve.dist_m, src.curve.t, spec.distM); // source's time at that route distance
+        yd = interp(src.curve.dist_m, src.curve.speed_mph, spec.distM);
+      }
+      const cx = x(xd);
+      if (cx < M.l || cx > width - M.r) return null;
+      return [cx, y(yd)];
+    }
+
+    function renderCursor(spec) {
+      gDots.selectAll("*").remove();
+      // Vertical line: chart hover (x=v), or map hover in distance mode (single x).
+      let lineX = null;
+      if (spec.kind === "chart") lineX = x(spec.v);
+      else if (distMode) lineX = x(spec.distM);
+      if (lineX != null && lineX >= M.l && lineX <= width - M.r) {
+        cursorLine.attr("x1", lineX).attr("x2", lineX).style("display", null);
+      } else cursorLine.style("display", "none");
+      // One coloured dot per displayed source.
+      for (const key of ["phone", "r2"]) {
+        const on = key === "phone" ? S.toggles.phoneSpeed : S.toggles.r2Speed;
+        const src = getSource(t, key);
+        if (!src || !on) continue;
+        const p = curvePointPx(src, spec);
+        if (!p) continue;
+        gDots.append("circle").attr("cx", p[0]).attr("cy", p[1]).attr("r", 4.5)
+          .attr("fill", SRC_COLOR[key]).attr("stroke", "#fff").attr("stroke-width", 1.3);
+      }
+      self.placeBuses(spec);
+    }
+
     S.speedCursor = {
-      // map publishes a route distance; convert to this axis's units
-      showDist: (dM) => showCursorVal(distMode ? dM : S.distToT(dM)),
-      hide: () => cursorLine.style("display", "none"),
+      render: (spec) => renderCursor(spec),
+      hide: () => { cursorLine.style("display", "none"); gDots.selectAll("*").remove(); },
     };
 
     const node = svg.node();
     const toDistM = (v) => (distMode ? v : S.tToDist(v));
-    // Hover: live preview of cursor + bus(es). They PERSIST after the cursor
-    // leaves the chart (no mouseleave-hide), so you can study the map.
+    // Hover: cursor + dots + bus(es). They PERSIST after the pointer leaves so
+    // you can study the map.
     svg.on("mousemove.cur", (e) => {
       const [px] = d3.pointer(e, node);
       if (px < M.l || px > width - M.r) return;
-      S.lastV = x.invert(px);
-      showCursorVal(S.lastV);
-      self.placeBusesAt(S.lastV);
+      S.cursor = { kind: "chart", v: x.invert(px) };
+      renderCursor(S.cursor);
     });
-    // Single click -> pan map to that location (keep zoom). Double click ->
-    // Street View. A timer disambiguates the two.
+    // Single click → pan map; double click → Street View (timer disambiguates).
     let clickTimer = null;
     svg.on("click.cur", (e) => {
-      if (node._dragMoved) return; // was a pan-drag, not a click
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; } // 2nd click
+      if (node._dragMoved) return;
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
       const [px] = d3.pointer(e, node);
       if (px < M.l || px > width - M.r) return;
       const v = x.invert(px);
@@ -243,12 +300,11 @@ export class SpeedView {
 
     x.domain(view.x);
     installInteraction(svg,
-      { x: { scale: x, full: xFull }, y: null },
+      { x: { scale: x, full: xClamp }, y: null },
       view,
       () => ({ x: true, y: false }), // speed: horizontal only
       false, redraw);
     redraw();
-    // Restore the persisted cursor + buses after a (re)render.
-    if (S.lastV != null) { showCursorVal(S.lastV); self.placeBusesAt(S.lastV); }
+    if (S.cursor) renderCursor(S.cursor); // restore persisted cursor after (re)render
   }
 }
