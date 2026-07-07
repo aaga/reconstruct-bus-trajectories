@@ -9,9 +9,9 @@ html, body {
 }
 /* Full-window column layout; the stage grows to fill leftover height. */
 body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-header, #tabs, #controls, .hint { flex: 0 0 auto; }
+header, #tabs, #atabs, #controls, .hint { flex: 0 0 auto; }
 #stage { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-#chart { flex: 1 1 0; min-height: 0; }
+#chart { flex: 1 1 0; min-height: 0; position: relative; }
 /* Map fills the bottom half on the speed tab; hidden on the trajectory tab. */
 #map { flex: 1 1 0; min-height: 0; position: relative; display: none; }
 body.show-map #map { display: block; }
@@ -27,15 +27,15 @@ h1 { font-size: 18px; margin: 0; }
 .trip-meta { font-size: 13px; color: #666; }
 #global-controls { margin-left: auto; font-size: 13px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 
-#tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid #ddd; }
-#tabs button {
+#tabs, #atabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid #ddd; }
+#tabs button, #atabs button {
   font: inherit; font-size: 14px;
   border: 1px solid #ddd; border-bottom: none;
   background: #f3f3f6; color: #444;
   padding: 8px 16px; border-radius: 8px 8px 0 0; cursor: pointer;
   position: relative; top: 1px;
 }
-#tabs button.active { background: #fff; color: #111; font-weight: 600; border-color: #ddd; }
+#tabs button.active, #atabs button.active { background: #fff; color: #111; font-weight: 600; border-color: #ddd; }
 
 #controls {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -159,3 +159,21 @@ body.streetview-dragging .streetview-drag-overlay { display: block; cursor: move
   width: 13px; height: 13px; border-radius: 50%; background: #1a73e8;
   border: 2px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,0.55); pointer-events: none;
 }
+
+/* Delay-per-segment (DelayView) color key — sits top-right over the chart */
+.profile-legend {
+  position: absolute; top: 8px; right: 12px; z-index: 5;
+  background: rgba(255,255,255,0.92); border: 1px solid #ddd; border-radius: 4px;
+  padding: 6px 8px; font-size: 10.5px; line-height: 1.5; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.profile-legend .legend-row { display: flex; align-items: center; gap: 6px; color: #333; }
+.profile-legend svg { flex-shrink: 0; }
+.profile-legend .legend-toggle {
+  display: flex; align-items: center; gap: 6px; padding-bottom: 4px; margin-bottom: 4px;
+  border-bottom: 1px solid #e0e0e0; color: #222; font-size: 11px;
+}
+.profile-legend .legend-toggle input { margin: 0; cursor: pointer; }
+.profile-legend .legend-toggle label { cursor: pointer; user-select: none; }
+.profile-legend .legend-toggle-label { margin-right: 2px; }
+.profile-legend .legend-radio { display: inline-flex; align-items: center; gap: 3px; }
+.profile-legend .legend-section { margin-top: 2px; }

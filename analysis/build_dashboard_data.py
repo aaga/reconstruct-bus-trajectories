@@ -20,7 +20,13 @@ Run:  uv run python analysis/build_dashboard_data.py
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+
+
+def _trailing_digits(s) -> str | None:
+    m = re.findall(r"\d+", str(s))
+    return m[-1] if m else None
 
 REPO = Path(__file__).resolve().parents[1]
 OBS_DATA = REPO / "outputs" / "obs_trips"
@@ -69,6 +75,18 @@ def trip_payload(obs: dict, label: str) -> dict:
             {"key": "r2", "label": "Low-Freq", "role": "inferred", "source_key": "r2",
              "items": obs["r2"]["delays"]})
 
+    # A feature "has delay" this trip if an inferred delay references it (matched
+    # by trailing id digits — feature ids like sig_<node>/stop_<sid> vs facility
+    # ids like SIG_<node>/<sid>). Overrides the obs bundle's blanket attributed=True.
+    referenced = {
+        _trailing_digits(it.get("facility_id"))
+        for row in delay_rows if row["role"] == "inferred"
+        for it in row["items"] if it.get("facility_id")
+    }
+    referenced.discard(None)
+    features = [{**f, "attributed": _trailing_digits(f["id"]) in referenced}
+                for f in obs["features"]]
+
     return {
         "kind": "trip",
         "key": obs["key"],
@@ -81,7 +99,7 @@ def trip_payload(obs: dict, label: str) -> dict:
         "observer": obs.get("observer"),
         "t0_epoch_ms": obs.get("t0_epoch_ms"),
         "shape": obs["shape"],
-        "features": obs["features"],
+        "features": features,
         "sources": sources,
         "delay_rows": delay_rows,
     }

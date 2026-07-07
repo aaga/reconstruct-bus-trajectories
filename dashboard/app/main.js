@@ -69,10 +69,18 @@ function setMode(mode) {
 
 // ----------------------------------------------------------- map lifecycle
 
-function ensureMap() {
-  if (S.mapView || !S.trip || !S.trip.shape) return;
+// The map/street-view share a per-trip State that lives as long as the trip
+// (created on load, not on first map build) — so double-click → Street View
+// works on the trajectory tab too, where there is no map.
+function ensureTripState() {
+  if (!S.trip || S.mapState) return;
   S.mapState = new State();
   S.streetView = new StreetViewPopup(S.trip, S.mapState);
+}
+
+function ensureMap() {
+  if (S.mapView || !S.trip || !S.trip.shape) return;
+  ensureTripState();
   S.mapView = new MapView($("map"), S.trip, S.mapState);
   // Two source-coloured buses, driven by the speed-chart cursor. Low-Freq is
   // added first so the High-Freq bus (added last) renders in front; both are
@@ -135,6 +143,7 @@ function render() {
 
 function renderSingle() {
   teardownAggViews(); // clean up the average-trip map/DelayView if we came from it
+  ensureTripState();  // map/street-view State available on both tabs (dbl-click → Street View)
   $("controls").querySelectorAll(".ctrl-group").forEach((g) =>
     g.classList.toggle("hidden", g.dataset.for !== S.tab));
   const isSpeed = S.tab === "speed";
@@ -284,24 +293,25 @@ async function init() {
       S.cursor = null;      // x-value units changed -> drop persisted cursor
       render();
     });
-  // Keyboard: single-trip M/S basemap; average-trip B/E (Segments/Stems),
-  // H (hide unattributed), M/S (basemap).
+  // Keyboard shortcuts. These must ALWAYS fire (no focused-element guard) —
+  // single-trip: M/S basemap, H hide-features (speed tab map); average-trip:
+  // B/E Segments/Stems, H hide-features, M/S basemap.
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const tag = (e.target.tagName || "").toLowerCase();
-    if (tag === "input" || tag === "textarea" || tag === "select") return;
     const k = e.key.toLowerCase();
+    const hide = () => { S._hideUnattr = !S._hideUnattr; return S._hideUnattr; };
     if (S.main === "average" && S.aggState) {
       if (k === "b") S.aggState.publish("delayMode:changed", { value: "segments" });
       else if (k === "e") S.aggState.publish("delayMode:changed", { value: "stems" });
-      else if (k === "h") { S._hideUnattr = !S._hideUnattr; S.aggState.publish("hideUnattributed:changed", { value: S._hideUnattr }); }
+      else if (k === "h") S.aggState.publish("hideUnattributed:changed", { value: hide() });
       else if (k === "m") S.aggState.publish("basemap:changed", { value: "map" });
       else if (k === "s") S.aggState.publish("basemap:changed", { value: "satellite" });
       return;
     }
-    if (!S.mapView) return;
+    if (!S.mapState) return;
     if (k === "m") S.mapState.publish("basemap:changed", { value: "map" });
     else if (k === "s") S.mapState.publish("basemap:changed", { value: "satellite" });
+    else if (k === "h") S.mapState.publish("hideUnattributed:changed", { value: hide() });
   });
 
   $("reset-zoom").onclick = () => { S.view[S.tab] = null; render(); };

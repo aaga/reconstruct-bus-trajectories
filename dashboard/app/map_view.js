@@ -87,6 +87,7 @@ export class MapView {
     this._unsub = [
       state.subscribe("basemap:changed", ({ value }) => this._setBasemap(value)),
       state.subscribe("range:changed", (e) => { if (e.source !== "map") this._fitToRange(e.visibleDistRangeM); }),
+      state.subscribe("hideUnattributed:changed", ({ value }) => this._setHideUnattributed(value)),
     ];
     // Aggregate (delay-per-segment) view has no bus markers, so the map shows a
     // cursor dot that the DelayView drives via dist:hovered.
@@ -135,7 +136,7 @@ export class MapView {
       type: "FeatureCollection",
       features: data.features.map((f) => ({
         type: "Feature", id: f.id,
-        properties: { fid: f.id, kind: f.kind, label: f.label, cross_street: f.cross_street || "", dist_m: f.dist_m },
+        properties: { fid: f.id, kind: f.kind, label: f.label, cross_street: f.cross_street || "", dist_m: f.dist_m, attributed: !!f.attributed },
         geometry: { type: "Point", coordinates: [f.lon, f.lat] },
       })),
     };
@@ -275,17 +276,38 @@ export class MapView {
         <label class="legend-radio"><input type="radio" name="${name}" value="satellite">
           <span>Satellite <span class="legend-shortcut">(S)</span></span></label>
       </div>`;
+    const hideId = `maphide-${Math.random().toString(36).slice(2, 8)}`;
+    const hideHtml = `
+      <div class="legend-toggle">
+        <input id="${hideId}" type="checkbox">
+        <label for="${hideId}">Hide features without delay <span class="legend-shortcut">(H)</span></label>
+      </div>`;
     const kindRows = Object.entries(MARKER_STYLE).map(([kind, s]) => {
       const d = s.radius * 2;
       return `<div class="legend-row"><span class="dot" style="width:${d}px;height:${d}px;background:${s.color};"></span><span>${s.label}</span></div>`;
     }).join("");
-    el.innerHTML = basemapHtml + kindRows;
+    el.innerHTML = basemapHtml + hideHtml + kindRows;
     container.appendChild(el);
     this._basemapRadios = el.querySelectorAll(`input[name="${name}"]`);
     this._basemapRadios.forEach((input) =>
       input.addEventListener("change", (e) => {
         if (e.target.checked) this.state.publish("basemap:changed", { value: e.target.value });
       }));
+    this._hideCheckbox = el.querySelector(`#${hideId}`);
+    this._hideCheckbox.addEventListener("change", (e) =>
+      this.state.publish("hideUnattributed:changed", { value: e.target.checked }));
+  }
+
+  // Hide/show map features with no attributed delay (drives both the fill dots
+  // and their labels; keeps the checkbox in sync when toggled via the H key).
+  _setHideUnattributed(hide) {
+    const attr = ["==", ["get", "attributed"], true];
+    if (this.map.getLayer("features-fill")) this.map.setFilter("features-fill", hide ? attr : null);
+    if (this.map.getLayer("feature-labels")) {
+      const base = ["any", ["==", ["get", "kind"], "traffic_signals"], ["==", ["get", "kind"], "bus_stop"]];
+      this.map.setFilter("feature-labels", hide ? ["all", base, attr] : base);
+    }
+    if (this._hideCheckbox) this._hideCheckbox.checked = hide;
   }
 
   _setBasemap(name) {

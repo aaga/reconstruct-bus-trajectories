@@ -180,7 +180,7 @@ export class DelayView {
         }
         this._hideTooltip();
       })
-      .on("click", (event) => this._onClick(event));
+      .on("dblclick", (event) => this._onClick(event));
 
     this.zoom = d3.zoom()
       .scaleExtent([1, 250])
@@ -570,7 +570,6 @@ export class DelayView {
     el.className = "profile-legend";
 
     const modeName = `delaymode-${Math.random().toString(36).slice(2, 8)}`;
-    const hideId = `delaytoggle-${Math.random().toString(36).slice(2, 8)}`;
     const modeHtml = `
       <div class="legend-toggle">
         <span class="legend-toggle-label">view:</span>
@@ -582,11 +581,6 @@ export class DelayView {
           <input type="radio" name="${modeName}" value="stems">
           <span>Stems <span class="legend-shortcut">(E)</span></span>
         </label>
-      </div>`;
-    const hideHtml = `
-      <div class="legend-toggle">
-        <input id="${hideId}" type="checkbox">
-        <label for="${hideId}">Hide features without delay <span class="legend-shortcut">(H)</span></label>
       </div>`;
 
     // Mode-specific swatch rows. The segments stack and the stem-kind
@@ -618,18 +612,14 @@ export class DelayView {
     }).join("");
 
     el.innerHTML =
-      modeHtml + hideHtml +
+      modeHtml +
       `<div class="legend-section legend-segments">${segRows}</div>` +
       `<div class="legend-section legend-stems" style="display:none">${stemRows}</div>`;
 
     this.container.appendChild(el);
-    this._hideCheckbox = el.querySelector(`#${hideId}`);
     this._modeRadios = el.querySelectorAll(`input[name="${modeName}"]`);
     this._segSection = el.querySelector(".legend-segments");
     this._stemSection = el.querySelector(".legend-stems");
-    this._hideCheckbox.addEventListener("change", (event) => {
-      this.state.publish("hideUnattributed:changed", { value: event.target.checked });
-    });
     this._modeRadios.forEach(input => {
       input.addEventListener("change", (event) => {
         if (event.target.checked) {

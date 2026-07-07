@@ -281,18 +281,9 @@ export class SpeedView {
       S.cursor = { kind: "chart", v: x.invert(px) };
       renderCursor(S.cursor);
     });
-    // Single click → pan map; double click → Street View (timer disambiguates).
-    let clickTimer = null;
-    svg.on("click.cur", (e) => {
-      if (node._dragMoved) return;
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
-      const [px] = d3.pointer(e, node);
-      if (px < M.l || px > width - M.r) return;
-      const v = x.invert(px);
-      clickTimer = setTimeout(() => { clickTimer = null; self.panMapTo(toDistM(v)); }, 250);
-    });
+    // Single click does nothing; double click → Street View at the cursor's
+    // route distance (time mode uses the High-Freq trace to convert time→dist).
     svg.on("dblclick.cur", (e) => {
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
       const [px] = d3.pointer(e, node);
       if (px < M.l || px > width - M.r) return;
       S.mapState?.publish("streetview:open", { distM: toDistM(x.invert(px)) });

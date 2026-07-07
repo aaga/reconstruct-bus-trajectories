@@ -84,6 +84,13 @@ export class TrajectoryView {
       view,
       (e) => ({ x: !e.shiftKey, y: !(e.metaKey || e.ctrlKey) }), // shift=y, cmd=x, none=both
       true, redraw);
+    // Single click does nothing; double click → Street View. The y-axis IS route
+    // distance, so the click's y-position gives the exact location directly.
+    svg.on("dblclick.sv", (e) => {
+      const [px, py] = d3.pointer(e, svg.node());
+      if (px < M.l || px > width - M.r || py < M.t || py > height - M.b) return;
+      S.mapState?.publish("streetview:open", { distM: Math.max(0, y.invert(py) * 1000) });
+    });
     redraw();
   }
 }

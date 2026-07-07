@@ -5,13 +5,14 @@
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
 import { makeSvg } from "../chart_util.js";
 
-// Category → the segment minute-fields to sum (neg fields subtract).
+// Category → the segment minute-fields to sum (neg fields subtract). Colours
+// match the DelayView (Delay-per-segment) stack.
 const CATS = [
-  { label: "Free-flow", color: "#8aa0b6", fields: ["t_ff_min"] },
+  { label: "Free-flow", color: "#9bd4a2", fields: ["t_ff_min"] },
   { label: "Dwell", color: "#3a85d6", fields: ["t_dwell_clean_min", "t_dwell_near_signal_min"] },
   { label: "Signal", color: "#cc0000", fields: ["d_signal_uniform_min", "d_signal_overflow_min"] },
-  { label: "Crossing", color: "#00897b", fields: ["d_crossing_min"] },
-  { label: "Congestion", color: "#e0a800", fields: ["d_congestion_pos_min"], neg: ["d_congestion_neg_min"] },
+  { label: "Crossing", color: "#d6b56a", fields: ["d_crossing_min"] },
+  { label: "Congestion", color: "#b27ab2", fields: ["d_congestion_pos_min"], neg: ["d_congestion_neg_min"] },
 ];
 
 export class OverallDelayView {
