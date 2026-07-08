@@ -1019,7 +1019,6 @@ async function init() {
   $("sync-token").oninput = (e) => { localStorage.setItem("sync_token", e.target.value.trim()); updateSyncWarn(); };
   $("sync-enabled").onchange = (e) => {
     localStorage.setItem("sync_enabled", e.target.checked ? "1" : "0");
-    if (e.target.checked) $("sync-settings").open = true; // reveal the token field
     updateSyncWarn();
   };
   updateSyncWarn();

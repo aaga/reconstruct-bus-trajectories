@@ -26,6 +26,18 @@
       <input id="observer-name" type="text" placeholder="Your name" autocomplete="name">
     </label>
 
+    <label class="field">
+      <span>Auto-save password</span>
+      <input id="sync-token" type="password" placeholder="Shared secret (optional)"
+             autocomplete="off">
+    </label>
+    <label class="check">
+      <input id="sync-enabled" type="checkbox"> Auto-save to server every minute
+    </label>
+    <div id="sync-warn" class="sync-warn hidden">
+      ⚠ Auto-save is ON but no password is entered — server backups won't be saved.
+    </div>
+
     <!-- Start method A: by vehicle number -->
     <div id="setup-main">
       <label class="field">
@@ -40,20 +52,6 @@
       <button id="btn-lookup" class="primary big">🔎 Look up bus</button>
       <button id="btn-find-stop" class="secondary">📍 Or start from a nearby stop</button>
       <div id="setup-status" class="muted"></div>
-
-      <details id="sync-settings">
-        <summary>Server backup settings</summary>
-        <label class="field">
-          <span>Sync token</span>
-          <input id="sync-token" type="password" placeholder="Shared secret (optional)">
-        </label>
-        <label class="check">
-          <input id="sync-enabled" type="checkbox"> Auto-save to server every minute
-        </label>
-      </details>
-      <div id="sync-warn" class="sync-warn hidden">
-        ⚠ Auto-save is ON but no sync token is entered — server backups won't be saved.
-      </div>
     </div>
 
     <!-- Start method B, step 1: nearby stops -->
