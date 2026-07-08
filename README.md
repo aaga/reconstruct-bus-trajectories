@@ -36,7 +36,9 @@ minutes of trip time.
 
 The repo is organized into four layers (① core logic, ② analysis, ③
 visualization, ④ dashboard) plus the standalone recording app. See
-[`ARCHITECTURE.png`](ARCHITECTURE.png) for the dependency diagram.
+[`ARCHITECTURE.png`](ARCHITECTURE.png) for the dependency diagram — rendered from
+[`ARCHITECTURE.mmd`](ARCHITECTURE.mmd) (Mermaid) via
+`npx -y @mermaid-js/mermaid-cli -i ARCHITECTURE.mmd -o ARCHITECTURE.png -s 2`.
 
 ```
 src/                         ① importable packages (pythonpath=src; the tested core)
@@ -62,7 +64,7 @@ analysis/                    ② results & dashboard payloads
   └─ data_prep/              scour the realtime archive → reconstruction bundles
 
 figures/                     ③ visualization
-  ├─ scripts/                all figure generators (+ render_architecture.py)
+  ├─ scripts/                all figure generators (smoothing / vtrak / decomposition)
   └─ <family>.png            rendered figures, families A1..H7 (see below)
 
 dashboard/                   ④ one merged MapLibre + D3 dashboard
