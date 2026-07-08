@@ -14,7 +14,7 @@ import maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/+esm";
 import * as db from "./storage.js";
 import * as sensors from "./sensors.js";
 import * as geo from "./geo.js";
-import { CITIES, DEFAULT_CITY, getCityConfig, loadProvider } from "./providers/index.js";
+import { CITIES, DEFAULT_CITY, getCityConfig, loadProvider, isGeneric } from "./providers/index.js";
 import * as exp from "./export.js";
 import * as sync from "./sync.js";
 
@@ -74,6 +74,7 @@ const S = {
   nextStop: null,        // {stop_id, name, near_side}
   nextStopIdx: -1,       // index of nextStop within patternStopsArr (-1 if unknown)
   gridButtons: {},       // type -> button element (built once)
+  generic: false,        // Generic agency: no feed, phone-only map, no stop data
   map: null,
   phoneMarker: null,
   busMarker: null,
@@ -113,6 +114,12 @@ function populateCities() {
 
 function applyCityConfig(id) {
   $("vehicle-id").placeholder = getCityConfig(id).vehiclePlaceholder;
+  // Generic agency: no vehicle lookup and no nearby-stop start — the button
+  // just starts recording. Hide the agency-specific affordances.
+  const generic = isGeneric(id);
+  $("btn-lookup").textContent = generic ? "▶ Start" : "🔎 Look up bus";
+  $("btn-find-stop").classList.toggle("hidden", generic);
+  $("lookup-hint").classList.toggle("hidden", generic);
 }
 
 function onCityChange() {
@@ -121,7 +128,7 @@ function onCityChange() {
   applyCityConfig(id);
   provider = null;          // force a reload for the new city on next use
   allStopsCache = null;
-  ensureProvider();         // eager preload so the first lookup is fast
+  if (!isGeneric(id)) ensureProvider();  // eager preload so the first lookup is fast
 }
 
 // Make a missing sync token impossible to miss when auto-save is on.
@@ -131,16 +138,18 @@ function updateSyncWarn() {
   $("sync-warn").classList.toggle("hidden", !(on && missing));
 }
 
-/** Load (once) the provider for the currently selected city. */
+/** Load (once) the provider for the currently selected city. Null for Generic. */
 async function ensureProvider() {
   const id = $("city-select").value;
+  if (isGeneric(id)) return null;
   if (!provider) provider = await loadProvider(id);
   return provider;
 }
 
-// ----- Method A: look up by vehicle number
+// ----- Method A: look up by vehicle number (or, for Generic, start directly)
 
 async function onLookup() {
+  if (isGeneric($("city-select").value)) return startGeneric();
   const p = await ensureProvider();
   const vid = p.validateVehicleId($("vehicle-id").value);
   if (!vid) {
@@ -157,6 +166,18 @@ async function onLookup() {
       `Couldn't find bus #${vid}: ${err.message || err}. ` +
       `It must be a bus that's currently in service.`;
   }
+}
+
+// Generic agency: no lookup and no confirm — validate the vehicle number and go
+// straight into recording. There's nothing to confirm without an agency feed.
+async function startGeneric() {
+  const vid = $("vehicle-id").value.trim();
+  if (!vid) {
+    $("setup-status").textContent = "Enter the bus vehicle number.";
+    return;
+  }
+  pendingVehicle = { bus_id: vid };
+  await onStartTrip();
 }
 
 // ----- Method B: start from a nearby stop
@@ -280,24 +301,34 @@ async function onStartTrip() {
 async function beginRecording(meta, openEvent) {
   S.meta = meta;
   S.activeEvent = openEvent;
+  S.generic = isGeneric(meta.city);
   S.pingCount = await db.countPings(meta.key);
   resetPatternState();
-  if (!provider) provider = await loadProvider(meta.city || DEFAULT_CITY);
-  loadPattern(meta.pattern_id);
+  if (!S.generic) {
+    if (!provider) provider = await loadProvider(meta.city || DEFAULT_CITY);
+    loadPattern(meta.pattern_id);
+  }
+
+  // Generic has no stop/route data: hide the next-stop banner + the upcoming-
+  // stops toggle. The map (phone-only) stays.
+  $("next-stop").classList.toggle("hidden", S.generic);
+  $("btn-stops-toggle").classList.toggle("hidden", S.generic);
 
   showView("recording");
   buildEventGrid();        // one-time; never rebuilt
   refreshControls();
-  renderNextStop();
+  if (!S.generic) renderNextStop();
   await renderEventList();
   startSensors();
   initMap();
 
   every(1000, uiTick);
-  every(20000, pollPredictions);
-  every(15000, pollVehicle);
-  pollPredictions();
-  pollVehicle();
+  if (!S.generic) {
+    every(20000, pollPredictions);
+    every(15000, pollVehicle);
+    pollPredictions();
+    pollVehicle();
+  }
 
   if ($("sync-enabled").checked || localStorage.getItem("sync_enabled") === "1") {
     sync.start(meta.key, (status) => { $("st-sync").textContent = status; });
@@ -556,7 +587,18 @@ function uiTick() {
   if (S.activeEvent) $("active-duration").textContent = fmtDur(Date.now() - S.activeEvent.start_t);
   if (S.motionBuf.length) flushMotion();
 
+  if (S.generic) { updateGenericMap(); return; } // no stop data; just follow the phone
   updateNextStop(); // GPS-driven; cheap, no network
+}
+
+// Generic map: no bus feed — center on and follow the phone's own fix. Zooms
+// in once on the first fix, then just recenters.
+function updateGenericMap() {
+  if (!S.map || $("map-panel").classList.contains("collapsed") || !S.lastPing) return;
+  const ll = [S.lastPing.lon, S.lastPing.lat];
+  S.phoneMarker.setLngLat(ll).addTo(S.map);
+  if (!S._genericCentered) { S.map.jumpTo({ center: ll, zoom: 15 }); S._genericCentered = true; }
+  else S.map.easeTo({ center: ll, duration: 500 });
 }
 
 async function renderEventList() {
@@ -741,7 +783,8 @@ function openEditor(eventId) {
 }
 
 function updateEditorStopVisibility() {
-  $("editor-stop-field").classList.toggle("hidden", !STOP_TYPES.has($("editor-type").value));
+  const show = STOP_TYPES.has($("editor-type").value) && !S.generic;
+  $("editor-stop-field").classList.toggle("hidden", !show);
 }
 
 async function onEditorStopInput() {
@@ -856,7 +899,7 @@ function toggleMap() {
   $("btn-map-toggle").classList.toggle("active", !collapsed);
   if (!collapsed) {
     setTimeout(() => S.map?.resize(), 250);
-    pollVehicle();
+    if (S.generic) updateGenericMap(); else pollVehicle();
   }
 }
 
@@ -1056,7 +1099,7 @@ async function init() {
   // resume straight into the Recording view with all state intact.
   const active = await db.getActiveTrip();
   if (active) {
-    provider = await loadProvider(active.city || DEFAULT_CITY);
+    if (!isGeneric(active.city)) provider = await loadProvider(active.city || DEFAULT_CITY);
     const openEvent = await db.getOpenEvent(active.key);
     await beginRecording(active, openEvent);
     maybeOfferMotionResume();
