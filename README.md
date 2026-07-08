@@ -91,16 +91,56 @@ the gitignored `data/`, `outputs/`, and `caches/` folders.
 Nothing in the pipeline hard-codes a route. `src/corridor.py` holds the one
 study corridor — route id, GTFS pattern + shape, and a display name — and the
 scripts read it (or take `--route` / `--pattern`). To point the toolkit at a
-different route:
+different route (or city):
 
-1. Edit `src/corridor.py` (`ROUTE_ID`, `PATTERN_ID`, `SHAPE_ID`, `CORRIDOR_NAME`).
-2. Build that shape's intersection enrichment cache
-   (`record-a-ride/scripts/build_all_intersections.py`) and set `INTERSECTIONS_FILE`.
+1. **Build the intersection cache** for that city's shapes (needs Valhalla — see
+   below).
+2. Edit `src/corridor.py` (`ROUTE_ID`, `PATTERN_ID`, `SHAPE_ID`, `CORRIDOR_NAME`,
+   and `INTERSECTIONS_FILE` → the cache from step 1).
 3. Re-run the pipeline (reconstruct → free-flow baseline → decompose → figures /
    dashboard).
 
 The checked-in figures and the dashboard's **Average trip** aggregate are
 specific to the current corridor (CTA Route 22 SB); everything else is general.
+
+### Building the intersection cache for a new city (needs Valhalla, once)
+
+Delay attribution reads a pre-built intersection cache (`{shape_id: [ControlPoint,
+…]}`). Reconstruction itself needs no Valhalla, but **building this cache does**:
+stage 1 snaps each GTFS shape to the OSM ways it traverses via Valhalla, and
+stage 2 asks Overpass which of those ways have signalized nodes. For `Route 22`
+the cache (`intersections_route22.json`) is committed; a new city needs its own.
+
+**Prerequisite:** a running Valhalla instance built from that city's OSM extract,
+serving `/trace_attributes` (e.g. at `http://localhost:8002`). Standing that up
+is standard Valhalla — build tiles from an `.osm.pbf`, then run the server; see
+the [Valhalla docs](https://valhalla.github.io/valhalla/) or the
+[gis-ops Docker image](https://github.com/gis-ops/docker-valhalla) (the quickest
+path — mount an `.osm.pbf` and it builds tiles + serves on `:8002`).
+
+**Then run the build** (stage 1 Valhalla + stage 2 Overpass — both resumable and
+chunked; re-run the same command to pick up after any failure):
+
+```bash
+uv run python record-a-ride/scripts/build_all_intersections.py \
+    --gtfs data/gtfs/<city>_gtfs.zip \
+    --valhalla http://localhost:8002 \
+    --out       caches/<city>/intersections.json \
+    --way-cache caches/<city>/way_cache.json \
+    --shape-ids <shape_id[,shape_id,...]>   # omit to do every shape in the feed
+```
+
+Point `src/corridor.py`'s `INTERSECTIONS_FILE` at the output
+(`caches/<city>/intersections.json`) and you're set — `run_decomposition.py`
+loads that JSON directly, with no further Valhalla. Notes:
+
+- `--shape-ids` limits the (slow) build to the shapes you care about; the
+  all-shapes run takes hours and checkpoints every `--checkpoint-every` shapes.
+- `shape_id_for_pattern` encodes the **CTA** convention (shape = `678` + pattern).
+  A non-CTA feed likely won't follow it, so set `SHAPE_ID` explicitly rather than
+  relying on that helper.
+- Overpass is chunked (`--chunk-size`, default 300 way-ids) with retry/backoff;
+  `--transport auto` falls back to a `curl` subprocess if `urllib` is blocked.
 
 ### Figures
 
