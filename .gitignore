@@ -73,8 +73,8 @@ Reconstructing_Transit_Vehicle_Trajectory_Using_High-Resolution_GPS_Data.pdf
 # --- record-a-ride: secrets + build artifacts --------------------------
 # Cloudflare secrets — never commit
 record-a-ride/.dev.vars
-# Miniflare local R2/sqlite/pages dev state
-record-a-ride/.wrangler/
+# Miniflare local R2/sqlite/pages dev state (record-a-ride + dashboard deploys)
+.wrangler/
 # generated comparison payloads (rebuilt by analysis/comparison.py)
 outputs/obs_trips/
 # downloaded bus-state-history CSVs
