@@ -452,7 +452,17 @@ function newEvent(type, t, pos) {
     stop_id: null,
     stop_name: null,
     near_side: null,
+    pax_on: 0,
+    pax_off: 0,
   };
+}
+
+// Passenger counter: each tap bumps the active bus-stop event's on/off count.
+async function incrementPax(field) {
+  const e = S.activeEvent;
+  if (!e || e.type !== "bus_stop") return;
+  S.activeEvent = await db.updateEvent(e.id, { [field]: (e[field] || 0) + 1 });
+  renderPaxControls();
 }
 
 // A note is an instantaneous, timestamped marker — it does NOT change the
@@ -530,6 +540,7 @@ function renderBanner() {
       e.type === "bus_stop" && e.stop_name ? e.stop_name : (e.note || "");
   }
   renderTurnControls();
+  renderPaxControls();
 }
 
 function renderTurnControls() {
@@ -539,6 +550,16 @@ function renderTurnControls() {
   if (!show) return;
   $("btn-turn-left").classList.toggle("selected", e.direction === "left");
   $("btn-turn-right").classList.toggle("selected", e.direction === "right");
+}
+
+// In-banner passenger counter, shown while a bus-stop event is active.
+function renderPaxControls() {
+  const e = S.activeEvent;
+  const show = e && e.type === "bus_stop";
+  $("pax-controls").classList.toggle("hidden", !show);
+  if (!show) return;
+  $("pax-on-count").textContent = e.pax_on || 0;
+  $("pax-off-count").textContent = e.pax_off || 0;
 }
 
 function fmtDur(ms) {
@@ -776,7 +797,10 @@ function openEditor(eventId) {
     editorStop = null;
     $("editor-stop-input").value = e.stop_name || "";
     $("editor-stop-results").classList.add("hidden");
+    $("editor-pax-on").value = e.pax_on || 0;
+    $("editor-pax-off").value = e.pax_off || 0;
     updateEditorStopVisibility();
+    updateEditorPaxVisibility();
     $("event-editor").classList.remove("hidden");
     $("editor-backdrop").classList.remove("hidden");
   });
@@ -785,6 +809,10 @@ function openEditor(eventId) {
 function updateEditorStopVisibility() {
   const show = STOP_TYPES.has($("editor-type").value) && !S.generic;
   $("editor-stop-field").classList.toggle("hidden", !show);
+}
+
+function updateEditorPaxVisibility() {
+  $("editor-pax-field").classList.toggle("hidden", $("editor-type").value !== "bus_stop");
 }
 
 async function onEditorStopInput() {
@@ -831,6 +859,10 @@ async function saveEditor() {
   if (STOP_TYPES.has(fields.type) && editorStop) {
     fields.stop_id = editorStop.stop_id;
     fields.stop_name = editorStop.stop_name;
+  }
+  if (fields.type === "bus_stop") {
+    fields.pax_on = Math.max(0, parseInt($("editor-pax-on").value, 10) || 0);
+    fields.pax_off = Math.max(0, parseInt($("editor-pax-off").value, 10) || 0);
   }
   const updated = await db.updateEvent(editingId, fields);
   if (S.activeEvent?.id === editingId) {
@@ -1085,10 +1117,12 @@ async function init() {
   $("btn-stops-toggle").onclick = toggleUpcoming;
   $("btn-turn-left").onclick = () => setTurnDirection("left");
   $("btn-turn-right").onclick = () => setTurnDirection("right");
+  $("btn-pax-on").onclick = () => incrementPax("pax_on");
+  $("btn-pax-off").onclick = () => incrementPax("pax_off");
   $("btn-edit-active").onclick = () => { if (S.activeEvent) openEditor(S.activeEvent.id); };
 
   // Editor
-  $("editor-type").onchange = updateEditorStopVisibility;
+  $("editor-type").onchange = () => { updateEditorStopVisibility(); updateEditorPaxVisibility(); };
   $("editor-stop-input").addEventListener("input", onEditorStopInput);
   $("editor-save").onclick = saveEditor;
   $("editor-cancel").onclick = closeEditor;

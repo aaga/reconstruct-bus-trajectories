@@ -124,6 +124,19 @@
         <button id="btn-turn-left" class="toggle">⬅ Left</button>
         <button id="btn-turn-right" class="toggle">Right ➡</button>
       </div>
+
+      <!-- Passenger counter (bus-stop events only). Each tap increments; the
+           exact counts are adjustable afterward in the event editor. -->
+      <div id="pax-controls" class="pax-controls hidden">
+        <button id="btn-pax-on" class="pax-btn">
+          <span class="pax-count" id="pax-on-count">0</span>
+          <span class="pax-cap">＋ Pax ON</span>
+        </button>
+        <button id="btn-pax-off" class="pax-btn">
+          <span class="pax-count" id="pax-off-count">0</span>
+          <span class="pax-cap">− Pax OFF</span>
+        </button>
+      </div>
     </div>
 
     <hr class="section-divider">
@@ -177,6 +190,13 @@
              autocomplete="off">
       <div id="editor-stop-results" class="pick-list compact hidden"></div>
     </label>
+    <div class="field hidden" id="editor-pax-field">
+      <span>Passengers</span>
+      <div class="pax-edit">
+        <label>ON <input id="editor-pax-on" type="number" min="0" inputmode="numeric"></label>
+        <label>OFF <input id="editor-pax-off" type="number" min="0" inputmode="numeric"></label>
+      </div>
+    </div>
     <label class="field">
       <span>Notes</span>
       <textarea id="editor-note" rows="3" placeholder="Anything worth remembering…"></textarea>

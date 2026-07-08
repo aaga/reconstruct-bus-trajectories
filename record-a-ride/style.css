@@ -290,6 +290,35 @@ button.toggle {
 }
 button.toggle.selected { background: #fff; color: #111; }
 
+/* In-banner passenger counter (bus-stop events). Big finger targets. */
+.pax-controls {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 12px;
+}
+.pax-btn {
+  flex: 1 1 0;
+  max-width: 160px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border-radius: 14px;
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.pax-btn:active { background: rgba(255, 255, 255, 0.32); }
+.pax-count { font-size: 30px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.pax-cap { font-size: 13px; font-weight: 700; opacity: 0.95; }
+
+/* Editor passenger fields */
+.pax-edit { display: flex; gap: 18px; }
+.pax-edit label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+.pax-edit input { width: 72px; font: inherit; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
+
 /* ------------------------------------------------------------ event grid */
 
 .event-grid {

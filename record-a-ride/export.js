@@ -52,7 +52,7 @@ export function buildEventsCsv(meta, events) {
   return toCsv(
     ["event_id", "trip_id", "type", "direction", "stop_id", "stop_name", "near_side",
      "note", "parent_id", "start_time", "end_time",
-     "start_lat", "start_lon", "end_lat", "end_lon", "duration_s"],
+     "start_lat", "start_lon", "end_lat", "end_lon", "duration_s", "pax_on", "pax_off"],
     events.map((e) => [
       e.id, meta.trip_id, e.type, e.direction || "", e.stop_id || "", e.stop_name || "",
       e.near_side == null ? "" : (e.near_side ? "true" : "false"),
@@ -60,6 +60,7 @@ export function buildEventsCsv(meta, events) {
       fmtTime(e.start_t), fmtTime(e.end_t),
       num(e.start_lat), num(e.start_lon), num(e.end_lat), num(e.end_lon),
       e.end_t != null ? ((e.end_t - e.start_t) / 1000).toFixed(1) : "",
+      e.pax_on || 0, e.pax_off || 0,
     ])
   );
 }
