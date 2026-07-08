@@ -1,13 +1,19 @@
-# Reconstructing CTA Route 22 Bus Trajectories
+# Bus Trajectory Reconstruction & Delay Attribution
 
-A reproduction of Huang et al., *Reconstructing Transit Vehicle Trajectory
-Using High-Resolution GPS Data* (ITSC 2023), applied to CTA Route 22 (Clark)
-southbound. Smooths days of CTA BusTime heartbeats with **LOCREG-PCHIP**
-to recover continuous, monotone, differentiable trajectories `f(t)`, then
-extends the paper with an OSM-derived intersection layer and a delay-attribution
-heuristic that ranks the dominant slowdown sources along the corridor.
+Reconstructs smooth, monotone, differentiable vehicle trajectories `f(t)` from
+sparse AVL/GPS heartbeats using **LOCREG-PCHIP** (Huang et al., *Reconstructing
+Transit Vehicle Trajectory Using High-Resolution GPS Data*, ITSC 2023), then
+extends the method with an OSM-derived intersection layer and a **delay
+decomposition** that attributes where each trip loses time — free-flow, signals,
+dwell, crossings, and congestion.
 
-![431 trips on Route 22 SB](figures/C4_alltrips_aligned.png)
+The pipeline is **route-agnostic**: it consumes any GTFS route + a trace of
+`(timestamp, lat, lon)` pings. The bundled study corridor — and all the
+checked-in figures and dashboard aggregates — is **CTA Route 22 (Clark)
+southbound**; retarget by editing [`src/corridor.py`](src/corridor.py) and
+supplying that route's intersection cache (see *Retargeting* below).
+
+![431 reconstructed trips — the CTA Route 22 SB study corridor](figures/C4_alltrips_aligned.png)
 
 ---
 
@@ -20,25 +26,24 @@ heuristic that ranks the dominant slowdown sources along the corridor.
 | PCHIP (Fritsch–Carlson)             | Huang et al. §III-B   | reproduced via `scipy.interpolate`  |
 | LOCREG-PCHIP hybrid (Algorithm 1)   | Huang et al. §III-D   | reproduced                          |
 | LOCREG-MQSI (C² variant)            | —                     | **new**: continuous-acceleration alternative |
-| Map-matching                        | Huang et al. §II-B    | **replaced**: shape-snap onto GTFS polyline instead of Valhalla per ping |
-| Single-trip qualitative analysis    | Huang et al. §V       | reproduced (CTA Route 22 instead of MBTA Route 1) |
+| Map-matching                        | Huang et al. §II-B    | **replaced**: shape-snap onto the GTFS polyline instead of Valhalla per ping |
+| Single-trip qualitative analysis    | Huang et al. §V       | reproduced (CTA data instead of MBTA Route 1) |
 | Speed-at-door-open validation       | Huang et al. §IV-A    | **skipped**: CTA BusTime does not expose door state |
 | OSM intersection enrichment         | —                     | **new**                             |
-| Delay-attribution heuristic         | —                     | **new**                             |
+| Delay-decomposition / attribution   | —                     | **new**                             |
 | Aggregation across hundreds of trips| —                     | **new**                             |
 
-The biggest deviation: where the paper uses `bandwidth = 20` on a 6 s median
-heartbeat cadence, we use `bandwidth = 5` because CTA BusTime publishes
-positions every ~30 s. Both choices keep the LOCREG window at roughly two
-minutes of trip time.
+The biggest method deviation: where the paper uses `bandwidth = 20` on a 6 s
+median heartbeat cadence, this uses `bandwidth = 5` because CTA BusTime publishes
+positions every ~30 s. Both keep the LOCREG window at roughly two minutes of trip
+time — the constant to revisit for a feed with a different cadence.
 
 ## Repository layout
 
-The repo is organized into four layers (① core logic, ② analysis, ③
-visualization, ④ dashboard) plus the standalone recording app. See
-[`ARCHITECTURE.png`](ARCHITECTURE.png) for the dependency diagram — rendered from
-[`ARCHITECTURE.mmd`](ARCHITECTURE.mmd) (Mermaid) via
-`npx -y @mermaid-js/mermaid-cli -i ARCHITECTURE.mmd -o ARCHITECTURE.png -s 2`.
+Four layers — ① core logic, ② analysis, ③ visualization, ④ dashboard — plus the
+standalone recording app. `core` is pure (no I/O, no plotting); `dataio` is the
+I/O seam; `analysis/prep/` is the reuse seam shared by the figure scripts and the
+dashboard builder.
 
 ```
 src/                         ① importable packages (pythonpath=src; the tested core)
@@ -53,14 +58,14 @@ src/                         ① importable packages (pythonpath=src; the tested
   │    │                     archive), intersections.py, way_match.py, vtrak.py
   │    ├─ records_io.py      disk/GTFS-backed wrappers (reconstruct_csv, build_segments)
   │    └─ sources/           pluggable GPS-trace adapters → one canonical trace
-  ├─ corridor.py             the study route/pattern/shape in one place (scripts read it)
+  ├─ corridor.py             the study route/pattern/shape in one place (edit to retarget)
   ├─ viz/                    matplotlib/plotly renderers + colour palette
   └─ cli/                    `bus-trajectories reconstruct | compare | build-*`
 
 analysis/                    ② results & dashboard payloads
   ├─ run_decomposition.py    per-trip decomposition → trip_*.json + aggregate.csv
   ├─ build_dashboard_data.py unified dashboard payload builder (+ prep/ helpers)
-  ├─ comparison.py           phone+R2+AVL fusion → outputs/obs_trips/
+  ├─ comparison.py           phone + R2 + AVL fusion → outputs/obs_trips/
   └─ data_prep/              scour the realtime archive → reconstruction bundles
 
 figures/                     ③ visualization
@@ -72,7 +77,7 @@ dashboard/                   ④ one merged MapLibre + D3 dashboard
   └─ data/                   catalog index.json + per-view payloads (trips + aggregates)
 record-a-ride/               field-data collection web app + Cloudflare Pages API
 tests/                       pytest suite (mirrors src/)
-intersections_route22.json   precomputed enrichment for shape 67803936 + variants
+intersections_route22.json   OSM enrichment cache for the study shape (+ variants)
 data/ outputs/ caches/       gitignored — regenerable inputs, bundles, and caches
 docs/                        reference papers + attribution flowchart
 ```
@@ -80,6 +85,22 @@ docs/                        reference papers + attribution flowchart
 Scripts run with `src` on the path (they insert it themselves); the console
 entry point is `bus-trajectories` (`cli.cli:main`). Inputs and outputs live in
 the gitignored `data/`, `outputs/`, and `caches/` folders.
+
+## Retargeting to another route
+
+Nothing in the pipeline hard-codes a route. `src/corridor.py` holds the one
+study corridor — route id, GTFS pattern + shape, and a display name — and the
+scripts read it (or take `--route` / `--pattern`). To point the toolkit at a
+different route:
+
+1. Edit `src/corridor.py` (`ROUTE_ID`, `PATTERN_ID`, `SHAPE_ID`, `CORRIDOR_NAME`).
+2. Build that shape's intersection enrichment cache
+   (`record-a-ride/scripts/build_all_intersections.py`) and set `INTERSECTIONS_FILE`.
+3. Re-run the pipeline (reconstruct → free-flow baseline → decompose → figures /
+   dashboard).
+
+The checked-in figures and the dashboard's **Average trip** aggregate are
+specific to the current corridor (CTA Route 22 SB); everything else is general.
 
 ### Figures
 
@@ -103,7 +124,7 @@ iteration (a number), each produced by the script noted:
 uv sync                               # install runtime + dev deps
 uv run pytest                         # run the test suite
 
-# reconstruct from a CSV of pings (route 22, pattern 3936) at bandwidth 5
+# reconstruct from a CSV of pings (here: the study route/pattern) at bandwidth 5
 PYTHONPATH=src uv run bus-trajectories reconstruct \
     your_pings.csv --gtfs data/gtfs/cta_gtfs.zip \
     --route 22 --pattern 3936 --bandwidth 5 --serialize --out outputs/out_bw5
@@ -141,8 +162,8 @@ read-only data source.
 
 ## Algorithm in one paragraph
 
-Given a sorted sequence of (timestamp, latitude, longitude) pings on a
-single trip:
+Given a sorted sequence of `(timestamp, latitude, longitude)` pings on a single
+trip:
 
 1. **Map-match**: project each `(lat, lon)` onto the GTFS shape polyline
    (`mapmatch.shape_snap.SnapToShapeMatcher`) to get a distance-into-trip
@@ -159,13 +180,13 @@ single trip:
 
 ## Delay attribution
 
-The **chapter-3 decomposition** (`src/core/decompose/`
-package + `figures/scripts/`) follows Huang (2023), *Chapter 3 — Transit
-Delay Analysis* (`docs/chapter 3 delay analysis.pdf`): signal-to-signal
-segmentation, per-segment
+The **chapter-3 decomposition** (`src/core/decompose/` + `figures/scripts/`)
+follows Huang (2023), *Chapter 3 — Transit Delay Analysis*
+(`docs/chapter 3 delay analysis.pdf`): signal-to-signal segmentation, per-segment
 `T_obs = T_ff + T_dwell + D_signal + D_crossing + D_congestion` with `T_ff`
-estimated as the 5th-percentile travel time of late-night (22:00–05:00 Chicago)
-trips on the same pattern. Produces the `F*` / `G*` / `H*` figure families.
+estimated as the 5th-percentile travel time of late-night (22:00–05:00 local)
+trips on the same pattern. Produces the `F*` / `G*` / `H*` figure families and
+the dashboard's Average-trip view.
 
 Two deviations from the paper:
 - AVL door-open/close data is not available, so dwell is attributed by
@@ -178,7 +199,7 @@ Two deviations from the paper:
   ambiguous because dwell-time vs. signal-delay can't be separated from GPS
   alone.
 
-Run the decomposition end-to-end:
+Run the decomposition end-to-end (on the current study corridor):
 
 ```bash
 # 1. Build the late-night free-flow baseline (scours R2, reconstructs at bw=5,
