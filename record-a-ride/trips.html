@@ -9,17 +9,32 @@
     body {
       font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
       color: #222; background: #fff;
-      max-width: 1100px; margin: 0 auto; padding: 24px;
+      max-width: 1150px; margin: 0 auto; padding: 24px;
     }
     h1 { font-size: 22px; }
     .muted { color: #777; font-size: 13px; }
-    #token-row { margin: 14px 0 22px; display: flex; gap: 8px; align-items: center; }
-    #token-row input { font: inherit; padding: 7px 10px; border: 1px solid #ccc; border-radius: 6px; width: 320px; }
-    #token-row button { font: inherit; padding: 7px 14px; border: 1px solid #888; border-radius: 6px; background: #fff; cursor: pointer; }
+    input, button, select { font: inherit; }
+    #token-row { margin: 14px 0 18px; display: flex; gap: 8px; align-items: center; }
+    #token-row input { padding: 7px 10px; border: 1px solid #ccc; border-radius: 6px; width: 320px; }
+    .btn { padding: 7px 14px; border: 1px solid #888; border-radius: 6px; background: #fff; cursor: pointer; }
+    .btn:hover { background: #f4f4f4; }
+    .btn.primary { background: #1a73e8; border-color: #1a73e8; color: #fff; }
+    .btn.primary:disabled { background: #9bbcee; border-color: #9bbcee; cursor: default; }
+    .btn.primary:hover:not(:disabled) { background: #1666d0; }
+
+    #controls { margin: 8px 0 16px; padding: 12px 14px; background: #f7f8fa; border: 1px solid #e6e8ec; border-radius: 8px; }
+    .filters, .actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+    .actions { margin-top: 12px; }
+    .filters label { font-size: 13px; color: #555; display: inline-flex; align-items: center; gap: 6px; }
+    .filters input { padding: 6px 9px; border: 1px solid #ccc; border-radius: 6px; }
+    .filters input[type=text] { width: 200px; }
+
     table { border-collapse: collapse; width: 100%; font-size: 14px; }
     th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
     th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: #666; }
     tr:hover td { background: #fafafa; }
+    td.pick, th.pick { width: 26px; text-align: center; }
+    td.pick input, th.pick input { width: 17px; height: 17px; cursor: pointer; }
     a { color: #1a73e8; text-decoration: none; }
     a:hover { text-decoration: underline; }
     .files a { margin-right: 10px; white-space: nowrap; }
@@ -31,21 +46,43 @@
   <h1>Saved trips</h1>
   <p class="muted">
     Trips auto-saved by the <a href="./index.html">Record-a-Ride app</a>.
-    Small files are full snapshots; <em>motion</em> is uploaded as append-only
-    chunks — “combined motion CSV” stitches them back together.
+    Enter the auto-save password to view them. Small files are full snapshots;
+    <em>motion</em> is uploaded as append-only chunks, stitched back together on
+    download.
   </p>
   <div id="token-row">
-    <label for="token">Sync token:</label>
-    <input id="token" type="password" placeholder="shared secret">
-    <button id="load">Load trips</button>
+    <label for="token">Auto-save password:</label>
+    <input id="token" type="password" placeholder="shared secret" autocomplete="off">
+    <button id="load" class="btn">Load trips</button>
   </div>
   <div id="status" class="muted"></div>
+
+  <div id="controls" hidden>
+    <div class="filters">
+      <label>From <input id="f-from" type="date"></label>
+      <label>To <input id="f-to" type="date"></label>
+      <label>Observer <input id="f-observer" type="text" placeholder="name contains…"></label>
+      <button id="f-clear" class="btn">Clear filters</button>
+    </div>
+    <div class="actions">
+      <button id="select-all" class="btn">Select all (filtered)</button>
+      <button id="select-none" class="btn">Clear selection</button>
+      <button id="download-selected" class="btn primary" disabled>⬇ Download selected (0)</button>
+      <span id="dl-status" class="muted"></span>
+    </div>
+  </div>
+
   <table id="table" hidden>
     <thead>
-      <tr><th>Trip</th><th>Route / bus</th><th>Started</th><th>Observer</th><th>Files</th></tr>
+      <tr>
+        <th class="pick"></th>
+        <th>Trip</th><th>Route / bus</th><th>Started</th><th>Observer</th><th>Files</th>
+      </tr>
     </thead>
     <tbody id="rows"></tbody>
   </table>
+
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script type="module" src="./trips.js"></script>
 </body>
 </html>
