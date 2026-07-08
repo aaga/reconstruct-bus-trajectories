@@ -11,18 +11,17 @@ dependencies = [
     "plotly>=6.7.0",
     "pyarrow>=24.0.0",
     "contextily>=1.7.0",
-    "python-docx>=1.1",
 ]
 
 [project.scripts]
-bus-trajectories = "bus_trajectories.cli:main"
+bus-trajectories = "cli.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bus_trajectories"]
+packages = ["src/core", "src/dataio", "src/viz", "src/cli"]
 
 [dependency-groups]
 dev = [
@@ -31,6 +30,8 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# "src" for the core package; "." so the top-level analysis/ layer is importable.
+pythonpath = ["src", "."]
 
 [tool.uv]
 dev-dependencies = [

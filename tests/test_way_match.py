@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from bus_trajectories.way_match import (
+from dataio.way_match import (
     WaySegment,
     decode_polyline6,
     extract_segments,

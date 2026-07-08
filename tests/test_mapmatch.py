@@ -7,9 +7,9 @@ import math
 import numpy as np
 import pytest
 
-from bus_trajectories.mapmatch import get_matcher
-from bus_trajectories.mapmatch.shape_snap import SnapToShapeMatcher
-from bus_trajectories.mapmatch.valhalla import ValhallaMatcher
+from core.mapmatch import get_matcher
+from core.mapmatch.shape_snap import SnapToShapeMatcher
+from core.mapmatch.valhalla import ValhallaMatcher
 
 
 def _straight_line_shape(start_lat=41.9, start_lon=-87.65, n=11, length_m=1000.0):

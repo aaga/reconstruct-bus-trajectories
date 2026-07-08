@@ -7,13 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
-from bus_trajectories.serialize import (
+from core.serialize import (
     from_pchip_record,
     load_records,
     save_records,
     to_pchip_record,
 )
-from bus_trajectories.smooth import locreg_pchip
+from core.smooth import locreg_pchip
 
 
 class _FakeRecon:

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from bus_trajectories.io import list_bus_shapes, list_shape_ids
+from dataio.gtfs import list_bus_shapes, list_shape_ids
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
