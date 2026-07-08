@@ -102,15 +102,22 @@ uv sync                               # install runtime + dev deps
 uv run pytest                         # run the test suite
 
 # reconstruct from a CSV of pings (route 22, pattern 3936) at bandwidth 5
-uv run bus-trajectories reconstruct \
+PYTHONPATH=src uv run bus-trajectories reconstruct \
     your_pings.csv --gtfs data/gtfs/cta_gtfs.zip \
     --route 22 --pattern 3936 --bandwidth 5 --serialize --out outputs/out_bw5
 
 # build the interactive bandwidth-comparison HTML over multiple bandwidths
-uv run bus-trajectories compare \
+PYTHONPATH=src uv run bus-trajectories compare \
     outputs/out_bw5 outputs/out_bw10 outputs/out_bw20 \
     --gtfs data/gtfs/cta_gtfs.zip --pattern 3936 --out compare.html
 ```
+
+> All entry points run with `src` on the path — `pytest` and the console script
+> pick it up automatically (pyproject `pythonpath` / the editable install), and the
+> pipeline scripts insert it themselves. If a bare `uv run bus-trajectories` ever
+> reports `No module named 'cli'` (uv can drop the flat-`src` editable path on an
+> auto-sync), prefix with `PYTHONPATH=src` as shown, or run
+> `uv sync --reinstall-package bus-trajectories`.
 
 `cta_gtfs.zip` is downloaded on demand from the CTA's published GTFS feed the
 first time a script needs it (into `data/gtfs/`); archived heartbeat data is
