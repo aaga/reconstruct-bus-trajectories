@@ -538,6 +538,9 @@ function renderBanner() {
     $("active-label").textContent = cfg.short;
     $("active-sub").textContent =
       e.type === "bus_stop" && e.stop_name ? e.stop_name : (e.note || "");
+    // Show the duration from the get-go (0:00) so the banner height is stable
+    // from the moment the event opens — no jump when the 1 s tick first fills it.
+    $("active-duration").textContent = fmtDur(Date.now() - e.start_t);
   }
   renderTurnControls();
   renderPaxControls();
@@ -558,8 +561,9 @@ function renderPaxControls() {
   const show = e && e.type === "bus_stop";
   $("pax-controls").classList.toggle("hidden", !show);
   if (!show) return;
-  $("pax-on-count").textContent = e.pax_on || 0;
-  $("pax-off-count").textContent = e.pax_off || 0;
+  // Sign rides on the number once it leaves 0 (+3 / −2), not on the caption.
+  $("pax-on-count").textContent = e.pax_on ? `+${e.pax_on}` : "0";
+  $("pax-off-count").textContent = e.pax_off ? `−${e.pax_off}` : "0";
 }
 
 function fmtDur(ms) {

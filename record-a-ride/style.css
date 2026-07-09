@@ -249,10 +249,11 @@ details summary { font-size: 14px; color: #666; padding: 8px 0; cursor: pointer;
   color: #fff;
   text-align: center;
   transition: background 0.15s;
-  /* Fixed height sized to the tallest normal state (turn delay with the
-     left/right row) so the button grid below never shifts. MOVING just shows
-     whitespace below the label. */
-  min-height: 150px;
+  /* Fixed height sized to the tallest state (a bus stop with its name, the
+     running timer, and the passenger counter) so every banner is the same
+     height and the button grid below never shifts. Shorter states (MOVING, a
+     plain delay) just show whitespace below the label. */
+  min-height: 184px;
 }
 .active-banner.moving { background: #2e7d32; }
 #active-label { font-size: 21px; font-weight: 800; letter-spacing: 0.5px; }
@@ -312,7 +313,7 @@ button.toggle.selected { background: #fff; color: #111; }
 }
 .pax-btn:active { background: rgba(255, 255, 255, 0.32); }
 .pax-count { font-size: 30px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
-.pax-cap { font-size: 13px; font-weight: 700; opacity: 0.95; }
+.pax-cap { font-size: 16px; font-weight: 700; opacity: 0.95; }
 
 /* Editor passenger fields */
 .pax-edit { display: flex; gap: 18px; }
