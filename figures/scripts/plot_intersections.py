@@ -14,7 +14,7 @@ Three layers:
 
 Run:
     PYTHONPATH=src .venv/bin/python scripts/plot_intersections.py \\
-        --intersections intersections_route22.json \\
+        --intersections caches/cta/intersections.json \\
         --gtfs cta_gtfs.zip \\
         --shape-id 67803936 \\
         --heading 180 \\

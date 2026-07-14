@@ -16,8 +16,7 @@ Both stages are wrapped for scale, without touching src/:
     go up in batches, results are merged, and per-shape outputs are
     checkpointed so a crash resumes where it left off.
 
-Output (same schema as intersections_route22.json, so
-delay_decomposition.load_intersections consumes it unchanged):
+Output (the schema delay_decomposition.load_intersections consumes):
 
     {shape_id: [{intersection_node_id, lat, lon, dist_along_route_m,
                  control_type, cross_street_names, ...}, ...]}

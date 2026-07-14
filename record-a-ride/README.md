@@ -96,9 +96,9 @@ patterns have flags; all other stops show "near-side?" (unknown) in the app.
 
 ### All-CTA signalized intersections (one-time, long)
 
-Builds `caches/cta/intersections.json` — the same schema as
-`intersections_route22.json`, consumable by `delay_decomposition` — for every
-CTA bus shape (~763). Needs a Valhalla instance for map-matching (stage 1)
+Builds `caches/cta/intersections.json` — the intersection cache
+`delay_decomposition` consumes — for every CTA bus shape (~763). Needs a Valhalla
+instance for map-matching (stage 1)
 and Overpass (stage 2). Both stages checkpoint and **resume**: re-run the
 same command after any failure and it picks up where it left off.
 
@@ -120,9 +120,8 @@ Notes:
   `--transport auto` (default) falls back to a curl subprocess when
   overpass-api.de's TLS-fingerprint filter drops Python's client — observed
   on macOS; curl from the same machine is accepted.
-- Stage-2 output for route 22 was verified to reproduce
-  `intersections_route22.json` exactly (145/145 control points, identical
-  near-side stop set).
+- Stage-2 output was spot-checked on the route-22 shapes (≈145 control points
+  each, matching near-side stop set) against an earlier route-specific build.
 
 ## Data formats
 

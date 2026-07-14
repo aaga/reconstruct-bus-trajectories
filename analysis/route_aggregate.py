@@ -13,7 +13,7 @@ Inputs (all products of the decomposition pipeline):
   * ``outputs/out_decomposition/aggregate.csv``       — per-segment means (run_decomposition)
   * ``outputs/out_decomposition/freeflow_segments.json`` — free-flow baseline
   * ``outputs/out_r2_bw5/trajectories.json``          — the daytime trip bundle
-  * ``data/gtfs/cta_gtfs.zip`` + ``intersections_route22.json`` — shape/stops/signals
+  * ``data/gtfs/cta_gtfs.zip`` + ``caches/cta/intersections.json`` — shape/stops/signals
 """
 
 from __future__ import annotations
