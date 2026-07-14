@@ -1,8 +1,8 @@
 """Pure route-polyline geometry shared by the dashboard data builders.
 
 Single home for the camera-bearing and cumulative-distance helpers that were
-previously copy-pasted across ``build_dashboard.py`` and ``build_comparison.py``
-(the latter under the name ``_cumdist_geodesic``). No I/O, numpy only.
+once copy-pasted across the dashboard + comparison builders. Used today by
+``analysis.route_aggregate`` and ``analysis.comparison``. No I/O, numpy only.
 """
 
 from __future__ import annotations

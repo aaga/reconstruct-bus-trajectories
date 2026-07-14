@@ -5,14 +5,10 @@ One payload schema, ``kind: "trip" | "aggregate"``, with a shared
 dense ``curve``) and ``delay_rows[]``; aggregates carry ``segments[]`` plus
 per-facility stats folded onto ``features``.
 
-For now this is a **converter** over already-built artifacts (so no network
-pipeline re-run is needed):
-  * observation trips  ← outputs/obs_trips/*.json
-  * route aggregate    ← outputs/out_dashboard/sb_route/data.json
-
-Wiring it directly onto the live pipelines (comparison.py as a phone+R2+AVL
-source-provider; the route builder for aggregates) is the forward step; the
-emitted schema is identical either way.
+Inputs:
+  * observation trips  ← outputs/obs_trips/*.json  (converted from comparison.py)
+  * route aggregate    ← analysis.route_aggregate.build_route_aggregate()
+    (computed directly from the decomposition inputs — no intermediate file)
 
 Run:  uv run python analysis/build_dashboard_data.py
 """
@@ -21,17 +17,23 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))  # so `import corridor` + `import analysis.*` resolve
+
+import corridor  # noqa: E402
+from analysis.route_aggregate import build_route_aggregate  # noqa: E402
+
+OBS_DATA = REPO / "outputs" / "obs_trips"
+OUT = REPO / "dashboard" / "data"
 
 
 def _trailing_digits(s) -> str | None:
     m = re.findall(r"\d+", str(s))
     return m[-1] if m else None
-
-REPO = Path(__file__).resolve().parents[1]
-OBS_DATA = REPO / "outputs" / "obs_trips"
-ROUTE_AGG = REPO / "outputs" / "out_dashboard" / "sb_route" / "data.json"
-OUT = REPO / "dashboard" / "data"
 
 SOURCE_STYLE = {
     "phone": {"label": "High-Freq", "color": "#2e9e4f"},
@@ -134,10 +136,14 @@ def main() -> int:
         items.append({"key": payload["key"], "kind": "trip", "label": payload["label"],
                       "route_id": payload["route_id"], "trip_id": payload["trip_id"]})
 
-    # --- route aggregate (if built) ---
-    if ROUTE_AGG.exists():
-        route = json.loads(ROUTE_AGG.read_text())
-        agg = aggregate_payload(route, key="sb_route", route_id="22")
+    # --- route aggregate (computed directly from the decomposition inputs) ---
+    try:
+        route = build_route_aggregate()
+    except FileNotFoundError as exc:
+        route = None
+        print(f"[dashboard-data] skipping aggregate — {exc}")
+    if route:
+        agg = aggregate_payload(route, key="sb_route", route_id=corridor.ROUTE_ID)
         (OUT / "sb_route.json").write_text(json.dumps(agg, separators=(",", ":")))
         items.append({"key": agg["key"], "kind": "aggregate", "label": agg["label"],
                       "route_id": agg["route_id"], "n_trips": agg["n_trips"]})
