@@ -22,5 +22,8 @@ CORRIDOR_NAME = "Route 22 SB"  # human label for titles / axes
 REFERENCE_TRIP_ID = "1001350_4017_2026-05-05"
 REFERENCE_TRIP_LABEL = REFERENCE_TRIP_ID.split("_")[0]
 
-# Precomputed OSM intersection enrichment for SHAPE_ID (repo-root-relative).
-INTERSECTIONS_FILE = "intersections_route22.json"
+# OSM intersection enrichment keyed by shape_id (repo-root-relative). The
+# all-CTA cache covers every CTA shape, so no route-specific file is needed. It's
+# a local, gitignored artifact — build it with record-a-ride/scripts/
+# build_all_intersections.py (needs Valhalla) if it's missing on a fresh clone.
+INTERSECTIONS_FILE = "caches/cta/intersections.json"

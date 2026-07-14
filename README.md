@@ -77,8 +77,8 @@ dashboard/                   ④ one merged MapLibre + D3 dashboard
   └─ data/                   catalog index.json + per-view payloads (trips + aggregates)
 record-a-ride/               field-data collection web app + Cloudflare Pages API
 tests/                       pytest suite (mirrors src/)
-intersections_route22.json   OSM enrichment cache for the study shape (+ variants)
 data/ outputs/ caches/       gitignored — regenerable inputs, bundles, and caches
+                             (incl. caches/cta/intersections.json, the all-CTA intersection cache)
 docs/                        reference papers + attribution flowchart
 ```
 
@@ -108,8 +108,9 @@ specific to the current corridor (CTA Route 22 SB); everything else is general.
 Delay attribution reads a pre-built intersection cache (`{shape_id: [ControlPoint,
 …]}`). Reconstruction itself needs no Valhalla, but **building this cache does**:
 stage 1 snaps each GTFS shape to the OSM ways it traverses via Valhalla, and
-stage 2 asks Overpass which of those ways have signalized nodes. For `Route 22`
-the cache (`intersections_route22.json`) is committed; a new city needs its own.
+stage 2 asks Overpass which of those ways have signalized nodes. The cache is a
+gitignored local artifact (`caches/cta/intersections.json` — one file keyed by
+shape covering every CTA route); build it once, and a new city needs its own.
 
 **Prerequisite:** a running Valhalla instance built from that city's OSM extract,
 serving `/trace_attributes` (e.g. at `http://localhost:8002`). Standing that up
