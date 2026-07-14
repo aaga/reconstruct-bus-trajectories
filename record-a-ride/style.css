@@ -21,6 +21,9 @@ html, body {
 
 .hidden { display: none !important; }
 .muted { color: #777; font-size: 13px; margin: 6px 0; }
+.trips-link { text-align: center; margin-top: 24px; font-size: 14px; }
+.trips-link a { color: #888; text-decoration: none; }
+.trips-link a:active { color: #555; }
 
 h1 { font-size: 22px; margin: 8px 0 16px; }
 h2 { font-size: 18px; margin: 4px 0 12px; }
