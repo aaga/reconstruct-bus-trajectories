@@ -14,7 +14,7 @@ import maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/+esm";
 import * as db from "./storage.js";
 import * as sensors from "./sensors.js";
 import * as geo from "./geo.js";
-import { CITIES, DEFAULT_CITY, getCityConfig, loadProvider } from "./providers/index.js";
+import { CITIES, DEFAULT_CITY, getCityConfig, loadProvider, isGeneric } from "./providers/index.js";
 import * as exp from "./export.js";
 import * as sync from "./sync.js";
 
@@ -74,6 +74,7 @@ const S = {
   nextStop: null,        // {stop_id, name, near_side}
   nextStopIdx: -1,       // index of nextStop within patternStopsArr (-1 if unknown)
   gridButtons: {},       // type -> button element (built once)
+  generic: false,        // Generic agency: no feed, phone-only map, no stop data
   map: null,
   phoneMarker: null,
   busMarker: null,
@@ -113,6 +114,12 @@ function populateCities() {
 
 function applyCityConfig(id) {
   $("vehicle-id").placeholder = getCityConfig(id).vehiclePlaceholder;
+  // Generic agency: no vehicle lookup and no nearby-stop start — the button
+  // just starts recording. Hide the agency-specific affordances.
+  const generic = isGeneric(id);
+  $("btn-lookup").textContent = generic ? "▶ Start" : "🔎 Look up bus";
+  $("btn-find-stop").classList.toggle("hidden", generic);
+  $("lookup-hint").classList.toggle("hidden", generic);
 }
 
 function onCityChange() {
@@ -121,7 +128,7 @@ function onCityChange() {
   applyCityConfig(id);
   provider = null;          // force a reload for the new city on next use
   allStopsCache = null;
-  ensureProvider();         // eager preload so the first lookup is fast
+  if (!isGeneric(id)) ensureProvider();  // eager preload so the first lookup is fast
 }
 
 // Make a missing sync token impossible to miss when auto-save is on.
@@ -131,16 +138,18 @@ function updateSyncWarn() {
   $("sync-warn").classList.toggle("hidden", !(on && missing));
 }
 
-/** Load (once) the provider for the currently selected city. */
+/** Load (once) the provider for the currently selected city. Null for Generic. */
 async function ensureProvider() {
   const id = $("city-select").value;
+  if (isGeneric(id)) return null;
   if (!provider) provider = await loadProvider(id);
   return provider;
 }
 
-// ----- Method A: look up by vehicle number
+// ----- Method A: look up by vehicle number (or, for Generic, start directly)
 
 async function onLookup() {
+  if (isGeneric($("city-select").value)) return startGeneric();
   const p = await ensureProvider();
   const vid = p.validateVehicleId($("vehicle-id").value);
   if (!vid) {
@@ -157,6 +166,18 @@ async function onLookup() {
       `Couldn't find bus #${vid}: ${err.message || err}. ` +
       `It must be a bus that's currently in service.`;
   }
+}
+
+// Generic agency: no lookup and no confirm — validate the vehicle number and go
+// straight into recording. There's nothing to confirm without an agency feed.
+async function startGeneric() {
+  const vid = $("vehicle-id").value.trim();
+  if (!vid) {
+    $("setup-status").textContent = "Enter the bus vehicle number.";
+    return;
+  }
+  pendingVehicle = { bus_id: vid };
+  await onStartTrip();
 }
 
 // ----- Method B: start from a nearby stop
@@ -280,24 +301,34 @@ async function onStartTrip() {
 async function beginRecording(meta, openEvent) {
   S.meta = meta;
   S.activeEvent = openEvent;
+  S.generic = isGeneric(meta.city);
   S.pingCount = await db.countPings(meta.key);
   resetPatternState();
-  if (!provider) provider = await loadProvider(meta.city || DEFAULT_CITY);
-  loadPattern(meta.pattern_id);
+  if (!S.generic) {
+    if (!provider) provider = await loadProvider(meta.city || DEFAULT_CITY);
+    loadPattern(meta.pattern_id);
+  }
+
+  // Generic has no stop/route data: hide the next-stop banner + the upcoming-
+  // stops toggle. The map (phone-only) stays.
+  $("next-stop").classList.toggle("hidden", S.generic);
+  $("btn-stops-toggle").classList.toggle("hidden", S.generic);
 
   showView("recording");
   buildEventGrid();        // one-time; never rebuilt
   refreshControls();
-  renderNextStop();
+  if (!S.generic) renderNextStop();
   await renderEventList();
   startSensors();
   initMap();
 
   every(1000, uiTick);
-  every(20000, pollPredictions);
-  every(15000, pollVehicle);
-  pollPredictions();
-  pollVehicle();
+  if (!S.generic) {
+    every(20000, pollPredictions);
+    every(15000, pollVehicle);
+    pollPredictions();
+    pollVehicle();
+  }
 
   if ($("sync-enabled").checked || localStorage.getItem("sync_enabled") === "1") {
     sync.start(meta.key, (status) => { $("st-sync").textContent = status; });
@@ -421,7 +452,17 @@ function newEvent(type, t, pos) {
     stop_id: null,
     stop_name: null,
     near_side: null,
+    pax_on: 0,
+    pax_off: 0,
   };
+}
+
+// Passenger counter: each tap bumps the active bus-stop event's on/off count.
+async function incrementPax(field) {
+  const e = S.activeEvent;
+  if (!e || e.type !== "bus_stop") return;
+  S.activeEvent = await db.updateEvent(e.id, { [field]: (e[field] || 0) + 1 });
+  renderPaxControls();
 }
 
 // A note is an instantaneous, timestamped marker — it does NOT change the
@@ -497,8 +538,12 @@ function renderBanner() {
     $("active-label").textContent = cfg.short;
     $("active-sub").textContent =
       e.type === "bus_stop" && e.stop_name ? e.stop_name : (e.note || "");
+    // Show the duration from the get-go (0:00) so the banner height is stable
+    // from the moment the event opens — no jump when the 1 s tick first fills it.
+    $("active-duration").textContent = fmtDur(Date.now() - e.start_t);
   }
   renderTurnControls();
+  renderPaxControls();
 }
 
 function renderTurnControls() {
@@ -508,6 +553,17 @@ function renderTurnControls() {
   if (!show) return;
   $("btn-turn-left").classList.toggle("selected", e.direction === "left");
   $("btn-turn-right").classList.toggle("selected", e.direction === "right");
+}
+
+// In-banner passenger counter, shown while a bus-stop event is active.
+function renderPaxControls() {
+  const e = S.activeEvent;
+  const show = e && e.type === "bus_stop";
+  $("pax-controls").classList.toggle("hidden", !show);
+  if (!show) return;
+  // Sign rides on the number once it leaves 0 (+3 / −2), not on the caption.
+  $("pax-on-count").textContent = e.pax_on ? `+${e.pax_on}` : "0";
+  $("pax-off-count").textContent = e.pax_off ? `−${e.pax_off}` : "0";
 }
 
 function fmtDur(ms) {
@@ -556,7 +612,18 @@ function uiTick() {
   if (S.activeEvent) $("active-duration").textContent = fmtDur(Date.now() - S.activeEvent.start_t);
   if (S.motionBuf.length) flushMotion();
 
+  if (S.generic) { updateGenericMap(); return; } // no stop data; just follow the phone
   updateNextStop(); // GPS-driven; cheap, no network
+}
+
+// Generic map: no bus feed — center on and follow the phone's own fix. Zooms
+// in once on the first fix, then just recenters.
+function updateGenericMap() {
+  if (!S.map || $("map-panel").classList.contains("collapsed") || !S.lastPing) return;
+  const ll = [S.lastPing.lon, S.lastPing.lat];
+  S.phoneMarker.setLngLat(ll).addTo(S.map);
+  if (!S._genericCentered) { S.map.jumpTo({ center: ll, zoom: 15 }); S._genericCentered = true; }
+  else S.map.easeTo({ center: ll, duration: 500 });
 }
 
 async function renderEventList() {
@@ -734,14 +801,22 @@ function openEditor(eventId) {
     editorStop = null;
     $("editor-stop-input").value = e.stop_name || "";
     $("editor-stop-results").classList.add("hidden");
+    $("editor-pax-on").value = e.pax_on || 0;
+    $("editor-pax-off").value = e.pax_off || 0;
     updateEditorStopVisibility();
+    updateEditorPaxVisibility();
     $("event-editor").classList.remove("hidden");
     $("editor-backdrop").classList.remove("hidden");
   });
 }
 
 function updateEditorStopVisibility() {
-  $("editor-stop-field").classList.toggle("hidden", !STOP_TYPES.has($("editor-type").value));
+  const show = STOP_TYPES.has($("editor-type").value) && !S.generic;
+  $("editor-stop-field").classList.toggle("hidden", !show);
+}
+
+function updateEditorPaxVisibility() {
+  $("editor-pax-field").classList.toggle("hidden", $("editor-type").value !== "bus_stop");
 }
 
 async function onEditorStopInput() {
@@ -788,6 +863,10 @@ async function saveEditor() {
   if (STOP_TYPES.has(fields.type) && editorStop) {
     fields.stop_id = editorStop.stop_id;
     fields.stop_name = editorStop.stop_name;
+  }
+  if (fields.type === "bus_stop") {
+    fields.pax_on = Math.max(0, parseInt($("editor-pax-on").value, 10) || 0);
+    fields.pax_off = Math.max(0, parseInt($("editor-pax-off").value, 10) || 0);
   }
   const updated = await db.updateEvent(editingId, fields);
   if (S.activeEvent?.id === editingId) {
@@ -856,7 +935,7 @@ function toggleMap() {
   $("btn-map-toggle").classList.toggle("active", !collapsed);
   if (!collapsed) {
     setTimeout(() => S.map?.resize(), 250);
-    pollVehicle();
+    if (S.generic) updateGenericMap(); else pollVehicle();
   }
 }
 
@@ -1019,7 +1098,6 @@ async function init() {
   $("sync-token").oninput = (e) => { localStorage.setItem("sync_token", e.target.value.trim()); updateSyncWarn(); };
   $("sync-enabled").onchange = (e) => {
     localStorage.setItem("sync_enabled", e.target.checked ? "1" : "0");
-    if (e.target.checked) $("sync-settings").open = true; // reveal the token field
     updateSyncWarn();
   };
   updateSyncWarn();
@@ -1043,10 +1121,12 @@ async function init() {
   $("btn-stops-toggle").onclick = toggleUpcoming;
   $("btn-turn-left").onclick = () => setTurnDirection("left");
   $("btn-turn-right").onclick = () => setTurnDirection("right");
+  $("btn-pax-on").onclick = () => incrementPax("pax_on");
+  $("btn-pax-off").onclick = () => incrementPax("pax_off");
   $("btn-edit-active").onclick = () => { if (S.activeEvent) openEditor(S.activeEvent.id); };
 
   // Editor
-  $("editor-type").onchange = updateEditorStopVisibility;
+  $("editor-type").onchange = () => { updateEditorStopVisibility(); updateEditorPaxVisibility(); };
   $("editor-stop-input").addEventListener("input", onEditorStopInput);
   $("editor-save").onclick = saveEditor;
   $("editor-cancel").onclick = closeEditor;
@@ -1057,7 +1137,7 @@ async function init() {
   // resume straight into the Recording view with all state intact.
   const active = await db.getActiveTrip();
   if (active) {
-    provider = await loadProvider(active.city || DEFAULT_CITY);
+    if (!isGeneric(active.city)) provider = await loadProvider(active.city || DEFAULT_CITY);
     const openEvent = await db.getOpenEvent(active.key);
     await beginRecording(active, openEvent);
     maybeOfferMotionResume();
