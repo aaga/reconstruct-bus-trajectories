@@ -30,7 +30,7 @@ export async function onRequest({ request, env, params }) {
   const cfg = UPSTREAMS[params.city];
   if (!cfg) return json({ error: `unknown city ${params.city}` }, 404);
 
-  const endpoint = (params.path || []).join("/");
+  const endpoint = params.endpoint || "";
   if (!cfg.allowed.has(endpoint)) {
     return json({ error: `unknown endpoint ${endpoint}` }, 404);
   }

@@ -21,6 +21,9 @@ html, body {
 
 .hidden { display: none !important; }
 .muted { color: #777; font-size: 13px; margin: 6px 0; }
+.trips-link { text-align: center; margin-top: 24px; font-size: 14px; }
+.trips-link a { color: #888; text-decoration: none; }
+.trips-link a:active { color: #555; }
 
 h1 { font-size: 22px; margin: 8px 0 16px; }
 h2 { font-size: 18px; margin: 4px 0 12px; }
@@ -249,10 +252,11 @@ details summary { font-size: 14px; color: #666; padding: 8px 0; cursor: pointer;
   color: #fff;
   text-align: center;
   transition: background 0.15s;
-  /* Fixed height sized to the tallest normal state (turn delay with the
-     left/right row) so the button grid below never shifts. MOVING just shows
-     whitespace below the label. */
-  min-height: 150px;
+  /* Fixed height sized to the tallest state (a bus stop with its name, the
+     running timer, and the passenger counter) so every banner is the same
+     height and the button grid below never shifts. Shorter states (MOVING, a
+     plain delay) just show whitespace below the label. */
+  min-height: 184px;
 }
 .active-banner.moving { background: #2e7d32; }
 #active-label { font-size: 21px; font-weight: 800; letter-spacing: 0.5px; }
@@ -289,6 +293,35 @@ button.toggle {
   border-radius: 24px;
 }
 button.toggle.selected { background: #fff; color: #111; }
+
+/* In-banner passenger counter (bus-stop events). Big finger targets. */
+.pax-controls {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 12px;
+}
+.pax-btn {
+  flex: 1 1 0;
+  max-width: 160px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border-radius: 14px;
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.pax-btn:active { background: rgba(255, 255, 255, 0.32); }
+.pax-count { font-size: 30px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.pax-cap { font-size: 16px; font-weight: 700; opacity: 0.95; }
+
+/* Editor passenger fields */
+.pax-edit { display: flex; gap: 18px; }
+.pax-edit label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+.pax-edit input { width: 72px; font: inherit; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
 
 /* ------------------------------------------------------------ event grid */
 

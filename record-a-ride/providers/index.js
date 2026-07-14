@@ -36,7 +36,23 @@ export const CITIES = {
     vehiclePlaceholder: "e.g. 4567",
     load: () => import("./mta.js"),
   },
+  // No live agency feed and no GTFS bundle: just record the ride. There is no
+  // vehicle lookup, no nearby-stop start, no next-stop / upcoming-stops, and the
+  // map shows only the phone's own location. `generic: true` is the flag the app
+  // keys off; there is no provider module to load.
+  generic: {
+    id: "generic",
+    label: "Generic (no agency data)",
+    generic: true,
+    map: { center: [-96, 39], zoom: 3 }, // recenters on the phone's first fix
+    vehiclePlaceholder: "e.g. 1809",
+    load: null,
+  },
 };
+
+export function isGeneric(id) {
+  return getCityConfig(id).generic === true;
+}
 
 export const DEFAULT_CITY = "cta";
 

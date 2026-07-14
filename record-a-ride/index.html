@@ -26,6 +26,18 @@
       <input id="observer-name" type="text" placeholder="Your name" autocomplete="name">
     </label>
 
+    <label class="field">
+      <span>Auto-save password</span>
+      <input id="sync-token" type="password" placeholder="Shared secret (optional)"
+             autocomplete="off">
+    </label>
+    <label class="check">
+      <input id="sync-enabled" type="checkbox"> Auto-save to server every minute
+    </label>
+    <div id="sync-warn" class="sync-warn hidden">
+      ⚠ Auto-save is ON but no password is entered — server backups won't be saved.
+    </div>
+
     <!-- Start method A: by vehicle number -->
     <div id="setup-main">
       <label class="field">
@@ -34,26 +46,12 @@
                maxlength="7" placeholder="e.g. 1809"
                autocomplete="off" enterkeyhint="go">
       </label>
-      <p class="muted">It's printed on the bus (front/side/interior). We look up
+      <p class="muted" id="lookup-hint">It's printed on the bus (front/side/interior). We look up
         the route, trip and pattern from this.</p>
 
       <button id="btn-lookup" class="primary big">🔎 Look up bus</button>
       <button id="btn-find-stop" class="secondary">📍 Or start from a nearby stop</button>
       <div id="setup-status" class="muted"></div>
-
-      <details id="sync-settings">
-        <summary>Server backup settings</summary>
-        <label class="field">
-          <span>Sync token</span>
-          <input id="sync-token" type="password" placeholder="Shared secret (optional)">
-        </label>
-        <label class="check">
-          <input id="sync-enabled" type="checkbox"> Auto-save to server every minute
-        </label>
-      </details>
-      <div id="sync-warn" class="sync-warn hidden">
-        ⚠ Auto-save is ON but no sync token is entered — server backups won't be saved.
-      </div>
     </div>
 
     <!-- Start method B, step 1: nearby stops -->
@@ -79,6 +77,8 @@
       <button id="btn-start" class="primary big">▶ Start recording</button>
       <button id="btn-confirm-back" class="secondary">← Back</button>
     </div>
+
+    <p class="trips-link"><a href="./trips.html">📂 Saved trips dashboard →</a></p>
   </section>
 
   <!-- ============================ RECORDING ============================ -->
@@ -125,6 +125,19 @@
         <span class="sub-hint">Direction:</span>
         <button id="btn-turn-left" class="toggle">⬅ Left</button>
         <button id="btn-turn-right" class="toggle">Right ➡</button>
+      </div>
+
+      <!-- Passenger counter (bus-stop events only). Each tap increments; the
+           exact counts are adjustable afterward in the event editor. -->
+      <div id="pax-controls" class="pax-controls hidden">
+        <button id="btn-pax-on" class="pax-btn">
+          <span class="pax-count" id="pax-on-count">0</span>
+          <span class="pax-cap">Pax ON</span>
+        </button>
+        <button id="btn-pax-off" class="pax-btn">
+          <span class="pax-count" id="pax-off-count">0</span>
+          <span class="pax-cap">Pax OFF</span>
+        </button>
       </div>
     </div>
 
@@ -179,6 +192,13 @@
              autocomplete="off">
       <div id="editor-stop-results" class="pick-list compact hidden"></div>
     </label>
+    <div class="field hidden" id="editor-pax-field">
+      <span>Passengers</span>
+      <div class="pax-edit">
+        <label>ON <input id="editor-pax-on" type="number" min="0" inputmode="numeric"></label>
+        <label>OFF <input id="editor-pax-off" type="number" min="0" inputmode="numeric"></label>
+      </div>
+    </div>
     <label class="field">
       <span>Notes</span>
       <textarea id="editor-note" rows="3" placeholder="Anything worth remembering…"></textarea>
