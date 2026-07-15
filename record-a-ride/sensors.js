@@ -83,10 +83,13 @@ export async function requestMotionPermission() {
 
 /**
  * Start listening to devicemotion (~30–60 Hz). Returns { stop() }.
- * onSample receives { t, interval_ms, ax, ay, az, gx, gy, gz } where
- * ax..az is accelerationIncludingGravity-less linear acceleration when the
- * device provides it (falls back to accelerationIncludingGravity), and
- * gx..gz is rotationRate in deg/s.
+ * onSample receives { t, interval_ms, ax, ay, az, gx, gy, gz, agx, agy, agz }
+ * where ax..az is gravity-removed linear acceleration when the device
+ * provides it (falls back to accelerationIncludingGravity), gx..gz is
+ * rotationRate in deg/s, and agx..agz is accelerationIncludingGravity —
+ * recorded as its own stream because its low-passed direction IS the
+ * per-frame gravity vector, the vertical reference the gravity-removed
+ * channels can never supply (needed to sign lateral acceleration).
  */
 export function startMotion(onSample) {
   const handler = (event) => {
@@ -95,11 +98,13 @@ export function startMotion(onSample) {
       : event.accelerationIncludingGravity;
     if (!a || a.x == null) return; // desktop browsers fire empty events
     const r = event.rotationRate;
+    const ag = event.accelerationIncludingGravity;
     onSample({
       t: Date.now(),
       interval_ms: event.interval ?? null,
       ax: a.x, ay: a.y, az: a.z,
       gx: r?.alpha ?? null, gy: r?.beta ?? null, gz: r?.gamma ?? null,
+      agx: ag?.x ?? null, agy: ag?.y ?? null, agz: ag?.z ?? null,
     });
   };
   window.addEventListener("devicemotion", handler);

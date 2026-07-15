@@ -141,7 +141,11 @@ Notes:
 - `signal_marks_<trip_id>.csv` — `event_id, trip_id, time, lat, lon, color`;
   the first mark per event is the color observed on stopping, each subsequent
   mark is an observed red↔green transition.
-- `motion_<trip_id>.csv` — `timestamp, ax, ay, az, gx, gy, gz, interval_ms`.
+- `motion_<trip_id>.csv` — `timestamp, ax, ay, az, gx, gy, gz, interval_ms,
+  agx, agy, agz`. `ax..az` is gravity-removed linear acceleration;
+  `agx..agz` is accelerationIncludingGravity (its low-passed direction is
+  the per-frame gravity vector; blank in recordings made before it was
+  collected).
 - `trip_meta_<trip_id>.json` — CTA selection, observer, device, start/end,
   background gaps, counts.
 
