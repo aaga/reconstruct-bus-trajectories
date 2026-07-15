@@ -9,9 +9,13 @@ they're boarding from live arrivals, and the app records:
 - **GPS pings** at ~1 Hz (≈30× denser than the CTA AVL feed),
 - **accelerometer + gyro** at ~30–60 Hz,
 - **annotated delay events** — bus stop dwell, waiting to exit a stop, red
-  light, passenger disruption, driver change/holding, right/left turn delay,
-  other — each with precise start/end timestamps and GPS, plus signal-color
-  marks (red↔green transitions observed while stopped).
+  light, congestion, other (with passenger disruption, driver change/holding
+  and right/left turn delay in the editor dropdown) — each with precise
+  start/end timestamps and GPS, plus signal-color marks (red↔green
+  transitions observed while stopped),
+- **lateral-movement marks** — right/left turn and lane-change events (below
+  the divider in the button grid; not delays) that timestamp steering
+  maneuvers for validating accelerometer-derived lateral acceleration.
 
 Everything is captured into IndexedDB on the phone (no connectivity needed
 beyond the CTA lookups) and exported as CSVs at trip end. With server backup
@@ -127,10 +131,13 @@ Notes:
 
 - `pings_<trip_id>.csv` — `trip_id, bus_id, route_id, pattern_id,
   avl_event_time, latitude, longitude, accuracy_m, heading, speed_mps`
-- `events_<trip_id>.csv` — `event_id, trip_id, type, note, parent_id,
-  start_time, end_time, start_lat, start_lon, end_lat, end_lon, duration_s`.
+- `events_<trip_id>.csv` — `event_id, trip_id, type, direction, stop_id,
+  stop_name, near_side, note, parent_id, start_time, end_time, start_lat,
+  start_lon, end_lat, end_lon, duration_s, pax_on, pax_off`.
   `type` ∈ bus_stop, exit_wait (child of a bus_stop via `parent_id`),
-  red_light, passenger, driver_change, right_turn, left_turn, other.
+  red_light, congestion, other, turn, lane_change, turn_delay, driver_hold,
+  passenger, note. `direction` (left/right) is set on turn, lane_change and
+  turn_delay events.
 - `signal_marks_<trip_id>.csv` — `event_id, trip_id, time, lat, lon, color`;
   the first mark per event is the color observed on stopping, each subsequent
   mark is an observed red↔green transition.

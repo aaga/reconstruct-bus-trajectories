@@ -340,6 +340,15 @@ button.toggle.selected { background: #fff; color: #111; }
 }
 .event-btn.active-type { outline: 3px solid #111; outline-offset: 2px; }
 
+/* Divider inside the grid: delay buttons above, lateral-movement (turn /
+   lane change) below. Spans both columns. */
+.grid-divider {
+  grid-column: 1 / -1;
+  border: none;
+  border-top: 2px solid #d0d0d8;
+  margin: 2px 0;
+}
+
 /* Full-bleed rule separating the current-action banner from the buttons. */
 .section-divider {
   border: none;
