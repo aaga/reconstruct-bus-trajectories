@@ -1,4 +1,4 @@
-# Bus Trajectory Reconstruction & Delay Attribution
+# Bus Trajectories: Reconstruction & Delay Attribution
 
 Reconstructs smooth, monotone, differentiable vehicle trajectories `f(t)` from
 sparse AVL/GPS heartbeats using **LOCREG-PCHIP** (Huang et al., *Reconstructing
@@ -7,36 +7,41 @@ extends the method with an OSM-derived intersection layer and a **delay
 decomposition** that attributes where each trip loses time — free-flow, signals,
 dwell, crossings, and congestion.
 
-The pipeline is **route-agnostic**: it consumes any GTFS route + a trace of
-`(timestamp, lat, lon)` pings. The bundled study corridor — and all the
-checked-in figures and dashboard aggregates — is **CTA Route 22 (Clark)
-southbound**; retarget by editing [`src/corridor.py`](src/corridor.py) and
-supplying that route's intersection cache (see *Retargeting* below).
+The pipeline is **route-agnostic**: it takes any GTFS route + a trace of
+`(timestamp, lat, lon)` pings.
 
-![431 reconstructed trips — the CTA Route 22 SB study corridor](figures/C4_alltrips_aligned.png)
+![Trajectory Analysis Dashboard](screenshots/bus_trip_dashboard.png)
 
 ---
 
-## What's reproduced vs. what's new
+## Quickstart
 
-| Component                           | Source                | Status                              |
-| ----------------------------------- | --------------------- | ----------------------------------- |
-| Time / distance into trip from raw GPS | Huang et al. §II      | reproduced                          |
-| LOCREG with tricube kernel          | Huang et al. §III-C   | reproduced (different bandwidth)    |
-| PCHIP (Fritsch–Carlson)             | Huang et al. §III-B   | reproduced via `scipy.interpolate`  |
-| LOCREG-PCHIP hybrid (Algorithm 1)   | Huang et al. §III-D   | reproduced                          |
-| LOCREG-MQSI (C² variant)            | —                     | **new**: continuous-acceleration alternative |
-| Map-matching                        | Huang et al. §II-B    | **replaced**: shape-snap onto the GTFS polyline instead of Valhalla per ping |
-| Single-trip qualitative analysis    | Huang et al. §V       | reproduced (CTA data instead of MBTA Route 1) |
-| Speed-at-door-open validation       | Huang et al. §IV-A    | **skipped**: CTA BusTime does not expose door state |
-| OSM intersection enrichment         | —                     | **new**                             |
-| Delay-decomposition / attribution   | —                     | **new**                             |
-| Aggregation across hundreds of trips| —                     | **new**                             |
+```bash
+uv sync                               # install runtime + dev deps
+uv run pytest                         # run the test suite
 
-The biggest method deviation: where the paper uses `bandwidth = 20` on a 6 s
-median heartbeat cadence, this uses `bandwidth = 5` because CTA BusTime publishes
-positions every ~30 s. Both keep the LOCREG window at roughly two minutes of trip
-time — the constant to revisit for a feed with a different cadence.
+# reconstruct from a CSV of pings (here: the study route/pattern) at bandwidth 5
+PYTHONPATH=src uv run bus-trajectories reconstruct \
+    your_pings.csv --gtfs data/gtfs/cta_gtfs.zip \
+    --route 22 --pattern 3936 --bandwidth 5 --serialize --out outputs/out_bw5
+
+# build the interactive bandwidth-comparison HTML over multiple bandwidths
+PYTHONPATH=src uv run bus-trajectories compare \
+    outputs/out_bw5 outputs/out_bw10 outputs/out_bw20 \
+    --gtfs data/gtfs/cta_gtfs.zip --pattern 3936 --out compare.html
+```
+
+> All entry points run with `src` on the path — `pytest` and the console script
+> pick it up automatically (pyproject `pythonpath` / the editable install), and the
+> pipeline scripts insert it themselves. If a bare `uv run bus-trajectories` ever
+> reports `No module named 'cli'` (uv can drop the flat-`src` editable path on an
+> auto-sync), prefix with `PYTHONPATH=src` as shown, or run
+> `uv sync --reinstall-package bus-trajectories`.
+
+`cta_gtfs.zip` is downloaded on demand from the CTA's published GTFS feed the
+first time a script needs it (into `data/gtfs/`); archived heartbeat data is
+fetched lazily from a public Cloudflare R2 bucket (into `caches/realtime_archive/`)
+using the paths in its `_manifest.parquet`.
 
 ## Repository layout
 
@@ -101,7 +106,7 @@ different route (or city):
    dashboard).
 
 The checked-in figures and the dashboard's **Average trip** aggregate are
-specific to the current corridor (CTA Route 22 SB); everything else is general.
+specific to *CTA Route 22, Southbound*; everything else is generic.
 
 ### Building the intersection cache for a new city (needs Valhalla, once)
 
@@ -143,65 +148,7 @@ loads that JSON directly, with no further Valhalla. Notes:
 - Overpass is chunked (`--chunk-size`, default 300 way-ids) with retry/backoff;
   `--transport auto` falls back to a `curl` subprocess if `urllib` is blocked.
 
-### Figures
-
-`figures/` holds the curated figure set, named by family (a letter) and
-iteration (a number), each produced by the script noted:
-
-| Family | Content | Script |
-| ------ | ------- | ------ |
-| `A1..A10` | archive → map-match pipeline walkthrough | `figures/scripts/build_smoothing.py` |
-| `B1..B6`  | speed reconstruction | `figures/scripts/build_smoothing.py` |
-| `C1..C5`  | time-space (50/100/all trips, multitrip) | `figures/scripts/build_{50trip,100trip,F4_from_bundle}.py` |
-| `D1..D2`  | smoothing explainers (LOCREG, pipeline) | `figures/scripts/build_locreg_explainer.py`, `build_smoothing.py` |
-| `E1`      | intersection map | `figures/scripts/build_smoothing.py` |
-| `F1..F5`  | delay decomposition | `figures/scripts/build_decomposition.py`, `build_speed_profile.py` |
-| `G1..G3`  | per-trip attribution (waterfall/bar/stem) | `figures/scripts/build_attribution.py` |
-| `H1..H7`  | corridor-aggregate attribution | `figures/scripts/build_attribution.py` |
-
-## Quickstart
-
-```bash
-uv sync                               # install runtime + dev deps
-uv run pytest                         # run the test suite
-
-# reconstruct from a CSV of pings (here: the study route/pattern) at bandwidth 5
-PYTHONPATH=src uv run bus-trajectories reconstruct \
-    your_pings.csv --gtfs data/gtfs/cta_gtfs.zip \
-    --route 22 --pattern 3936 --bandwidth 5 --serialize --out outputs/out_bw5
-
-# build the interactive bandwidth-comparison HTML over multiple bandwidths
-PYTHONPATH=src uv run bus-trajectories compare \
-    outputs/out_bw5 outputs/out_bw10 outputs/out_bw20 \
-    --gtfs data/gtfs/cta_gtfs.zip --pattern 3936 --out compare.html
-```
-
-> All entry points run with `src` on the path — `pytest` and the console script
-> pick it up automatically (pyproject `pythonpath` / the editable install), and the
-> pipeline scripts insert it themselves. If a bare `uv run bus-trajectories` ever
-> reports `No module named 'cli'` (uv can drop the flat-`src` editable path on an
-> auto-sync), prefix with `PYTHONPATH=src` as shown, or run
-> `uv sync --reinstall-package bus-trajectories`.
-
-`cta_gtfs.zip` is downloaded on demand from the CTA's published GTFS feed the
-first time a script needs it (into `data/gtfs/`); archived heartbeat data is
-fetched lazily from a public Cloudflare R2 bucket (into `caches/realtime_archive/`)
-using the paths in its `_manifest.parquet`.
-
-## Data source — note on the scraper
-
-The realtime ping archive is produced by a separate companion repository,
-`scrape-bus-pings`, which polls several agencies (MBTA, MTA NYC Bus, TfL, CTA,
-TransLink Vancouver) every 15 s, canonicalises every feed to a shared 26-column
-schema, batches into 1-minute Parquet files, uploads to Cloudflare R2, and
-compacts each completed UTC hour into a single Hive-partitioned object indexed
-by a manifest. **That scraper is intentionally not included in this
-repository** — it depends on agency API keys and an R2 bucket the analyst would
-need to provide. This repo reads from its public R2 bucket
-(`pub-777d0904efb449dc838791645b9e2e0f.r2.dev`), treating the archive as a
-read-only data source.
-
-## Algorithm in one paragraph
+## Reconstruction Algorithm in a nutshell
 
 Given a sorted sequence of `(timestamp, latitude, longitude)` pings on a single
 trip:
@@ -221,16 +168,15 @@ trip:
 
 ## Delay attribution
 
-The **chapter-3 decomposition** (`src/core/decompose/` + `figures/scripts/`)
-follows Huang (2023), *Chapter 3 — Transit Delay Analysis*
-(`docs/chapter 3 delay analysis.pdf`): signal-to-signal segmentation, per-segment
+The **delay decomposition** (`src/core/decompose/` + `figures/scripts/`)
+follows Huang (2023), *Chapter 3 — Transit Delay Analysis*: signal-to-signal segmentation, per-segment
 `T_obs = T_ff + T_dwell + D_signal + D_crossing + D_congestion` with `T_ff`
 estimated as the 5th-percentile travel time of late-night (22:00–05:00 local)
 trips on the same pattern. Produces the `F*` / `G*` / `H*` figure families and
 the dashboard's Average-trip view.
 
 Two deviations from the paper:
-- AVL door-open/close data is not available, so dwell is attributed by
+- AVL door-open/close data is not consistently available, so dwell is attributed by
   proximity (`[x_stop - 30 m, x_stop + 10 m]`, clipped at intersection
   nodes). The `DwellAttributor` protocol leaves room to drop in an AVL-based
   attributor later without touching the rest of the package.
@@ -253,6 +199,56 @@ PYTHONPATH=src uv run python analysis/run_decomposition.py
 # 3. Render figures.
 PYTHONPATH=src uv run python figures/scripts/build_decomposition.py
 ```
+
+## Figures
+
+`figures/` holds the curated figure set, named by family (a letter) and
+iteration (a number), each produced by the script noted:
+
+| Family | Content | Script |
+| ------ | ------- | ------ |
+| `A1..A10` | archive → map-match pipeline walkthrough | `figures/scripts/build_smoothing.py` |
+| `B1..B6`  | speed reconstruction | `figures/scripts/build_smoothing.py` |
+| `C1..C5`  | time-space (50/100/all trips, multitrip) | `figures/scripts/build_{50trip,100trip,F4_from_bundle}.py` |
+| `D1..D2`  | smoothing explainers (LOCREG, pipeline) | `figures/scripts/build_locreg_explainer.py`, `build_smoothing.py` |
+| `E1`      | intersection map | `figures/scripts/build_smoothing.py` |
+| `F1..F5`  | delay decomposition | `figures/scripts/build_decomposition.py`, `build_speed_profile.py` |
+| `G1..G3`  | per-trip attribution (waterfall/bar/stem) | `figures/scripts/build_attribution.py` |
+| `H1..H7`  | corridor-aggregate attribution | `figures/scripts/build_attribution.py` |
+
+## Data source — note on the scraper
+
+The realtime ping archive is produced by a separate companion repository,
+`scrape-bus-pings`, which polls several agencies (MBTA, MTA NYC Bus, TfL, CTA,
+TransLink Vancouver) every 15 s, canonicalises every feed to a shared 26-column
+schema, batches into 1-minute Parquet files, uploads to Cloudflare R2, and
+compacts each completed UTC hour into a single Hive-partitioned object indexed
+by a manifest. **That scraper is intentionally not included in this
+repository** — it depends on agency API keys and an R2 bucket the analyst would
+need to provide. This repo reads from its public R2 bucket
+(`pub-777d0904efb449dc838791645b9e2e0f.r2.dev`), treating the archive as a
+read-only data source.
+
+## What's reproduced vs. what's new
+
+| Component                           | Source                | Status                              |
+| ----------------------------------- | --------------------- | ----------------------------------- |
+| Time / distance into trip from raw GPS | Huang et al. §II      | reproduced                          |
+| LOCREG with tricube kernel          | Huang et al. §III-C   | reproduced (different bandwidth)    |
+| PCHIP (Fritsch–Carlson)             | Huang et al. §III-B   | reproduced via `scipy.interpolate`  |
+| LOCREG-PCHIP hybrid (Algorithm 1)   | Huang et al. §III-D   | reproduced                          |
+| LOCREG-MQSI (C² variant)            | —                     | **new**: continuous-acceleration alternative |
+| Map-matching                        | Huang et al. §II-B    | **replaced**: shape-snap onto the GTFS polyline instead of Valhalla per ping |
+| Single-trip qualitative analysis    | Huang et al. §V       | reproduced (CTA data instead of MBTA Route 1) |
+| Speed-at-door-open validation       | Huang et al. §IV-A    | **skipped**: CTA BusTime does not expose door state |
+| OSM intersection enrichment         | —                     | **new**                             |
+| Delay-decomposition / attribution   | —                     | **new**                             |
+| Aggregation across hundreds of trips| —                     | **new**                             |
+
+The biggest method deviation: where the paper uses `bandwidth = 20` on a 6 s
+median heartbeat cadence, this uses `bandwidth = 5` because CTA BusTime publishes
+positions every ~30 s. Both keep the LOCREG window at roughly two minutes of trip
+time — the constant to revisit for a feed with a different cadence.
 
 ## Sub-projects
 
