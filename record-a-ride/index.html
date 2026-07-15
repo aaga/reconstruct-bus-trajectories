@@ -152,7 +152,10 @@
       <button id="btn-exit" class="exit-btn hidden">🔀 Waiting to merge</button>
     </div>
 
-    <!-- The 6 stop-reason buttons. Built once, fixed order, never reordered. -->
+    <!-- The event grid: 4 delay buttons, a divider, then the 2
+         lateral-movement buttons (turn / lane change — timestamp steering
+         maneuvers to validate accelerometer lateral acceleration).
+         Built once, fixed order, never reordered. -->
     <div id="event-grid" class="event-grid"></div>
 
     <div class="events-header">

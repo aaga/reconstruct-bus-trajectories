@@ -20,25 +20,35 @@ import * as sync from "./sync.js";
 
 // ------------------------------------------------------------ event types
 //
-// `button` (0–5) marks the six dedicated stop-reason buttons and fixes their
-// position — that order NEVER changes. Types without `button` (passenger,
-// exit_wait, note) are reachable only through the editor dropdown or a
-// dedicated control. `sub` flags an in-banner follow-up prompt: turn_delay
-// asks left/right.
+// `button` (0–5) marks the six dedicated grid buttons and fixes their
+// position — that order NEVER changes. Buttons 0–3 are the persistent delay
+// reasons; buttons 4–5 (below the grid divider) are LATERAL-MOVEMENT
+// trackers (turn / lane change) — not delays, they exist to timestamp
+// steering maneuvers for validating accelerometer-derived lateral
+// acceleration. They still behave like events: active until Moving or
+// another button. Types without `button` (turn_delay, driver_hold,
+// passenger, exit_wait, note) are reachable through the editor dropdown
+// (tap Other, then the pencil) or a dedicated control. `sub` flags an
+// in-banner follow-up prompt: "direction" asks left/right.
 export const EVENT_TYPES = {
   bus_stop:    { label: "🚏 Bus stop\n(door open)", short: "🚏 Bus stop",   color: "#3a85d6", button: 0 },
   red_light:   { label: "🔴 Red light",             short: "🔴 Red light",  color: "#cc0000", button: 1 },
   congestion:  { label: "🚗 Congestion",            short: "🚗 Congestion", color: "#e0a800", button: 2 },
-  turn_delay:  { label: "🔄 Turn delay",            short: "🔄 Turn delay", color: "#00897b", button: 3, sub: "direction" },
-  driver_hold: { label: "⏸️ Driver hold",           short: "⏸️ Driver hold",color: "#7b3fa0", button: 4 },
-  other:       { label: "✏️ Other",                 short: "✏️ Other",      color: "#616161", button: 5 },
+  other:       { label: "✏️ Other",                 short: "✏️ Other",      color: "#616161", button: 3 },
+  turn:        { label: "↰ Turn",                   short: "↰ Turn",        color: "#00897b", button: 4, sub: "direction" },
+  lane_change: { label: "⇄ Lane change",            short: "⇄ Lane change", color: "#5e6bc0", button: 5, sub: "direction" },
+  turn_delay:  { label: "🔄 Turn delay",            short: "🔄 Turn delay", color: "#0b7285", sub: "direction" },
+  driver_hold: { label: "⏸️ Driver hold",           short: "⏸️ Driver hold",color: "#7b3fa0" },
   passenger:   { label: "🧍 Passenger disruption",  short: "🧍 Passenger",  color: "#d81b60" },
   exit_wait:   { label: "🔀 Waiting to merge",      short: "🔀 Merge wait", color: "#5c8ab8" },
   note:        { label: "📝 Note",                  short: "📝 Note",       color: "#546e7a" },
 };
 
 // Fixed left-to-right, top-to-bottom button order. Do not sort/rebuild.
-const BUTTON_ORDER = ["bus_stop", "red_light", "congestion", "turn_delay", "driver_hold", "other"];
+// A full-width divider is inserted after `other` (see buildEventGrid) to
+// separate the 4 delay buttons from the 2 lateral-movement buttons.
+const BUTTON_ORDER = ["bus_stop", "red_light", "congestion", "other", "turn", "lane_change"];
+const DIVIDER_AFTER = "other";
 
 // Stop-anchored event types (carry a stop id/name; editor shows the stop picker).
 const STOP_TYPES = new Set(["bus_stop", "exit_wait"]);
@@ -481,7 +491,7 @@ async function addNote() {
 }
 
 async function setTurnDirection(dir) {
-  if (!S.activeEvent || S.activeEvent.type !== "turn_delay") return;
+  if (!S.activeEvent || EVENT_TYPES[S.activeEvent.type]?.sub !== "direction") return;
   S.activeEvent = await db.updateEvent(S.activeEvent.id, { direction: dir });
   renderTurnControls();
 }
@@ -501,6 +511,12 @@ function buildEventGrid() {
     btn.onclick = () => setActive(type);
     grid.appendChild(btn);
     S.gridButtons[type] = btn;
+    if (type === DIVIDER_AFTER) {
+      // Delay buttons above, lateral-movement (turn / lane change) below.
+      const hr = document.createElement("hr");
+      hr.className = "grid-divider";
+      grid.appendChild(hr);
+    }
   }
 }
 
@@ -548,7 +564,7 @@ function renderBanner() {
 
 function renderTurnControls() {
   const e = S.activeEvent;
-  const show = e && e.type === "turn_delay";
+  const show = e && EVENT_TYPES[e.type]?.sub === "direction";
   $("turn-controls").classList.toggle("hidden", !show);
   if (!show) return;
   $("btn-turn-left").classList.toggle("selected", e.direction === "left");
@@ -651,7 +667,8 @@ async function renderEventList() {
 function detailSuffix(e) {
   if ((e.type === "bus_stop" || e.type === "exit_wait") && e.stop_name)
     return ` — ${escapeHtml(e.stop_name)}`;
-  if (e.type === "turn_delay" && e.direction) return ` — ${e.direction}`;
+  if (EVENT_TYPES[e.type]?.sub === "direction" && e.direction)
+    return ` — ${e.direction}`;
   return "";
 }
 

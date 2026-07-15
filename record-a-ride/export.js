@@ -76,10 +76,13 @@ export function buildMotionCsv(batches, { header = true } = {}) {
       rows.push([
         fmtTime(s.t), num(s.ax, 4), num(s.ay, 4), num(s.az, 4),
         num(s.gx, 4), num(s.gy, 4), num(s.gz, 4), num(s.interval_ms, 1),
+        // gravity-including stream (blank on recordings made before agx..agz)
+        num(s.agx, 4), num(s.agy, 4), num(s.agz, 4),
       ]);
     }
   }
-  const head = ["timestamp", "ax", "ay", "az", "gx", "gy", "gz", "interval_ms"];
+  const head = ["timestamp", "ax", "ay", "az", "gx", "gy", "gz", "interval_ms",
+                "agx", "agy", "agz"];
   if (!header) return rows.map((r) => r.map(csvEscape).join(",")).join("\n") + (rows.length ? "\n" : "");
   return toCsv(head, rows);
 }
