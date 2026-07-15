@@ -21,6 +21,13 @@
     .btn.primary { background: #1a73e8; border-color: #1a73e8; color: #fff; }
     .btn.primary:disabled { background: #9bbcee; border-color: #9bbcee; cursor: default; }
     .btn.primary:hover:not(:disabled) { background: #1666d0; }
+    .btn.danger { background: #fff; border-color: #d93025; color: #d93025; }
+    .btn.danger:disabled { border-color: #eaa; color: #eaa; cursor: default; }
+    .btn.danger:hover:not(:disabled) { background: #fdeceb; }
+    .label-cell { max-width: 200px; }
+    .label-cell .edit { border: none; background: none; cursor: pointer; opacity: 0.55; }
+    .label-cell .edit:hover { opacity: 1; }
+    .label-text { font-style: italic; color: #444; }
 
     #controls { margin: 8px 0 16px; padding: 12px 14px; background: #f7f8fa; border: 1px solid #e6e8ec; border-radius: 8px; }
     .filters, .actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
@@ -62,12 +69,14 @@
       <label>From <input id="f-from" type="date"></label>
       <label>To <input id="f-to" type="date"></label>
       <label>Observer <input id="f-observer" type="text" placeholder="name contains…"></label>
+      <label>Label <input id="f-label" type="text" placeholder="label contains…"></label>
       <button id="f-clear" class="btn">Clear filters</button>
     </div>
     <div class="actions">
       <button id="select-all" class="btn">Select all (filtered)</button>
       <button id="select-none" class="btn">Clear selection</button>
       <button id="download-selected" class="btn primary" disabled>⬇ Download selected (0)</button>
+      <button id="delete-selected" class="btn danger" disabled>🗑 Delete selected (0)</button>
       <span id="dl-status" class="muted"></span>
     </div>
   </div>
@@ -76,7 +85,8 @@
     <thead>
       <tr>
         <th class="pick"></th>
-        <th>Trip</th><th>Route / bus</th><th>Started</th><th>Observer</th><th>Files</th>
+        <th>Trip</th><th>Route / bus</th><th>Started</th><th>Observer</th>
+        <th>Label</th><th>Files</th>
       </tr>
     </thead>
     <tbody id="rows"></tbody>

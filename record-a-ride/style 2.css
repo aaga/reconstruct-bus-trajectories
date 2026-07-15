@@ -340,17 +340,6 @@ button.toggle.selected { background: #fff; color: #111; }
 }
 .event-btn.active-type { outline: 3px solid #111; outline-offset: 2px; }
 
-/* Trip-label row on the summary view. */
-.label-row { display: flex; gap: 8px; margin: 12px 0 2px; }
-.label-row input {
-  flex: 1;
-  padding: 10px 12px;
-  border: 1px solid #ccc;
-  border-radius: 8px;
-  font-size: 15px;
-}
-.label-row button { padding: 0 18px; }
-
 /* Divider inside the grid: delay buttons above, lateral-movement (turn /
    lane change) below. Spans both columns. */
 .grid-divider {

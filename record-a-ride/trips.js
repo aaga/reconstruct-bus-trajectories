@@ -1,7 +1,9 @@
 // Desktop trips browser: lists everything in the R2 bucket via GET /api/trips
-// (gated by the auto-save password), filters by date + observer, and downloads
-// either a single file or one organized zip of every selected trip's CSVs.
-// The append-only motion chunks are stitched into one motion.csv per trip.
+// (gated by the auto-save password), filters by date + observer + label, and
+// downloads either a single file or one organized zip of every selected
+// trip's CSVs. The append-only motion chunks are stitched into one
+// motion.csv per trip. Trips can be labeled in place (rewrites meta.json)
+// and permanently deleted (DELETE /api/trips/<key> removes every object).
 
 const $ = (id) => document.getElementById(id);
 
@@ -66,11 +68,13 @@ function filteredTrips() {
   const from = $("f-from").value;                 // "YYYY-MM-DD" or ""
   const to = $("f-to").value;
   const obs = $("f-observer").value.trim().toLowerCase();
+  const lab = $("f-label").value.trim().toLowerCase();
   return trips.filter((t) => {
     const day = (t.meta?.start_time || "").slice(0, 10); // "YYYY-MM-DD"
     if (from && (!day || day < from)) return false;
     if (to && (!day || day > to)) return false;
     if (obs && !(t.meta?.observer || "").toLowerCase().includes(obs)) return false;
+    if (lab && !(t.meta?.label || "").toLowerCase().includes(lab)) return false;
     return true;
   });
 }
@@ -112,6 +116,19 @@ function renderRow(t) {
     tdRoute.innerHTML = `<span class="muted">no meta.json</span>`;
   }
 
+  // Label: shown from meta.json, editable in place (writes meta.json back).
+  const tdLabel = document.createElement("td");
+  tdLabel.className = "label-cell";
+  const labSpan = document.createElement("span");
+  labSpan.className = "label-text";
+  labSpan.textContent = t.meta?.label || "";
+  const labEdit = document.createElement("button");
+  labEdit.className = "edit";
+  labEdit.title = "Edit label";
+  labEdit.textContent = "✏️";
+  labEdit.onclick = () => editLabel(t);
+  if (t.meta) tdLabel.append(labSpan, labEdit);
+
   const tdFiles = document.createElement("td");
   tdFiles.className = "files";
   for (const f of snapshotFiles(t)) {
@@ -130,7 +147,7 @@ function renderRow(t) {
     tdFiles.appendChild(btn);
   }
 
-  tr.append(tdPick, tdTrip, tdRoute, tdStart, tdObs, tdFiles);
+  tr.append(tdPick, tdTrip, tdRoute, tdStart, tdObs, tdLabel, tdFiles);
   return tr;
 }
 
@@ -139,6 +156,68 @@ function updateDownloadButton() {
   const btn = $("download-selected");
   btn.textContent = `⬇ Download selected (${n})`;
   btn.disabled = n === 0;
+  const del = $("delete-selected");
+  del.textContent = `🗑 Delete selected (${n})`;
+  del.disabled = n === 0;
+}
+
+// ------------------------------------------------------------------- label
+
+/** Prompt for a new label and write it back into the trip's meta.json. */
+async function editLabel(t) {
+  const label = prompt(`Label for ${t.key}:`, t.meta?.label || "");
+  if (label == null) return; // cancelled
+  const meta = { ...t.meta };
+  if (label.trim()) meta.label = label.trim();
+  else delete meta.label;
+  try {
+    const resp = await fetch(fileUrl(t.key, "meta.json", false), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+      body: JSON.stringify(meta, null, 2),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    t.meta = meta;
+    render();
+  } catch (err) {
+    alert(`Saving label failed: ${err.message || err}`);
+  }
+}
+
+// ------------------------------------------------------------------ delete
+
+async function deleteSelected() {
+  const chosen = trips.filter((t) => selected.has(t.key));
+  if (!chosen.length) return;
+  const preview = chosen.slice(0, 6).map((t) => `  • ${t.key}`).join("\n")
+    + (chosen.length > 6 ? `\n  … and ${chosen.length - 6} more` : "");
+  if (!confirm(`Permanently delete ${chosen.length} trip(s) from the server?\n\n`
+               + `${preview}\n\nThis removes every file (pings, events, motion) `
+               + `from R2 and cannot be undone.`)) return;
+
+  const btn = $("delete-selected");
+  const status = $("dl-status");
+  btn.disabled = true;
+  let ok = 0;
+  try {
+    for (let i = 0; i < chosen.length; i++) {
+      const t = chosen[i];
+      status.textContent = `deleting ${i + 1}/${chosen.length}: ${t.key}…`;
+      const resp = await fetch(`/api/trips/${encodeURIComponent(t.key)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      if (!resp.ok) throw new Error(`${t.key}: HTTP ${resp.status}`);
+      ok += 1;
+      selected.delete(t.key);
+      trips = trips.filter((x) => x.key !== t.key);
+    }
+    status.textContent = `✓ ${ok} trip(s) deleted`;
+  } catch (err) {
+    status.textContent = `Deleted ${ok}; then failed: ${err.message || err}`;
+  } finally {
+    render();
+  }
 }
 
 // ------------------------------------------------------------------ motion
@@ -225,8 +304,13 @@ $("load").onclick = loadTrips;
 $("f-from").oninput = render;
 $("f-to").oninput = render;
 $("f-observer").oninput = render;
-$("f-clear").onclick = () => { $("f-from").value = ""; $("f-to").value = ""; $("f-observer").value = ""; render(); };
+$("f-label").oninput = render;
+$("f-clear").onclick = () => {
+  $("f-from").value = ""; $("f-to").value = ""; $("f-observer").value = ""; $("f-label").value = "";
+  render();
+};
 $("select-all").onclick = () => { for (const t of filteredTrips()) selected.add(t.key); render(); };
 $("select-none").onclick = () => { selected.clear(); render(); };
 $("download-selected").onclick = downloadSelected;
+$("delete-selected").onclick = deleteSelected;
 if ($("token").value) loadTrips();
