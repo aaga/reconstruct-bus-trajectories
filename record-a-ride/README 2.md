@@ -38,7 +38,7 @@ providers/index.js          city registry + provider interface
 providers/{cta,mta}.js      per-city live-data clients + offline nearby-stop search
 export.js                   the one CSV/JSON builder (app, sync, desktop all use it)
 sync.js                     60 s autosave; motion uploads as append-only chunks
-trips.html / trips.js       desktop browser for saved trips (list, label, download, delete)
+trips.html / trips.js       desktop browser for saved trips (list + download)
 functions/api/[city]/…      Pages Function: per-city live-data proxy (key injection)
 functions/api/trips/…       Pages Functions: R2 upload/download/list (token-gated)
 data/{cta,mta}_bus_stops.json      all bus stops per city (offline nearby search)
@@ -147,8 +147,7 @@ Notes:
   the per-frame gravity vector; blank in recordings made before it was
   collected).
 - `trip_meta_<trip_id>.json` — CTA selection, observer, device, start/end,
-  background gaps, counts, and an optional free-text `label` (set on the
-  trip-summary page or afterwards in trips.html).
+  background gaps, counts.
 
 In R2 a trip lives at `trips/<key>/…` where `<key>` is
 `<start-epoch-ms>_<trip_id>`; snapshots are overwritten each autosave while

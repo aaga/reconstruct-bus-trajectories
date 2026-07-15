@@ -103,3 +103,25 @@ export async function finish() {
     _key = null;
   }
 }
+
+/**
+ * Re-upload just meta.json for a trip (post-trip label edits — the periodic
+ * sync has already stopped by the time the Summary view is on screen).
+ * Standalone: does not touch the module's active-trip state.
+ */
+export async function uploadMeta(tripKey) {
+  const meta = await db.getTripMeta(tripKey);
+  if (!meta) throw new Error("no meta record");
+  const [pings, events, motionN] = await Promise.all([
+    db.countPings(tripKey),
+    db.getEvents(tripKey).then((e) => e.length),
+    db.countMotionSamples(tripKey),
+  ]);
+  const body = exp.buildMetaJson(meta, { pings, events, motion_samples: motionN });
+  const resp = await fetch(`/api/trips/${encodeURIComponent(tripKey)}/meta.json`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body,
+  });
+  if (!resp.ok) throw new Error(`PUT meta.json: HTTP ${resp.status}`);
+}

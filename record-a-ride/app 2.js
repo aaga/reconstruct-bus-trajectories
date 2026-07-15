@@ -1050,25 +1050,6 @@ async function showSummary() {
     addRow(`· ${(EVENT_TYPES[type] || { short: type }).short}`, `${agg.n}× — ${fmtDur(agg.ms)}`);
   }
 
-  // Optional trip label — saved into tripMeta, and re-synced to the server
-  // when backup is configured (the periodic sync has already finished).
-  $("trip-label").value = meta.label || "";
-  $("label-status").textContent = "";
-  $("btn-save-label").onclick = async () => {
-    const label = $("trip-label").value.trim();
-    meta.label = label || undefined;
-    await db.putTripMeta(meta);
-    $("label-status").textContent = "saved locally";
-    if (localStorage.getItem("sync_token")) {
-      try {
-        await sync.uploadMeta(meta.key);
-        $("label-status").textContent = "saved + synced ✓";
-      } catch {
-        $("label-status").textContent = "saved locally; server sync failed";
-      }
-    }
-  };
-
   const tid = meta.trip_id || meta.bus_id;
   $("btn-dl-pings").onclick = async () =>
     exp.downloadText(`pings_${tid}.csv`, exp.buildPingsCsv(meta, await db.getPings(meta.key)));

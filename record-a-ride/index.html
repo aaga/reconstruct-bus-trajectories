@@ -170,6 +170,16 @@
   <section id="view-summary" class="view hidden">
     <h1>Trip summary</h1>
     <div id="summary-stats" class="summary-stats"></div>
+
+    <!-- Optional free-text label, saved into trip meta (and re-synced to the
+         server if backup is on). Editable later from trips.html too. -->
+    <div class="label-row">
+      <input id="trip-label" type="text" maxlength="120"
+             placeholder="Label this trip (optional) — e.g. 'a_lat validation, many turns'">
+      <button id="btn-save-label" class="primary">Save</button>
+    </div>
+    <div id="label-status" class="muted"></div>
+
     <div class="export-buttons">
       <button id="btn-dl-pings" class="primary">⬇ pings CSV</button>
       <button id="btn-dl-events" class="primary">⬇ events CSV</button>
