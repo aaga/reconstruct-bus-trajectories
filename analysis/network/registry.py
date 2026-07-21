@@ -183,6 +183,7 @@ def build_registry(city: CityConfig) -> dict:
     # Per-shape segmentation. instances[seg_id] = list of per-shape records.
     instances: dict[str, list[dict]] = defaultdict(list)
     shape_seqs: dict[str, list[str]] = {}
+    shape_bounds: dict[str, list[list]] = {}  # [seg_id, x_start_m, x_end_m]
     seg_objs: dict[str, Segment] = {}  # any instance, for label/cross-streets
     for shape_id in bus_shapes:
         if shape_id not in shape_meta:
@@ -191,6 +192,9 @@ def build_registry(city: CityConfig) -> dict:
             intersections[shape_id], stops_map.get(shape_id, [])
         )
         shape_seqs[shape_id] = [s.seg_id for s in segs]
+        shape_bounds[shape_id] = [
+            [s.seg_id, round(s.x_start_m, 1), round(s.x_end_m, 1)] for s in segs
+        ]
         for s in segs:
             seg_objs.setdefault(s.seg_id, s)
             instances[s.seg_id].append(
@@ -286,6 +290,7 @@ def build_registry(city: CityConfig) -> dict:
                 "route_id": shape_meta[sid]["route_id"],
                 "direction": shape_meta[sid]["direction"],
                 "seg_seq": seq,
+                "seg_bounds": shape_bounds[sid],
             }
             for sid, seq in shape_seqs.items()
         },

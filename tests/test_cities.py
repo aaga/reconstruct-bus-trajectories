@@ -26,10 +26,10 @@ def test_cta_period_boundaries():
 
 def test_pick_for_date():
     cta = get_city("cta")
-    assert cta.pick_for_date("2026-03-24") is None
-    assert cta.pick_for_date("2026-03-25") == "spring26"
-    assert cta.pick_for_date("2026-06-13") == "spring26"
-    assert cta.pick_for_date("2026-06-14") == "summer26"
+    assert cta.pick_for_date("2026-04-14") is None
+    assert cta.pick_for_date("2026-04-15") == "spring26"
+    assert cta.pick_for_date("2026-06-30") == "spring26"
+    assert cta.pick_for_date("2026-07-01") == "summer26"
     assert cta.pick_for_date("2026-12-31") == "summer26"
 
 

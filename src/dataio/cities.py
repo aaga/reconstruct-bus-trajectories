@@ -102,11 +102,13 @@ _CTA = CityConfig(
         ("late_night", 22, 6),
     ),
     late_night=(22, 5),
-    # Placeholder boundaries; confirm with date_attrs.print_pick_report()
-    # (trips-per-service-date from calendar.txt) before trusting pick splits.
+    # Confirmed via date_attrs.print_pick_report(): the Apr-2026 feed's main
+    # service block (service_ids 678xx — "678" is CTA's pick counter, the same
+    # prefix as shape_ids) runs 2026-04-15..2026-06-30, so pick 678
+    # ("spring26") ends Jun 30 and pick 679 ("summer26") begins Jul 1.
     picks=(
-        Pick("spring26", "2026-03-25"),
-        Pick("summer26", "2026-06-14"),
+        Pick("spring26", "2026-04-15"),
+        Pick("summer26", "2026-07-01"),
     ),
     noaa_station="USW00094846",  # Chicago O'Hare GHCN-D
     deadhead_route_ids=("992",),
