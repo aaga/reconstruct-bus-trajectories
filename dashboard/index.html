@@ -14,6 +14,7 @@
     <nav id="main-tabs">
       <button data-main="single" class="active">Single trip</button>
       <button data-main="average">Average trip</button>
+      <button data-main="network">Network</button>
     </nav>
 
     <!-- Single-trip selector bar -->
@@ -33,6 +34,11 @@
       <select id="route-select"></select>
     </span>
 
+    <!-- Network selector bar -->
+    <span class="mainbar hidden" data-main="network">
+      <select id="nw-metric"></select>
+    </span>
+
     <div id="trip-meta" class="trip-meta"></div>
   </header>
 
@@ -46,6 +52,12 @@
   <nav id="atabs" class="subtabs hidden" data-main="average">
     <button data-atab="overall" class="active">Overall delay</button>
     <button data-atab="segment">Delay per segment</button>
+  </nav>
+
+  <!-- Network sub-tabs -->
+  <nav id="ntabs" class="subtabs hidden" data-main="network">
+    <button data-ntab="map" class="active">Map</button>
+    <button data-ntab="areas">Areas of interest</button>
   </nav>
 
   <!-- Controls; groups show/hide per sub-tab. Single-trip only for now. -->

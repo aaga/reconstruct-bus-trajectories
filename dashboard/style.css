@@ -177,3 +177,77 @@ body.streetview-dragging .streetview-drag-overlay { display: block; cursor: move
 .profile-legend .legend-toggle-label { margin-right: 2px; }
 .profile-legend .legend-radio { display: inline-flex; align-items: center; gap: 3px; }
 .profile-legend .legend-section { margin-top: 2px; }
+
+/* ---- Network tab -------------------------------------------------------- */
+body.network-mode #stage { position: relative; }  /* anchor the overlay panels */
+body.network-mode #chart { display: none; }
+body.network-mode.network-areas #chart {
+  display: block; flex: 0 0 46%; max-width: 46%; overflow: hidden;
+}
+body.network-mode #map { display: block; flex: 1 1 auto; }
+
+.nw-panel {
+  position: absolute; top: 8px; left: 8px; z-index: 5;
+  background: rgba(255,255,255,.94); border: 1px solid #ddd; border-radius: 6px;
+  padding: 8px 10px; font-size: 12px; max-width: 300px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.15);
+}
+body.network-areas .nw-panel { left: calc(46% + 8px); }
+.nw-row { margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.nw-row b { min-width: 52px; font-weight: 600; }
+.nw-row select, .nw-row input[type="number"], .nw-row input[type="text"],
+.nw-row input:not([type]) { font-size: 12px; }
+#nw-periods label { margin-right: 6px; white-space: nowrap; }
+#nw-routes { min-width: 70px; }
+.nw-note { color: #888; font-size: 11px; }
+
+.nw-detail {
+  position: absolute; top: 8px; right: 8px; z-index: 5; width: 300px;
+  background: rgba(255,255,255,.96); border: 1px solid #ddd; border-radius: 6px;
+  padding: 10px 12px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+}
+.nw-detail h3 { margin: 0 14px 6px 0; font-size: 13px; }
+.nw-detail .nw-close { position: absolute; top: 4px; right: 6px; border: none;
+  background: none; font-size: 14px; cursor: pointer; color: #666; }
+.nw-chips { margin: 4px 0; }
+.chip { display: inline-block; background: #eef3fa; border: 1px solid #cdd9ea;
+  border-radius: 10px; padding: 0 7px; margin: 1px 2px; font-size: 11px; }
+.chip-corridor { background: #f3eefa; border-color: #d9cdea; }
+.chip-route { background: #eefaf0; border-color: #cdeacd; }
+.nw-facts { color: #555; margin: 4px 0 8px; }
+.nw-ptable { border-collapse: collapse; width: 100%; }
+.nw-ptable th, .nw-ptable td { text-align: right; padding: 2px 6px; border-bottom: 1px solid #eee; }
+.nw-ptable td:first-child, .nw-ptable th:first-child { text-align: left; }
+
+.nw-tooltip {
+  position: fixed; z-index: 30; pointer-events: none;
+  background: rgba(20,20,20,.88); color: #fff; border-radius: 4px;
+  padding: 5px 8px; font-size: 11px; line-height: 1.45; max-width: 280px;
+}
+
+.nw-legend {
+  position: absolute; bottom: 22px; left: 8px; z-index: 5; min-width: 180px;
+  background: rgba(255,255,255,.94); border: 1px solid #ddd; border-radius: 6px;
+  padding: 6px 9px; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+}
+.nw-legend-title { font-weight: 600; font-size: 11px; margin-bottom: 3px; }
+.nw-legend-bar { height: 10px; border-radius: 3px; border: 1px solid #ccc; }
+.nw-legend-ticks { display: flex; justify-content: space-between; font-size: 10px; color: #444; }
+.nw-legend-note { font-size: 10px; color: #888; margin-top: 2px; }
+
+.nw-areas { display: flex; flex-direction: column; height: 100%; }
+.nw-areas-bar { padding: 6px 8px; display: flex; gap: 10px; align-items: center;
+  flex-wrap: wrap; border-bottom: 1px solid #e5e5e5; font-size: 12px; }
+.nw-areas-scroll { overflow-y: auto; flex: 1 1 auto; }
+.nw-atable { border-collapse: collapse; width: 100%; font-size: 12px; }
+.nw-atable th { position: sticky; top: 0; background: #fafafa; text-align: right;
+  padding: 4px 8px; border-bottom: 1px solid #ddd; }
+.nw-atable td { text-align: right; padding: 3px 8px; border-bottom: 1px solid #f0f0f0; }
+.nw-atable td.nw-aname, .nw-atable th:nth-child(3) { text-align: left; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nw-atable tbody tr { cursor: pointer; }
+.nw-atable tbody tr:hover { background: #f5f8ff; }
+.nw-atable tbody tr.sel { background: #e8f0fe; }
+.nw-atable td.worse { color: #b3261e; font-weight: 600; }
+.nw-atable td.better { color: #1e7b34; font-weight: 600; }
+.nw-empty { padding: 24px; color: #666; font-size: 13px; }
