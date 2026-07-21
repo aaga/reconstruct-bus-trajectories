@@ -37,6 +37,11 @@ Thumbs.db
 data/
 outputs/
 caches/
+# ...and the symlinked equivalents used in git worktrees (no trailing
+# slash so the symlink itself is ignored, not just directory contents):
+data
+outputs
+caches
 
 # Figures: the curated report figure set under figures/ (families A1..H7) is
 # tracked. Scripts also drop scratch / experimental PNGs there — ignore those.

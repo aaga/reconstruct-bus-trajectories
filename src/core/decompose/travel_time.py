@@ -58,6 +58,49 @@ def _last_t_at_x(f, x_target: float) -> float:
     return float(ts[i] + frac * (ts[i + 1] - ts[i]))
 
 
+def last_times_at_boundaries(f, xs: np.ndarray, n_grid: int = 6000) -> np.ndarray:
+    """Vectorized ``_last_t_at_x`` for many boundary distances at once.
+
+    One dense evaluation of ``f`` serves every boundary, so per-trip segment
+    extraction is O(n_grid + len(xs) log n_grid) instead of one 4,000-point
+    grid per boundary. Matches ``_last_t_at_x`` semantics: for each x_target,
+    return the *last* time f(t) == x_target (right endpoint of any dwell
+    interval), clipped to [t_lo, t_hi] when the bus never reaches / already
+    passed x_target.
+
+    ``f`` must be monotonic non-decreasing (LOCREG-PCHIP property). ``xs``
+    need not be sorted. Returns an array aligned with ``xs``.
+    """
+    xs = np.asarray(xs, dtype=float)
+    t_lo, t_hi = float(f.x[0]), float(f.x[-1])
+    ts = np.linspace(t_lo, t_hi, n_grid)
+    xe = np.asarray(f(ts), dtype=float)
+    # Enforce monotonicity against tiny PCHIP wiggle so searchsorted is valid.
+    xe = np.maximum.accumulate(xe)
+
+    eps = 1e-6
+    # Largest i with xe[i] <= x + eps  <=>  searchsorted(xe, x+eps, 'right') - 1.
+    idx = np.searchsorted(xe, xs + eps, side="right") - 1
+
+    out = np.empty_like(xs)
+    # Already past x at t_lo (xe[0] > x + eps): clip to start.
+    below_all = idx < 0
+    out[below_all] = t_lo
+    # Never exceeds x afterwards (last grid point still <= x): clip to end.
+    at_end = idx >= n_grid - 1
+    out[at_end] = t_hi
+
+    mid = ~(below_all | at_end)
+    i = idx[mid]
+    x0, x1 = xe[i], xe[i + 1]
+    t0, t1 = ts[i], ts[i + 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        frac = np.where(x1 > x0, (xs[mid] - x0) / np.where(x1 > x0, x1 - x0, 1.0), 0.0)
+    frac = np.clip(frac, 0.0, 1.0)
+    out[mid] = t0 + frac * (t1 - t0)
+    return out
+
+
 def segment_observed_time(f, segment: Segment) -> float:
     """T_obs = (last time at x_end) - (last time at x_start).
 
