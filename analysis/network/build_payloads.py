@@ -52,7 +52,8 @@ MAX_SHARD_MB = 24  # Cloudflare Pages per-file limit is 25 MB
 MAX_GAP_S = 180.0
 FLAG_TOUCHED_TERMINAL = 1
 
-DOW_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+# dow encoding 0-6 = Mon..Sun; 7 = holiday (excluded from "weekday" per spec)
+DOW_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday"]
 WEATHER_NAMES = ["dry", "rain", "snow", "unknown"]
 
 
@@ -143,7 +144,7 @@ def _aggregate(
       se.sid, re.rid,
       {enc('da.pick', dims['picks'])} AS pick,
       {enc('da.season', dims['seasons'])} AS season,
-      da.dow AS dow,
+      CASE WHEN da.daytype = 'holiday' THEN 7 ELSE da.dow END AS dow,
       {enc('da.weather', dims['weathers'])} AS weather,
       t.period AS period,
       COUNT(*)::BIGINT AS n,
@@ -302,7 +303,7 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
             [
                 str(dims["picks"].index(a["pick"]) if a["pick"] in dims["picks"] else 0),
                 str(dims["seasons"].index(a["season"])),
-                str(a["dow"]),
+                str(7 if a["daytype"] == "holiday" else a["dow"]),
                 str(
                     dims["weathers"].index(a["weather"])
                     if a["weather"] in dims["weathers"]

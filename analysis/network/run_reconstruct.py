@@ -146,7 +146,23 @@ def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
         )
         local = cache_dir / path.replace("/", "__")
         if local.exists() and local.stat().st_size > 0:
-            frames.append(pq.ParquetFile(local).read().to_pandas())
+            try:
+                frames.append(pq.ParquetFile(local).read().to_pandas())
+            except Exception:
+                # Corrupt cache entry (truncated download / error-page body).
+                # Delete, refetch once, retry; a still-bad hour is skipped
+                # rather than killing an 8-worker batch.
+                log_msg = f"corrupt hour-file {local.name}; refetching"
+                print(log_msg, file=sys.stderr, flush=True)
+                local.unlink(missing_ok=True)
+                try:
+                    from dataio.realtime import ARCHIVE_URL, fetch
+
+                    fetch(f"{ARCHIVE_URL}/{path}", local)
+                    frames.append(pq.ParquetFile(local).read().to_pandas())
+                except Exception as e:  # noqa: BLE001
+                    print(f"  refetch failed, skipping hour: {e}", file=sys.stderr, flush=True)
+                    local.unlink(missing_ok=True)
         cur += pd.Timedelta(hours=1)
     if not frames:
         return pd.DataFrame()
@@ -301,7 +317,26 @@ def _out_dir(city: CityConfig) -> Path:
 
 
 def process_date(args: tuple[str, str, bool] | tuple[str, str, bool, str | None]) -> list[dict]:
-    """Process one service date (all routes). Returns per-route stat dicts."""
+    """Process one service date (all routes). Returns per-route stat dicts.
+
+    Never raises: any per-date failure is reported as an ``error`` stat so one
+    bad date can't kill the whole pool (resume + ``--force`` redo it later).
+    """
+    try:
+        return _process_date_inner(args)
+    except Exception as e:  # noqa: BLE001
+        import traceback
+
+        return [{
+            "date": args[1],
+            "route": None,
+            "n_trips_kept": 0,
+            "error": f"{type(e).__name__}: {e}",
+            "trace": traceback.format_exc(limit=6),
+        }]
+
+
+def _process_date_inner(args) -> list[dict]:
     city_id, date_iso, force, *rest = args
     only_route = rest[0] if rest else None
     if "city" not in _G:
@@ -420,9 +455,12 @@ def main() -> None:
         kept = sum(s.get("n_trips_kept", 0) for s in stats)
         trav = sum(s.get("n_traversals", 0) for s in stats)
         date = stats[0]["date"] if stats else "?"
+        errs = [s for s in stats if s.get("error")]
+        suffix = f"  !! {len(errs)} ERROR(S): {errs[0]['error']}" if errs else ""
         print(
             f"[{done}/{len(dates)}] {date}: {kept} trips, {trav} traversals "
-            f"({time.time() - t_start:.0f}s elapsed)"
+            f"({time.time() - t_start:.0f}s elapsed){suffix}",
+            flush=True,
         )
 
     if args.workers <= 1:
