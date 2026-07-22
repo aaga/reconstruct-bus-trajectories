@@ -7,6 +7,13 @@
 
 const N_BUCKETS = 16;
 
+// Strip raw OSM node ids from human-facing labels ("node 4332637067" adds
+// clutter and means nothing to a rider). "A → node N" reads as mid-block.
+export function cleanLabel(label) {
+  if (!label) return label;
+  return label.replace(/node \d+/g, "mid-block");
+}
+
 export class NetworkData {
   constructor(baseUrl = "../data/network") {
     this.base = baseUrl;

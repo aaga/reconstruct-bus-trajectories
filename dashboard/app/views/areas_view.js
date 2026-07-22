@@ -2,9 +2,10 @@
 //
 // Reads data/network/areas.json (produced offline by
 // analysis/network/areas_of_interest.py). Row click → highlight + zoom the
-// network map to the entity's segments and show an A/B comparison strip.
+// network map to the entity's segments.
 
 import { $ } from "../chart_util.js";
+import { cleanLabel } from "../network_data.js";
 
 const METRIC_LABELS = {
   mean_delay_ratio: "mean delay ÷ free-flow",
@@ -12,6 +13,8 @@ const METRIC_LABELS = {
   buffer_ratio: "buffer (p90−p50 ratio)",
   cv_delay: "delay variability (CV)",
 };
+
+const KIND_LABELS = { segment: "Segments", corridor: "Corridors", route: "Routes" };
 
 const fmtV = (v) => (Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2));
 
@@ -51,34 +54,42 @@ export class AreasView {
     const ctx = this.areas.contexts.find((c) => c.id === this.context) ?? this.areas.contexts[0];
     this.context = ctx.id;
 
+    const filterLabel = (f) =>
+      [f.daytype?.replace(":", " · "), f.period ?? "all periods"].filter(Boolean).join(" · ");
     const opt = (c) => {
       const f = c.type === "level"
-        ? `${c.filter.daytype} ${c.filter.period ?? "all-day"}`
-        : `${c.filterA.daytype} ${c.filterA.period ?? ""} → ${c.filterB.daytype} ${c.filterB.period ?? ""}`;
+        ? filterLabel(c.filter)
+        : `${filterLabel(c.filterA)} → ${filterLabel(c.filterB)}`;
       return `<option value="${c.id}" ${c.id === ctx.id ? "selected" : ""}>
-        [${c.kind}] ${f} · ${METRIC_LABELS[c.metric] ?? c.metric}</option>`;
+        ${KIND_LABELS[c.kind]} · ${f} · ${METRIC_LABELS[c.metric] ?? c.metric}</option>`;
     };
 
     host.innerHTML = `
       <div class="nw-areas">
         <div class="nw-areas-bar">
-          <select id="aoi-ctx">
-            <optgroup label="Outliers within a filter">${groups.level.map(opt).join("")}</optgroup>
-            <optgroup label="Biggest changes between filters">${groups.diff.map(opt).join("")}</optgroup>
-          </select>
-          <label><input type="checkbox" id="aoi-weighted" ${this.weighted ? "checked" : ""}>
-            weight by service intensity</label>
-          <span class="nw-note">${ctx.n_entities} ${ctx.kind}s ranked · network median
-            ${fmtV(ctx.network.median)} ± ${fmtV(ctx.network.mad)} MAD</span>
+          <div class="row1">
+            <select id="aoi-ctx">
+              <optgroup label="Outliers within a filter">${groups.level.map(opt).join("")}</optgroup>
+              <optgroup label="Biggest changes between filters">${groups.diff.map(opt).join("")}</optgroup>
+            </select>
+          </div>
+          <div class="row2">
+            <label><input type="checkbox" id="aoi-weighted" ${this.weighted ? "checked" : ""}>
+              weight by service intensity</label>
+            <span>${ctx.n_entities} ${ctx.kind}s ranked</span>
+            <span>network median ${fmtV(ctx.network.median)} ± ${fmtV(ctx.network.mad)} MAD</span>
+            <span style="color:#999">click a row to zoom the map</span>
+          </div>
         </div>
         <div class="nw-areas-scroll">
         <table class="nw-atable">
           <thead><tr>
-            <th>#</th><th></th><th>name</th>
+            <th class="nw-rank">#</th><th class="nw-aname">name</th>
             ${ctx.type === "level"
               ? "<th>value</th>"
-              : "<th>A</th><th>B</th><th>Δ</th>"}
-            <th>z*</th><th>n</th><th>bus/hr</th>
+              : "<th>before</th><th>after</th><th>Δ</th>"}
+            <th title="robust z-score, shrunk toward 0 for small samples">z*</th>
+            <th>n</th><th>bus/hr</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -94,9 +105,11 @@ export class AreasView {
     entities.forEach((e, i) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${i + 1}</td>
-        <td><span class="chip chip-${ctx.kind}">${ctx.kind[0].toUpperCase()}</span></td>
-        <td class="nw-aname" title="${e.eid}">${e.name}</td>
+        <td class="nw-rank">${i + 1}</td>
+        <td class="nw-aname">
+          <span class="kbadge kbadge-${ctx.kind}" title="${KIND_LABELS[ctx.kind]}">${ctx.kind[0].toUpperCase()}</span>
+          ${cleanLabel(e.name)}
+        </td>
         ${ctx.type === "level"
           ? `<td>${fmtV(e.value)}</td>`
           : `<td>${fmtV(e.valueA)}</td><td>${fmtV(e.valueB)}</td>
@@ -117,7 +130,6 @@ export class AreasView {
     tr.classList.add("sel");
     const map = this.S.network.map;
     if (!map) return;
-    // Resolve segment ids → sids via the segments index.
     const bySegId = new Map(
       this.data.segments.features.map((f) => [f.properties.seg_id, f.properties.sid]),
     );

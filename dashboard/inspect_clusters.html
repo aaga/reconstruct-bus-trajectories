@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Node-cluster inspection — proposed 25 m merge</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <style>
+    body { margin: 0; font: 13px system-ui; }
+    #bar { padding: 8px 12px; border-bottom: 1px solid #ddd; display: flex; gap: 18px; align-items: center; }
+    #map { position: absolute; top: 44px; bottom: 0; left: 0; right: 0; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+    b.mono { font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <b>Proposed 25 m node-merge — inspection</b>
+    <span><span class="dot" style="background:#7b3fa0"></span><span id="n-clusters"></span> alias clusters (purple = involved in duplicate spans)</span>
+    <span><span class="dot" style="background:#e04a3a"></span><span id="n-dups"></span> duplicate same-direction spans (red lines)</span>
+    <span><span class="dot" style="background:#e8a13a"></span><span id="n-confetti"></span> intra-cluster confetti segs (orange)</span>
+    <span style="color:#777">click anything for details · zoom in — most action is at big intersections</span>
+  </div>
+  <div id="map"></div>
+  <script type="module">
+    import maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/+esm";
+    const data = await fetch("./data/network/inspect_clusters.json").then((r) => r.json());
+    document.getElementById("n-clusters").textContent = data.meta.n_clusters;
+    document.getElementById("n-dups").textContent = data.meta.n_dup_spans;
+    document.getElementById("n-confetti").textContent = data.meta.n_confetti;
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style: {
+        version: 8,
+        sources: { carto: { type: "raster",
+          tiles: ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
+          tileSize: 256, attribution: "© OSM © CARTO" } },
+        layers: [{ id: "carto", type: "raster", source: "carto" }],
+      },
+      center: [-87.68, 41.85], zoom: 10.3,
+    });
+
+    map.on("load", () => {
+      // duplicate spans: each seg's geometry, red, offset slightly by index
+      const dupFeats = [];
+      data.dup_spans.forEach((sp, i) =>
+        sp.segs.forEach((s, j) => dupFeats.push({
+          type: "Feature",
+          geometry: { type: "LineString", coordinates: s.geometry },
+          properties: { kind: "dup", span: i, idx: j, seg_id: s.seg_id, dir: s.dir,
+                        len: Math.round(s.len_m), name: s.name, routes: s.routes.join(",") },
+        })));
+      map.addSource("dups", { type: "geojson", data: { type: "FeatureCollection", features: dupFeats } });
+      map.addLayer({ id: "dups", type: "line", source: "dups",
+        paint: { "line-color": "#e04a3a", "line-width": 3, "line-opacity": 0.75,
+                 "line-offset": ["*", 2.5, ["get", "idx"]] } });
+
+      const confFeats = data.confetti.map((s) => ({
+        type: "Feature", geometry: { type: "LineString", coordinates: s.geometry },
+        properties: { kind: "confetti", seg_id: s.seg_id, len: Math.round(s.len_m), name: s.name },
+      }));
+      map.addSource("conf", { type: "geojson", data: { type: "FeatureCollection", features: confFeats } });
+      map.addLayer({ id: "conf", type: "line", source: "conf",
+        paint: { "line-color": "#e8a13a", "line-width": 4, "line-opacity": 0.9 } });
+
+      const clFeats = data.clusters.map((c) => ({
+        type: "Feature", geometry: { type: "Point", coordinates: [c.lon, c.lat] },
+        properties: { kind: "cluster", n: c.n_nodes, r: c.radius_m, dup: c.has_dup },
+      }));
+      map.addSource("cl", { type: "geojson", data: { type: "FeatureCollection", features: clFeats } });
+      map.addLayer({ id: "cl", type: "circle", source: "cl",
+        paint: {
+          "circle-radius": ["+", 3, ["*", 1.6, ["get", "n"]]],
+          "circle-color": ["case", ["get", "dup"], "#7b3fa0", "#9bb0c9"],
+          "circle-opacity": 0.55, "circle-stroke-color": "#fff", "circle-stroke-width": 1,
+        } });
+
+      const popup = new maplibregl.Popup({ closeButton: false });
+      map.on("click", (e) => {
+        const f = map.queryRenderedFeatures(
+          [[e.point.x - 5, e.point.y - 5], [e.point.x + 5, e.point.y + 5]],
+          { layers: ["cl", "dups", "conf"] })[0];
+        if (!f) return;
+        const p = f.properties;
+        let html;
+        if (p.kind === "cluster") {
+          html = `<b>Alias cluster</b><br>${p.n} nodes, max spread ${p.r} m` +
+                 (p.dup ? "<br><b style='color:#7b3fa0'>produces duplicate spans</b>" : "");
+        } else if (p.kind === "dup") {
+          html = `<b>Duplicate span</b> (${p.name || "?"})<br>` +
+                 `${p.dir} · ${p.len} m · routes ${p.routes}<br><span style="color:#999">${p.seg_id}</span>`;
+        } else {
+          html = `<b>Confetti segment</b> (${p.name || "?"})<br>${p.len} m — lives inside one intersection<br>` +
+                 `<span style="color:#999">${p.seg_id}</span>`;
+        }
+        popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+      });
+    });
+  </script>
+</body>
+</html>

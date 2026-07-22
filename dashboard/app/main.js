@@ -47,7 +47,7 @@ const S = {
   network: {
     data: null,                 // NetworkData (lazy, cached across tab switches)
     map: null,                  // NetworkMap (owned by NetworkView)
-    filters: { routes: [], corridor: null, direction: null,
+    filters: { routes: [], corridors: [], direction: null,
                periods: ["am_peak", "pm_peak"], daytype: "weekday", dow: null,
                pick: null, season: null, weather: null },
     metric: "mean_delay",
@@ -378,6 +378,11 @@ async function init() {
       else if (k === "h") S.aggState.publish("hideUnattributed:changed", { value: hide() });
       else if (k === "m") S.aggState.publish("basemap:changed", { value: "map" });
       else if (k === "s") S.aggState.publish("basemap:changed", { value: "satellite" });
+      return;
+    }
+    if (S.main === "network" && S.network.map) {
+      if (k === "m") S.network.map.setBasemap("map");
+      else if (k === "s") S.network.map.setBasemap("satellite");
       return;
     }
     if (!S.mapState) return;

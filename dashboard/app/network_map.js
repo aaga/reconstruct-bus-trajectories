@@ -29,6 +29,7 @@ export class NetworkMap {
       bounds: bbox,
       fitBoundsOptions: { padding: 24 },
       attributionControl: { compact: true },
+      boxZoom: false, // shift-click is corridor multi-select, not zoom-box
     });
     this.map.on("load", () => {
       this.map.addSource("segs", { type: "geojson", data: this.geojson });
@@ -69,6 +70,7 @@ export class NetworkMap {
     this._legend = document.createElement("div");
     this._legend.className = "maplegend nw-legend";
     container.appendChild(this._legend);
+    window.__nwmap = this.map; // dev/testing handle (harmless in production)
   }
 
   _wireInteractions() {
@@ -91,7 +93,7 @@ export class NetworkMap {
         [[e.point.x - 5, e.point.y - 5], [e.point.x + 5, e.point.y + 5]],
         { layers: ["seg-lines"] },
       );
-      this.onClick?.(feats[0] || null);
+      this.onClick?.(feats[0] || null, e.originalEvent);
     });
   }
 
