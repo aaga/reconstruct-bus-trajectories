@@ -29,6 +29,9 @@ dashboard/data/network/     payloads for the dashboard "Network" tab
 #    them from the main checkout (registry + archive cache live there):
 ln -sfn <main-checkout>/caches caches
 ln -sfn <main-checkout>/data data
+#    and, if you want the Single/Average trip tabs working in the worktree's
+#    dashboard, copy their gitignored payloads too:
+cp <main-checkout>/dashboard/data/*.json dashboard/data/
 
 # 1. Segment registry + corridors (rebuild after any intersections-cache change)
 PYTHONPATH=src uv run python analysis/network/registry.py --city cta
