@@ -43,6 +43,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
+from analysis.network.traversals_view import create_canonical_view  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 
 N0_SHRINKAGE = 25
@@ -160,6 +161,7 @@ def build_areas(city: CityConfig) -> dict:
         ],
     )
 
+    create_canonical_view(con, glob, registry, city)
     con.execute(
         f"""
         CREATE VIEW t AS
@@ -168,7 +170,7 @@ def build_areas(city: CityConfig) -> dict:
                tr.t_obs_s, ff.t_ff_s,
                (tr.t_obs_s - ff.t_ff_s) AS delay_s,
                (tr.t_obs_s / ff.t_ff_s) AS ratio
-        FROM read_parquet('{glob}') tr
+        FROM trav tr
         JOIN ff ON ff.seg_id = tr.seg_id
         WHERE tr.t_obs_s > 0 AND ff.t_ff_s > 0
           AND tr.max_gap_in_seg_s <= {MAX_GAP_S}

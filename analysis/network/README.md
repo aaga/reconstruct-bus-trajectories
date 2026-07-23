@@ -58,12 +58,22 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
 
 ## Key design points
 
-- **Segments** are signal-to-signal spans keyed `SIG_<up>__SIG_<down>` by OSM
-  node ids (`core/decompose/segments.py`), so the same physical street span is
-  ONE segment across every route that traverses it. Direction is a property of
-  (segment, route) — each route crosses a node pair one way — which is why the
-  dashboard's direction filter only activates when a single route or corridor
-  is selected.
+- **Segments** are signal-to-signal spans keyed `SIG_<up>__SIG_<down>` by
+  *canonical* OSM node ids. Two 2026-07 decisions (see `registry.py`
+  docstring): boundaries are **traffic signals only** (ped signals stay in the
+  cache for future attribution but don't split segments — "demote, don't
+  delete"), and boundary nodes are **clustered globally at 30 m** so aliased
+  OSM nodes (dual carriageways, stacked signal nodes) collapse to one
+  intersection. Result: ≤1 segment per street span per direction, by
+  construction. Direction is a property of (segment, route) — each route
+  crosses a node pair one way — which is why the dashboard's direction filter
+  only activates when a single route or corridor is selected.
+- **Traversals stay legacy-keyed.** The 86-day batch predates canonicalization;
+  `traversals_view.create_canonical_view()` merges constituent rows per trip
+  (exact — boundary times are shared) so freeflow/payloads/AOI never need a
+  re-run. If you DO re-run the batch, it still emits legacy ids and the view
+  keeps working; regenerating the intersections cache, however, invalidates
+  everything (sha256 guard).
 - **Trip→shape assignment is geometric** (`assign_shapes.py`): archive
   trip_ids (BusTime tatripid) do NOT join GTFS trips.txt. Trips are matched
   against all candidate shapes of their route and scored

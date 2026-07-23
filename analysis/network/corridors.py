@@ -204,6 +204,31 @@ def pair_directions(chains: list[dict], segments: dict[str, dict]) -> list[dict]
             else:
                 rev_ids.extend(s for s in ch["seg_ids"] if s not in rev_ids)
                 rev_dirs[dir_label(ch)] += 1
+        # Backfill the reverse side with the fwd segments' reverse twins: the
+        # corridor is a physical street span, so its reverse side is
+        # definitionally the twins of the fwd chain — even when the reverse
+        # chains were cut short or dropped during chaining (asymmetric
+        # adjacency breaks previously truncated e.g. Cottage Grove NB).
+        twin_order = [
+            segments[s]["rev_seg_id"]
+            for s in reversed(fwd_ids)
+            if segments[s].get("rev_seg_id") in segments
+        ]
+        backfilled = [t for t in twin_order if t not in rev_ids]
+        if backfilled:
+            merged_rev = []
+            for t in twin_order:
+                if t not in merged_rev:
+                    merged_rev.append(t)
+            for s in rev_ids:  # keep chained-but-untwinned segs (couplets)
+                if s not in merged_rev:
+                    merged_rev.append(s)
+            rev_ids = merged_rev
+            if not rev_dirs:
+                # direction label of the twins' own routes
+                for t in backfilled:
+                    for r in segments[t]["routes"]:
+                        rev_dirs[r["direction"]] += 1
         routes = sorted({r for ci in members for r in chains[ci]["routes"]})
         corridors.append(
             {

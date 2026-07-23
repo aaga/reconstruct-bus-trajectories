@@ -36,6 +36,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
+from analysis.network.traversals_view import create_canonical_view  # noqa: E402
 from analysis.network.stats import (  # noqa: E402
     HIST_EDGES,
     N_BUCKETS,
@@ -82,9 +83,11 @@ def _aggregate(
     freeflow: dict,
     date_attrs: dict,
     dims: dict,
+    registry: dict,
 ) -> "duckdb.DuckDBPyRelation":
     """One duckdb query: filter, join attrs + freeflow, bin, histogram."""
     con = duckdb.connect()
+    create_canonical_view(con, traversals_glob, registry, city)
 
     # Lookup tables.
     ff_rows = [(k, v["t_ff_s"]) for k, v in freeflow["freeflow"].items()]
@@ -133,7 +136,7 @@ def _aggregate(
         tr.t_obs_s, ff.t_ff_s,
         (tr.t_obs_s - ff.t_ff_s) AS delay_s,
         (tr.t_obs_s / ff.t_ff_s) AS ratio
-      FROM read_parquet('{traversals_glob}') tr
+      FROM trav tr
       JOIN ff ON ff.seg_id = tr.seg_id
       WHERE tr.t_obs_s > 0
         AND tr.max_gap_in_seg_s <= {MAX_GAP_S}
@@ -210,7 +213,7 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
 
     # ---- stats shards, one per period ------------------------------------
     glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
-    con, rel = _aggregate(city, glob, freeflow, date_attrs, dims)
+    con, rel = _aggregate(city, glob, freeflow, date_attrs, dims, registry)
     df = rel.df()
     print(f"binned rows total: {len(df)}")
 
@@ -292,7 +295,7 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     dates_present = {
         r[0]
         for r in con.execute(
-            f"SELECT DISTINCT strftime(service_date, '%Y-%m-%d') FROM read_parquet('{glob}')"
+            "SELECT DISTINCT strftime(service_date, '%Y-%m-%d') FROM trav"
         ).fetchall()
     }
     date_counts: dict[str, int] = {}

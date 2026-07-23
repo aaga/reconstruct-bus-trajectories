@@ -52,10 +52,18 @@ def build_segments_from_records(
     stops: list[dict],
     *,
     near_side_threshold_m: float = NEAR_SIDE_THRESHOLD_M,
+    boundary_types: frozenset[str] | tuple[str, ...] = SIGNALIZED_CONTROL_TYPES,
 ) -> list[Segment]:
-    """Construct segments given already-loaded ControlPoints + stops."""
+    """Construct segments given already-loaded ControlPoints + stops.
+
+    ``boundary_types`` selects which control types split the route into
+    segments. The default (traffic + ped signals) matches the chapter-3
+    corridor study; the network pipeline passes ``("traffic_signals",)`` —
+    mid-block ped signals remain control points (visible to attribution)
+    but no longer create segment boundaries.
+    """
     cps_sorted = sorted(control_points, key=lambda c: c.dist_along_route_m)
-    signals = [c for c in cps_sorted if _signalized(c)]
+    signals = [c for c in cps_sorted if c.control_type in boundary_types]
     if len(signals) < 2:
         return []
 

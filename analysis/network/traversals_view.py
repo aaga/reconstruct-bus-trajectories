@@ -1,0 +1,102 @@
+"""Shared duckdb view: legacy traversal parquet → canonical-segment traversals.
+
+The 86-day batch produced traversals keyed by LEGACY seg_ids (ped-signal
+boundaries, unclustered nodes). The registry's ``traversal_map`` says which
+canonical segment each (shape, old seg) belongs to. Because Eq-3.3 boundary
+times are shared at constituents' joints (t_exit of one == t_enter of the
+next), summing a trip's constituent t_obs values reconstructs the canonical
+span's t_obs EXACTLY — no re-reconstruction needed.
+
+``create_canonical_view(con, glob, registry, city)`` registers:
+
+    trav(seg_id, route_id, shape_id, direction, service_date, trip_key,
+         t_enter_utc, t_exit_utc, t_obs_s, n_pings_in_seg, max_gap_in_seg_s,
+         hour_local, period, flags)
+
+with one row per (trip, canonical segment), keeping only trips that covered
+EVERY constituent of the canonical span (per that trip's shape). period and
+hour_local are re-derived from the merged t_enter in the city's timezone.
+"""
+
+from __future__ import annotations
+
+import duckdb
+
+from dataio.cities import CityConfig
+
+
+def _period_case(city: CityConfig, hour_expr: str) -> str:
+    whens = []
+    fallback = None
+    for name, lo, hi in city.periods:
+        if lo <= hi:
+            whens.append(f"WHEN {hour_expr} >= {lo} AND {hour_expr} < {hi} THEN '{name}'")
+        else:  # wraps midnight — use as ELSE
+            fallback = name
+    if fallback is None:
+        fallback = city.periods[-1][0]
+    return "CASE " + " ".join(whens) + f" ELSE '{fallback}' END"
+
+
+def create_canonical_view(
+    con: "duckdb.DuckDBPyConnection",
+    traversals_glob: str,
+    registry: dict,
+    city: CityConfig,
+    *,
+    view_name: str = "trav",
+) -> None:
+    # (shape_id, old_seg_id) -> (new_seg_id, k = constituents of new seg in shape)
+    rows = []
+    for shape_id, pairs in registry["traversal_map"].items():
+        k_by_new: dict[str, int] = {}
+        for _, new in pairs:
+            k_by_new[new] = k_by_new.get(new, 0) + 1
+        for old, new in pairs:
+            rows.append((shape_id, old, new, k_by_new[new]))
+    con.execute(
+        "CREATE OR REPLACE TABLE segmap(shape_id TEXT, old_seg TEXT, new_seg TEXT, k INT)"
+    )
+    con.executemany("INSERT INTO segmap VALUES (?, ?, ?, ?)", rows)
+
+    # NB: for a TIMESTAMPTZ, a single AT TIME ZONE converts to local naive
+    # time; chaining a second one re-interprets and lands back in UTC.
+    hour_expr = f"hour(t_enter_utc AT TIME ZONE '{city.tz}')"
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW {view_name} AS
+        WITH joined AS (
+          SELECT m.new_seg, m.k, tr.*
+          FROM read_parquet('{traversals_glob}') tr
+          JOIN segmap m
+            ON m.shape_id = tr.shape_id AND m.old_seg = tr.seg_id
+        ),
+        merged AS (
+          SELECT
+            new_seg AS seg_id,
+            any_value(route_id) AS route_id,
+            shape_id,
+            any_value(direction) AS direction,
+            service_date,
+            trip_key,
+            min(t_enter_utc) AS t_enter_utc,
+            max(t_exit_utc) AS t_exit_utc,
+            sum(t_obs_s) AS t_obs_s,
+            sum(n_pings_in_seg) AS n_pings_in_seg,
+            max(max_gap_in_seg_s) AS max_gap_in_seg_s,
+            max(flags) AS flags,
+            count(*) AS n_parts,
+            any_value(k) AS k
+          FROM joined
+          GROUP BY new_seg, shape_id, service_date, trip_key
+        )
+        SELECT
+          seg_id, route_id, shape_id, direction, service_date, trip_key,
+          t_enter_utc, t_exit_utc, t_obs_s, n_pings_in_seg, max_gap_in_seg_s,
+          {hour_expr}::UTINYINT AS hour_local,
+          {_period_case(city, hour_expr)} AS period,
+          flags
+        FROM merged
+        WHERE n_parts = k        -- full coverage of the canonical span only
+        """
+    )
