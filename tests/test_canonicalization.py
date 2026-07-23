@@ -122,3 +122,43 @@ def test_view_merges_exactly_and_enforces_coverage(synthetic):
     # 13:00 UTC == 08:00 Chicago -> am_peak (regression for the tz double-conversion bug)
     assert by_trip["trip1"][3] == 8
     assert by_trip["trip1"][4] == "am_peak"
+
+
+def test_view_door_sidecar_merge(synthetic, tmp_path):
+    """Door sidecar sums over constituents; uncovered trips report has_door=False."""
+    glob, registry = synthetic
+    side = tmp_path / "door_sidecar"
+    side.mkdir()
+    # trip1's vehicle covered: rows for BOTH constituents (12s + 20s dwell,
+    # 3+2 ons); trip3's vehicle NOT covered (no rows at all).
+    df = pd.DataFrame([
+        {"trip_key": "trip1", "seg_id": "SIG_A__SIG_P", "shape_id": "S1",
+         "door_n": 1, "dwell_s": 12.0, "ons": 3, "offs": 1, "load_sum": 20},
+        {"trip_key": "trip1", "seg_id": "SIG_P__SIG_B", "shape_id": "S1",
+         "door_n": 2, "dwell_s": 20.0, "ons": 2, "offs": 0, "load_sum": 41},
+    ])
+    pq.write_table(pa.Table.from_pandas(df), side / "service_date=2026-05-05.parquet")
+
+    con = duckdb.connect()
+    create_canonical_view(
+        con, glob, registry, get_city("cta"),
+        door_sidecar_glob=str(side / "service_date=*.parquet"),
+    )
+    got = {r[0]: r for r in con.execute(
+        "SELECT trip_key, has_door, door_n, dwell_s, ons, offs, load_sum FROM trav"
+    ).fetchall()}
+    assert got["trip1"][1] is True
+    assert got["trip1"][2] == 3          # 1 + 2 door cycles
+    assert got["trip1"][3] == pytest.approx(32.0)
+    assert got["trip1"][4] == 5 and got["trip1"][5] == 1
+    assert got["trip1"][6] == 61
+    assert got["trip3"][1] is False      # vehicle-day not covered
+    assert got["trip3"][3] == pytest.approx(0.0)
+
+
+def test_view_without_sidecar_defaults(synthetic):
+    glob, registry = synthetic
+    con = duckdb.connect()
+    create_canonical_view(con, glob, registry, get_city("cta"))
+    r = con.execute("SELECT has_door, door_n, dwell_s FROM trav LIMIT 1").fetchone()
+    assert r[0] is False and r[1] == 0 and r[2] == 0.0

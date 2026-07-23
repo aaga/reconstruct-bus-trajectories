@@ -45,7 +45,12 @@ def create_canonical_view(
     city: CityConfig,
     *,
     view_name: str = "trav",
+    door_sidecar_glob: str | None = None,
 ) -> None:
+    """See module docstring. When ``door_sidecar_glob`` is given (and files
+    exist), the view gains door/APC columns summed over constituents:
+    has_door (every constituent covered), door_n, dwell_s, ons, offs,
+    load_sum. Without a sidecar these come back as 0/NULL."""
     # (shape_id, old_seg_id) -> (new_seg_id, k = constituents of new seg in shape)
     rows = []
     for shape_id, pairs in registry["traversal_map"].items():
@@ -61,15 +66,42 @@ def create_canonical_view(
 
     # NB: for a TIMESTAMPTZ, a single AT TIME ZONE converts to local naive
     # time; chaining a second one re-interprets and lands back in UTC.
+    import glob as _globmod
+
+    have_doors = bool(door_sidecar_glob) and bool(_globmod.glob(door_sidecar_glob))
+    if have_doors:
+        door_join = (
+            f"LEFT JOIN read_parquet('{door_sidecar_glob}') sc "
+            "ON sc.trip_key = tr.trip_key AND sc.seg_id = tr.seg_id"
+        )
+        door_part_cols = (
+            "(sc.trip_key IS NOT NULL) AS part_covered, sc.door_n, "
+            "sc.dwell_s AS part_dwell_s, sc.ons, sc.offs, sc.load_sum,"
+        )
+        door_merge_cols = """
+            (count(*) FILTER (WHERE part_covered) = count(*)) AS has_door,
+            coalesce(sum(door_n), 0) AS door_n,
+            coalesce(sum(part_dwell_s), 0) AS dwell_s,
+            coalesce(sum(ons), 0) AS ons,
+            coalesce(sum(offs), 0) AS offs,
+            coalesce(sum(load_sum), 0) AS load_sum,"""
+    else:
+        door_join = ""
+        door_part_cols = ""
+        door_merge_cols = """
+            FALSE AS has_door, 0 AS door_n, 0.0 AS dwell_s,
+            0 AS ons, 0 AS offs, 0 AS load_sum,"""
+
     hour_expr = f"hour(t_enter_utc AT TIME ZONE '{city.tz}')"
     con.execute(
         f"""
         CREATE OR REPLACE VIEW {view_name} AS
         WITH joined AS (
-          SELECT m.new_seg, m.k, tr.*
+          SELECT m.new_seg, m.k, {door_part_cols} tr.*
           FROM read_parquet('{traversals_glob}') tr
           JOIN segmap m
             ON m.shape_id = tr.shape_id AND m.old_seg = tr.seg_id
+          {door_join}
         ),
         merged AS (
           SELECT
@@ -85,6 +117,7 @@ def create_canonical_view(
             sum(n_pings_in_seg) AS n_pings_in_seg,
             max(max_gap_in_seg_s) AS max_gap_in_seg_s,
             max(flags) AS flags,
+            {door_merge_cols}
             count(*) AS n_parts,
             any_value(k) AS k
           FROM joined
@@ -95,7 +128,7 @@ def create_canonical_view(
           t_enter_utc, t_exit_utc, t_obs_s, n_pings_in_seg, max_gap_in_seg_s,
           {hour_expr}::UTINYINT AS hour_local,
           {_period_case(city, hour_expr)} AS period,
-          flags
+          flags, has_door, door_n, dwell_s, ons, offs, load_sum
         FROM merged
         WHERE n_parts = k        -- full coverage of the canonical span only
         """

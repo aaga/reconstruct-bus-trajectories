@@ -73,7 +73,8 @@ export class NetworkData {
         const sid = c.sid[i];
         let acc = out.get(sid);
         if (!acc) {
-          acc = { n: 0, sum: 0, m2: 0, hist: new Float64Array(N_BUCKETS) };
+          acc = { n: 0, sum: 0, m2: 0, hist: new Float64Array(N_BUCKETS),
+                  nDoor: 0, sumDwell: 0, sumDelayDoor: 0, sumOns: 0, sumOffs: 0, sumLoad: 0 };
           out.set(sid, acc);
         }
         const merged = welfordMerge(acc.n, acc.sum, acc.m2, c.n[i], c.sum_delay[i], c.m2[i]);
@@ -81,6 +82,14 @@ export class NetworkData {
         acc.sum = merged[1];
         acc.m2 = merged[2];
         for (let b = 0; b < N_BUCKETS; b++) acc.hist[b] += c.hist[b][i];
+        if (c.n_door) {
+          acc.nDoor += c.n_door[i];
+          acc.sumDwell += c.sum_dwell[i];
+          acc.sumDelayDoor += c.sum_delay_door[i];
+          acc.sumOns += c.sum_ons[i];
+          acc.sumOffs += c.sum_offs[i];
+          acc.sumLoad += c.sum_load[i];
+        }
       }
     }
     return out;
@@ -91,6 +100,29 @@ export class NetworkData {
   dateCount(filters) {
     let total = 0;
     for (const [key, count] of Object.entries(this.meta.date_counts)) {
+      const [pick, season, dow, weather] = key.split("|").map(Number);
+      if (filters.pick != null && pick !== filters.pick) continue;
+      if (filters.season != null && season !== filters.season) continue;
+      if (filters.weather != null && weather !== filters.weather) continue;
+      if (filters.dow != null) {
+        if (dow !== filters.dow) continue;
+      } else if (filters.daytype === "weekday") {
+        if (dow >= 5) continue;
+      } else if (filters.daytype === "sat") {
+        if (dow !== 5) continue;
+      } else if (filters.daytype === "sun") {
+        if (dow !== 6) continue;
+      }
+      total += count;
+    }
+    return total;
+  }
+
+  // Same as dateCount but over door-covered service dates only — the
+  // denominator for boardings/hour and any door-derived rate.
+  doorDateCount(filters) {
+    let total = 0;
+    for (const [key, count] of Object.entries(this.meta.door_date_counts ?? {})) {
       const [pick, season, dow, weather] = key.split("|").map(Number);
       if (filters.pick != null && pick !== filters.pick) continue;
       if (filters.season != null && season !== filters.season) continue;
@@ -185,14 +217,27 @@ export function deriveMetrics(acc, tFf, meta) {
   const std = n > 1 ? Math.sqrt(m2 / n) : n === 1 ? 0 : NaN;
   const r50 = quantileFromHist(hist, meta.hist_edges, meta.under_edge, meta.over_edge, 0.5);
   const r90 = quantileFromHist(hist, meta.hist_edges, meta.under_edge, meta.over_edge, 0.9);
-  return {
+  const nDoor = acc.nDoor ?? 0;
+  const out = {
     n,
     mean_delay_s: mean,
     std_delay_s: std,
     median_delay_s: n ? (r50 - 1) * tFf : NaN,
     p90_delay_s: n ? (r90 - 1) * tFf : NaN,
     buffer_s: n ? (r90 - r50) * tFf : NaN,
+    n_door: nDoor,
+    mean_dwell_s: NaN,
+    moving_delay_s: NaN,
+    dwell_share: NaN,
   };
+  if (nDoor > 0) {
+    const meanDwell = acc.sumDwell / nDoor;
+    const meanDelayDoor = acc.sumDelayDoor / nDoor;
+    out.mean_dwell_s = meanDwell;
+    out.moving_delay_s = meanDelayDoor - meanDwell;
+    out.dwell_share = acc.sumDelayDoor > 1e-9 ? acc.sumDwell / acc.sumDelayDoor : NaN;
+  }
+  return out;
 }
 
 // --------------------------------------------------------------------------
@@ -204,7 +249,9 @@ export async function selfTestGolden(baseUrl = "../data/network") {
   const meta = { hist_edges: g.hist_edges, under_edge: g.under_edge, over_edge: g.over_edge };
   const failures = [];
   for (const c of g.cases) {
-    const acc = { n: c.n, sum: c.sum_delay, m2: c.m2, hist: Float64Array.from(c.hist) };
+    const acc = { n: c.n, sum: c.sum_delay, m2: c.m2, hist: Float64Array.from(c.hist),
+                  nDoor: c.n_door ?? 0, sumDwell: c.sum_dwell ?? 0,
+                  sumDelayDoor: c.sum_delay_door ?? 0, sumOns: 0, sumOffs: 0, sumLoad: 0 };
     const got = deriveMetrics(acc, c.t_ff_s, meta);
     for (const [k, want] of Object.entries(c.metrics)) {
       const g_ = got[k];

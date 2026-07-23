@@ -108,20 +108,45 @@ def quantile_from_hist(counts: np.ndarray, q: float) -> float:
 # --------------------------------------------------------------------------
 
 def derive_metrics(
-    n: int, sum_delay: float, m2: float, hist: np.ndarray, t_ff_s: float
+    n: int,
+    sum_delay: float,
+    m2: float,
+    hist: np.ndarray,
+    t_ff_s: float,
+    *,
+    n_door: int = 0,
+    sum_dwell: float = 0.0,
+    sum_delay_door: float = 0.0,
 ) -> dict:
-    """All display metrics for one segment under one combined filter."""
+    """All display metrics for one segment under one combined filter.
+
+    Door metrics use ONLY the door-covered subset (n_door traversals): the
+    at-stop/in-motion split must come from the same trips or it doesn't sum.
+    """
     mean_d, std_d = mean_std(n, sum_delay, m2)
     r50 = quantile_from_hist(hist, 0.50)
     r90 = quantile_from_hist(hist, 0.90)
-    return {
+    out = {
         "n": n,
         "mean_delay_s": mean_d,
         "std_delay_s": std_d,
         "median_delay_s": (r50 - 1.0) * t_ff_s if n else float("nan"),
         "p90_delay_s": (r90 - 1.0) * t_ff_s if n else float("nan"),
         "buffer_s": (r90 - r50) * t_ff_s if n else float("nan"),
+        "n_door": n_door,
+        "mean_dwell_s": float("nan"),
+        "moving_delay_s": float("nan"),
+        "dwell_share": float("nan"),
     }
+    if n_door > 0:
+        mean_dwell = sum_dwell / n_door
+        mean_delay_door = sum_delay_door / n_door
+        out["mean_dwell_s"] = mean_dwell
+        out["moving_delay_s"] = mean_delay_door - mean_dwell
+        out["dwell_share"] = (
+            sum_dwell / sum_delay_door if sum_delay_door > 1e-9 else float("nan")
+        )
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -141,6 +166,10 @@ def emit_golden_vectors(out_path: Path, seed: int = 42) -> dict:
         a = welford_from_samples(delays[:half])
         b = welford_from_samples(delays[half:])
         merged = welford_merge(*a, *b)
+        # Door subset: roughly 60% of traversals covered, dwell ~35% of delay.
+        n_door = int(n * 0.6)
+        sum_delay_door = float(delays[:n_door].sum()) if n_door else 0.0
+        sum_dwell = 0.35 * sum_delay_door
         cases.append(
             {
                 "case": i,
@@ -149,10 +178,17 @@ def emit_golden_vectors(out_path: Path, seed: int = 42) -> dict:
                 "sum_delay": cs,
                 "m2": cm2,
                 "hist": hist.tolist(),
+                "n_door": n_door,
+                "sum_dwell": sum_dwell,
+                "sum_delay_door": sum_delay_door,
                 "merged_equals_whole": [list(merged), [cn, cs, cm2]],
                 "metrics": {
                     k: (None if isinstance(v, float) and np.isnan(v) else v)
-                    for k, v in derive_metrics(cn, cs, cm2, hist, t_ff).items()
+                    for k, v in derive_metrics(
+                        cn, cs, cm2, hist, t_ff,
+                        n_door=n_door, sum_dwell=sum_dwell,
+                        sum_delay_door=sum_delay_door,
+                    ).items()
                 },
             }
         )

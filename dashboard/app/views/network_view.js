@@ -25,6 +25,11 @@ export const METRICS = {
   freeflow_speed:  { label: "Free-flow speed (mph)", kind: "static", fmt: (v) => `${v.toFixed(0)}` },
   peak_degradation:{ label: "Peak degradation (s)",  kind: "diff", fmt: (v) => `${v > 0 ? "+" : ""}${v.toFixed(0)}s` },
   buses_per_hr:    { label: "Buses / hour",          kind: "level", fmt: (v) => v.toFixed(1) },
+  // Door/APC-derived (dates with bus-state-history coverage only):
+  dwell_delay:     { label: "At-stop dwell (s)",     kind: "door", fmt: (v) => `${v.toFixed(0)}s` },
+  moving_delay:    { label: "In-motion delay (s)",   kind: "door", fmt: (v) => `${v.toFixed(0)}s` },
+  dwell_share:     { label: "Dwell share of delay",  kind: "door", fmt: (v) => `${(100 * v).toFixed(0)}%` },
+  boardings_per_hr:{ label: "Boardings / hour",      kind: "door", fmt: (v) => v.toFixed(1) },
 };
 
 const PERIOD_LABELS = {
@@ -346,6 +351,24 @@ export class NetworkView {
           values.set(sid, mB.median_delay_s - mA.median_delay_s);
         }
       }
+    } else if (spec.kind === "door") {
+      const combined = await this.data.combine(this.F);
+      const nDoorDates = this.data.doorDateCount(this.F);
+      const hours = this.data.periodHours(this.F);
+      for (const [sid, acc] of combined) {
+        if ((acc.nDoor ?? 0) < minN) continue; // min n applies to the covered subset
+        if (metric === "boardings_per_hr") {
+          if (nDoorDates > 0 && hours > 0) values.set(sid, acc.sumOns / (nDoorDates * hours));
+          continue;
+        }
+        const m = deriveMetrics(acc, tFf.get(sid), this.data.meta);
+        const v = {
+          dwell_delay: m.mean_dwell_s,
+          moving_delay: m.moving_delay_s,
+          dwell_share: m.dwell_share,
+        }[metric];
+        if (Number.isFinite(v)) values.set(sid, v);
+      }
     } else {
       const combined = await this.data.combine(this.F);
       const nDates = this.data.dateCount(this.F);
@@ -409,11 +432,14 @@ export class NetworkView {
       colors.set(sid, { color: colorOf(Math.max(lo, Math.min(hi, v))) });
     }
     this.map.setColors(colors);
+    const covNote = spec.kind === "door"
+      ? ` · door data: ${this.data.meta.n_door_dates ?? "?"} of ${this.data.meta.n_dates} days`
+      : "";
     this.map.setLegend({
       title: spec.label,
       gradient,
       ticks: [spec.fmt(lo), spec.fmt((lo + hi) / 2), spec.fmt(hi)],
-      note: `p2–p98 across shown segments · grey = n < ${this.S.network.minN}`,
+      note: `p2–p98 across shown segments · grey = n < ${this.S.network.minN}${covNote}`,
     });
   }
 
@@ -539,16 +565,28 @@ export class NetworkView {
         free-flow ${ffMph} mph
         ${p.rev_sid != null ? ` · <a href="#" id="nw-rev">reverse direction →</a>` : ""}
       </div>
-      <table class="nw-ptable"><tr><th></th><th>n</th><th>median</th><th>p90</th><th>buffer</th></tr>
+      <table class="nw-ptable"><tr><th></th><th>n</th><th>median</th><th>p90</th><th>buffer</th><th>dwell</th><th>moving</th></tr>
       ${periods.map((per, i) => {
         const m = perPeriod[i];
+        const door = m && m.n_door > 0 && Number.isFinite(m.mean_dwell_s)
+          ? `<td>${m.mean_dwell_s.toFixed(0)}s</td><td>${m.moving_delay_s.toFixed(0)}s</td>`
+          : "<td>—</td><td>—</td>";
         return `<tr><td>${PERIOD_LABELS[per].split(" (")[0]}</td>
           ${m && m.n ? `<td>${m.n}</td><td>${m.median_delay_s.toFixed(0)}s</td>
-           <td>${m.p90_delay_s.toFixed(0)}s</td><td>${m.buffer_s.toFixed(0)}s</td>`
-          : "<td>—</td><td>—</td><td>—</td><td>—</td>"}</tr>`;
+           <td>${m.p90_delay_s.toFixed(0)}s</td><td>${m.buffer_s.toFixed(0)}s</td>${door}`
+          : "<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>"}</tr>`;
       }).join("")}
-      </table>`;
+      </table>
+      <div class="nw-facts" id="nw-apc"></div>`;
     $("stage").appendChild(el);
+    // APC summary under the current filters (all selected periods).
+    const accAll = (await this.data.combine(this.F)).get(sid);
+    if (accAll && (accAll.nDoor ?? 0) > 0) {
+      const dd = this.data.doorDateCount(this.F) || 1;
+      el.querySelector("#nw-apc").textContent =
+        `≈${(accAll.sumOns / dd).toFixed(0)} ons · ${(accAll.sumOffs / dd).toFixed(0)} offs per day here ` +
+        `(door data on ${accAll.nDoor} of ${accAll.n} traversals)`;
+    }
     el.querySelector(".nw-close").onclick = () => { el.remove(); this._restoreHighlight(); };
     el.querySelector("#nw-rev")?.addEventListener("click", (e) => {
       e.preventDefault();

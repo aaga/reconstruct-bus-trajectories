@@ -87,7 +87,10 @@ def _aggregate(
 ) -> "duckdb.DuckDBPyRelation":
     """One duckdb query: filter, join attrs + freeflow, bin, histogram."""
     con = duckdb.connect()
-    create_canonical_view(con, traversals_glob, registry, city)
+    sidecar = str(
+        REPO / "outputs" / "network" / city.city_id / "door_sidecar" / "service_date=*.parquet"
+    )
+    create_canonical_view(con, traversals_glob, registry, city, door_sidecar_glob=sidecar)
 
     # Lookup tables.
     ff_rows = [(k, v["t_ff_s"]) for k, v in freeflow["freeflow"].items()]
@@ -135,7 +138,8 @@ def _aggregate(
         strftime(tr.service_date, '%Y-%m-%d') AS date_iso,
         tr.t_obs_s, ff.t_ff_s,
         (tr.t_obs_s - ff.t_ff_s) AS delay_s,
-        (tr.t_obs_s / ff.t_ff_s) AS ratio
+        (tr.t_obs_s / ff.t_ff_s) AS ratio,
+        tr.has_door, tr.dwell_s, tr.ons, tr.offs, tr.load_sum
       FROM trav tr
       JOIN ff ON ff.seg_id = tr.seg_id
       WHERE tr.t_obs_s > 0
@@ -153,6 +157,12 @@ def _aggregate(
       COUNT(*)::BIGINT AS n,
       SUM(t.delay_s) AS sum_delay,
       COALESCE(VAR_POP(t.delay_s) * COUNT(*), 0.0) AS m2,
+      COUNT(*) FILTER (WHERE t.has_door)::BIGINT AS n_door,
+      COALESCE(SUM(t.dwell_s)  FILTER (WHERE t.has_door), 0.0) AS sum_dwell,
+      COALESCE(SUM(t.delay_s)  FILTER (WHERE t.has_door), 0.0) AS sum_delay_door,
+      COALESCE(SUM(t.ons)      FILTER (WHERE t.has_door), 0)   AS sum_ons,
+      COALESCE(SUM(t.offs)     FILTER (WHERE t.has_door), 0)   AS sum_offs,
+      COALESCE(SUM(t.load_sum) FILTER (WHERE t.has_door), 0)   AS sum_load,
       {', '.join(bucket_cols)}
     FROM t
     JOIN da ON da.date_iso = t.date_iso
@@ -169,6 +179,10 @@ def _write_shard(path: Path, rows: dict[str, np.ndarray]) -> int:
         "sid": "<u2", "rid": "<u1", "pick": "<u1", "season": "<u1",
         "dow": "<u1", "weather": "<u1",
         "n": "<u2", "sum_delay": "<f4", "m2": "<f4",
+        # door/APC (zero when the bin's dates precede door coverage);
+        # sum_load stays un-surfaced in the UI for now, by design.
+        "n_door": "<u2", "sum_dwell": "<f4", "sum_delay_door": "<f4",
+        "sum_ons": "<f4", "sum_offs": "<f4", "sum_load": "<f4",
         **{f"h{b}": "<u2" for b in range(N_BUCKETS)},
     }
     n_rows = len(rows["sid"])
@@ -213,6 +227,7 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
 
     # ---- stats shards, one per period ------------------------------------
     glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
+    sidecar = str(base / "door_sidecar" / "service_date=*.parquet")
     con, rel = _aggregate(city, glob, freeflow, date_attrs, dims, registry)
     df = rel.df()
     print(f"binned rows total: {len(df)}")
@@ -230,6 +245,12 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
             "n": sub.n.to_numpy(),
             "sum_delay": sub.sum_delay.to_numpy(),
             "m2": sub.m2.to_numpy(),
+            "n_door": sub.n_door.to_numpy(),
+            "sum_dwell": sub.sum_dwell.to_numpy(),
+            "sum_delay_door": sub.sum_delay_door.to_numpy(),
+            "sum_ons": sub.sum_ons.to_numpy(),
+            "sum_offs": sub.sum_offs.to_numpy(),
+            "sum_load": sub.sum_load.to_numpy(),
             **{f"h{b}": sub[f"h{b}"].to_numpy() for b in range(N_BUCKETS)},
         }
         path = out / f"stats_{period}.bin"
@@ -316,6 +337,31 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
         )
         date_counts[key] = date_counts.get(key, 0) + 1
 
+    # Door-covered service dates (sidecar files present) — the boardings/hour
+    # denominator uses these, not all dates.
+    import glob as _globmod
+    door_dates = {
+        Path(f).stem.split("=")[1]
+        for f in _globmod.glob(sidecar)
+    }
+    door_date_counts: dict[str, int] = {}
+    for d, a in date_attrs["days"].items():
+        if d not in dates_present or d not in door_dates:
+            continue
+        key = "|".join(
+            [
+                str(dims["picks"].index(a["pick"]) if a["pick"] in dims["picks"] else 0),
+                str(dims["seasons"].index(a["season"])),
+                str(7 if a["daytype"] == "holiday" else a["dow"]),
+                str(
+                    dims["weathers"].index(a["weather"])
+                    if a["weather"] in dims["weathers"]
+                    else dims["weathers"].index("unknown")
+                ),
+            ]
+        )
+        door_date_counts[key] = door_date_counts.get(key, 0) + 1
+
     meta = {
         "city": city.city_id,
         "intersections_sha256": sha,
@@ -325,7 +371,9 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
         "under_edge": UNDER_EDGE,
         "over_edge": OVER_EDGE,
         "date_counts": date_counts,
+        "door_date_counts": door_date_counts,
         "n_dates": len(dates_present),
+        "n_door_dates": len(door_dates & dates_present),
         "shards": shard_meta,
         "daytype_by_dow": {str(i): ("weekday" if i < 5 else DOW_NAMES[i]) for i in range(7)},
         "holidays_excluded_from_weekday": True,

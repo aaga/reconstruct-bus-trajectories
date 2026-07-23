@@ -50,6 +50,13 @@ PYTHONPATH=src uv run python analysis/network/freeflow.py --city cta
 PYTHONPATH=src uv run python analysis/network/date_attrs.py --city cta \
     --start 2026-04-27 --end $(date +%F)
 
+# 4b. Door / APC data (optional but wanted: at-stop vs in-motion delay split)
+#     One-time CSV → parquet conversion (source CSVs on slow cloud storage):
+PYTHONPATH=src uv run python analysis/network/door_events.py --city cta "<csv>" ...
+#     Verify timezone empirically, then build the per-traversal sidecar:
+PYTHONPATH=src uv run python analysis/network/door_join.py --city cta --verify-tz
+PYTHONPATH=src uv run python analysis/network/door_join.py --city cta
+
 # 5. Dashboard payloads + areas of interest
 PYTHONPATH=src uv run python analysis/network/build_payloads.py --city cta
 PYTHONPATH=src uv run python analysis/network/areas_of_interest.py --city cta
@@ -86,8 +93,17 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
 - **Traversals** (`run_reconstruct.py`) are the core intermediate: one row per
   (trip, segment) with enter/exit times from full LOCREG-PCHIP reconstruction
   (Eq 3.3 "last time at x", vectorized in
-  `travel_time.last_times_at_boundaries`). Extend here (additive columns) when
-  door open/close data lands (dwell vs inter-stop split).
+  `travel_time.last_times_at_boundaries`).
+- **Door/APC sidecar** (`door_events.py` + `door_join.py`, 2026-07): CTA
+  bus-state-history door cycles (dwell seconds + rear/front ons/offs +
+  passenger load; event types 3 and 5 are both real passenger service) joined
+  to traversal windows by vehicle + instant. "Delay at stops" = door-open
+  time only (user decision); approach/deceleration stays in-motion. Coverage
+  is tracked per vehicle-day so true zero dwell ≠ missing data; timestamps
+  verified Chicago-local against AVL windows (73% containment vs 38% under
+  UTC). Bins carry n_door / sum_dwell / sum_delay_door / ons / offs (+
+  passenger-load sums under the hood, not yet surfaced); door-metric
+  denominators use door-covered dates only (`meta.door_date_counts`).
 - **Free-flow** = p5 of late-night traversals pooled across routes per
   segment; thin segments fall back p10 → road-class prior (`freeflow.json`
   records the method per segment).
