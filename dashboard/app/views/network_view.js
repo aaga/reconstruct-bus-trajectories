@@ -322,6 +322,17 @@ export class NetworkView {
   // ---- metric computation + painting -------------------------------------
 
   async refresh() {
+    const cnt = document.querySelector("#nw-count");
+    if (cnt) cnt.textContent = "loading data…";
+    try {
+      await this._refreshInner();
+    } catch (err) {
+      console.error("network refresh failed", err);
+      if (cnt) cnt.textContent = `load failed: ${err.message || err}`;
+    }
+  }
+
+  async _refreshInner() {
     const metric = this.S.network.metric;
     const spec = METRICS[metric];
     const visible = this._visibleSids();

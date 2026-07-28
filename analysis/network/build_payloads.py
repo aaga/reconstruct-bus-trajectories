@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import struct
 import sys
@@ -203,6 +204,10 @@ def _write_shard(path: Path, rows: dict[str, np.ndarray]) -> int:
             arr = np.minimum(arr, 255)
         buf += np.ascontiguousarray(arr.astype(dt)).tobytes()
     path.write_bytes(bytes(buf))
+    # Pre-compressed twin: Cloudflare Pages doesn't compress octet-stream, so
+    # the client fetches .bin.gz and inflates via DecompressionStream (with a
+    # raw-.bin fallback for older browsers / missing twin).
+    path.with_suffix(".bin.gz").write_bytes(gzip.compress(bytes(buf), 9))
     return len(buf)
 
 

@@ -36,14 +36,37 @@ export class NetworkData {
   }
 
   async loadShard(period) {
+    // Cache the in-flight promise so concurrent combines share one download.
     if (this.shards.has(period)) return this.shards.get(period);
-    const buf = await fetch(`${this.base}/stats_${period}.bin`).then((r) => {
-      if (!r.ok) throw new Error(`shard ${period}: HTTP ${r.status}`);
-      return r.arrayBuffer();
-    });
-    const cols = decodeShard(buf);
-    this.shards.set(period, cols);
-    return cols;
+    const promise = this._fetchShard(period);
+    this.shards.set(period, promise);
+    try {
+      const cols = await promise;
+      this.shards.set(period, Promise.resolve(cols));
+      return cols;
+    } catch (e) {
+      this.shards.delete(period); // allow retry after a transient failure
+      throw e;
+    }
+  }
+
+  async _fetchShard(period) {
+    let buf = null;
+    // Prefer the pre-gzipped twin (~3-4x smaller; Pages won't compress .bin).
+    if (typeof DecompressionStream === "function") {
+      const r = await fetch(`${this.base}/stats_${period}.bin.gz`);
+      if (r.ok) {
+        const ds = r.body.pipeThrough(new DecompressionStream("gzip"));
+        buf = await new Response(ds).arrayBuffer();
+      }
+    }
+    if (!buf) {
+      buf = await fetch(`${this.base}/stats_${period}.bin`).then((r) => {
+        if (!r.ok) throw new Error(`shard ${period}: HTTP ${r.status}`);
+        return r.arrayBuffer();
+      });
+    }
+    return decodeShard(buf);
   }
 
   // ---- filter combination ------------------------------------------------
