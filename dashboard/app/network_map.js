@@ -46,6 +46,14 @@ export class NetworkMap {
             14, ["*", 2.5, ["coalesce", ["feature-state", "w"], 1.2]],
           ],
           "line-opacity": ["coalesce", ["feature-state", "o"], 0.85],
+          // Geometries are oriented in travel direction; a small rightward
+          // offset renders direction pairs as parallel lanes (traffic-map
+          // convention) instead of hiding one under the other, now that OSM
+          // way geometry makes pairs exactly coincident on two-way streets.
+          "line-offset": [
+            "interpolate", ["linear"], ["zoom"],
+            10, 0.6, 13, 2.0, 16, 3.5,
+          ],
         },
       });
       this.map.addLayer({
@@ -57,6 +65,10 @@ export class NetworkMap {
           "line-color": "#111",
           "line-width": 5,
           "line-opacity": ["case", ["boolean", ["feature-state", "hl"], false], 0.9, 0],
+          "line-offset": [
+            "interpolate", ["linear"], ["zoom"],
+            10, 0.6, 13, 2.0, 16, 3.5,
+          ],
         },
       });
       this._wireInteractions();

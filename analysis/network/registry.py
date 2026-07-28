@@ -196,6 +196,102 @@ def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[st
 
 
 # --------------------------------------------------------------------------
+# Geometry from OSM way chains (preferred over GTFS shape slices: follows the
+# actual roadway; direction pairs on single-carriageway streets share the
+# same ways and so overlap exactly, trimmed at canonical node positions)
+# --------------------------------------------------------------------------
+
+def _dist_m(a, b) -> float:
+    mlat = 111320.0 * np.cos(np.radians((a[0] + b[0]) / 2))
+    return float(np.hypot((a[1] - b[1]) * mlat, (a[0] - b[0]) * 111320.0))
+
+
+def _nearest_idx(chain: list, target: tuple[float, float]) -> int:
+    d = [
+        (t[0] - target[0]) ** 2 * 1.0 + (t[1] - target[1]) ** 2 * 0.55
+        for t in chain
+    ]  # rough anisotropy is fine for nearest-vertex at Chicago latitudes
+    return int(np.argmin(d))
+
+
+def way_chain_geometry(
+    spans: list[dict],
+    way_geoms: dict[str, list],
+    x_lo: float,
+    x_hi: float,
+    trim_start: tuple[float, float],
+    trim_end: tuple[float, float],
+    expected_len_m: float,
+) -> list | None:
+    """Segment polyline along OSM ways, oriented in travel direction.
+
+    ``spans`` = the representative shape's way-cache entries. Ways overlapping
+    [x_lo, x_hi] are concatenated (reversed where the shape rides the way
+    backwards), the chain is trimmed at the vertices nearest the canonical
+    boundary-node positions, and those exact positions are used as endpoints
+    (so a direction pair sharing ways gets IDENTICAL endpoints). Returns None
+    when geometry is unavailable/incoherent — caller falls back to the GTFS
+    slice.
+    """
+    use = sorted(
+        (w for w in spans if w["dist_end_m"] > x_lo and w["dist_start_m"] < x_hi),
+        key=lambda w: w["dist_start_m"],
+    )
+    if not use:
+        return None
+    chain: list = []
+    for w in use:
+        g = way_geoms.get(str(w["way_id"]))
+        if not g:
+            return None
+        part = [list(pt) for pt in g]
+        if w.get("direction") == "reverse":
+            part = part[::-1]
+        if not chain:
+            chain = part
+            continue
+        # Stitch at the shared OSM junction node: routes turn at intersections,
+        # so consecutive ways share an exact vertex (coords are 6-dp rounded in
+        # the geom cache, so shared nodes compare equal). Cut the chain's
+        # overshoot tail and the part's pre-junction head at that vertex.
+        part_idx = {tuple(pt): j for j, pt in enumerate(part)}
+        join = None
+        for i in range(len(chain) - 1, -1, -1):
+            j = part_idx.get(tuple(chain[i]))
+            if j is not None:
+                join = (i, j)
+                break
+        if join is None:
+            # No shared node (rare: way split without junction) — nearest pair.
+            best = None
+            for i in range(max(0, len(chain) - 40), len(chain)):
+                for j in range(min(40, len(part))):
+                    d = _dist_m(chain[i], part[j])
+                    if best is None or d < best[0]:
+                        best = (d, i, j)
+            if best is None or best[0] > 30.0:
+                return None
+            join = (best[1], best[2])
+        i, j = join
+        chain = chain[: i + 1] + part[j + 1 :]
+    if len(chain) < 2:
+        return None
+
+    i0 = _nearest_idx(chain, trim_start)
+    i1 = _nearest_idx(chain, trim_end)
+    if i1 <= i0:
+        return None
+    trimmed = [list(trim_start)] + chain[i0 + 1 : i1] + [list(trim_end)]
+    if len(trimmed) < 2:
+        return None
+    # sanity: chain length should resemble the route-distance span
+    clen = sum(_dist_m(a, b) for a, b in zip(trimmed, trimmed[1:]))
+    if expected_len_m > 50 and not (0.6 * expected_len_m < clen < 1.6 * expected_len_m):
+        return None
+    return trimmed
+
+
+# --------------------------------------------------------------------------
 # Naming from the way cache
 # --------------------------------------------------------------------------
 
@@ -247,6 +343,10 @@ def build_registry(city: CityConfig) -> dict:
 
     intersections = load_intersections(intersections_path)
     way_cache = json.loads(way_cache_path.read_text())
+    way_geoms_path = way_cache_path.parent / "way_geoms.json"
+    way_geoms = (
+        json.loads(way_geoms_path.read_text()) if way_geoms_path.exists() else {}
+    )
     shape_meta = shape_route_direction(gtfs_zip)
     bus_shapes = [s for s in list_bus_shapes(gtfs_zip) if s in intersections and s in shape_meta]
     skipped_no_cache = sorted(set(list_bus_shapes(gtfs_zip)) - set(bus_shapes))
@@ -267,6 +367,8 @@ def build_registry(city: CityConfig) -> dict:
                     usage[cp.intersection_node_id] += 1
                     seen_in_shape.add(cp.intersection_node_id)
     canon = cluster_nodes(positions, usage, CLUSTER_RADIUS_M)
+    node_positions = positions  # node -> (lat, lon), incl. every canonical rep
+    n_geom_fallback = [0]
     n_clusters_multi = len(
         {c for c, n in Counter(canon.values()).items() if n > 1}
     )
@@ -346,9 +448,30 @@ def build_registry(city: CityConfig) -> dict:
         polyline, dist_m = load_gtfs_shape_with_dist(gtfs_zip, rep["shape_id"])
         if dist_m is None:
             dist_m = cumulative_route_dist_m(polyline)
-        geom = simplify_polyline(
-            slice_polyline(polyline, dist_m, rep["x_start_m"], rep["x_end_m"]), 5.0
-        )
+        gtfs_slice = slice_polyline(polyline, dist_m, rep["x_start_m"], rep["x_end_m"])
+
+        # Preferred: OSM way-chain geometry trimmed at canonical node positions.
+        seg0 = seg_objs[seg_id]
+        canon_up_pos = node_positions.get(
+            canon[seg0.upstream_signal.intersection_node_id]
+        ) or (float(gtfs_slice[0][0]), float(gtfs_slice[0][1]))
+        canon_down_pos = node_positions.get(
+            canon[seg0.downstream_signal.intersection_node_id]
+        ) or (float(gtfs_slice[-1][0]), float(gtfs_slice[-1][1]))
+        geom = None
+        if way_geoms:
+            geom = way_chain_geometry(
+                way_cache.get(rep["shape_id"], []),
+                way_geoms,
+                rep["x_start_m"], rep["x_end_m"],
+                canon_up_pos, canon_down_pos,
+                med_len,
+            )
+        geom_src = "osm" if geom is not None else "gtfs"
+        if geom is None:
+            geom = gtfs_slice
+            n_geom_fallback[0] += 1
+        geom = simplify_polyline(np.asarray(geom, dtype=float), 5.0)
 
         name, road_class = dominant_way_attrs(
             way_cache.get(rep["shape_id"], []), rep["x_start_m"], rep["x_end_m"]
@@ -376,6 +499,7 @@ def build_registry(city: CityConfig) -> dict:
             "n_instances": len(insts),
             "len_outlier_shapes": outliers,
             "geometry_lonlat": [[round(lon, 6), round(lat, 6)] for lat, lon in geom],
+            "geom_src": geom_src,
             "name": name,
             "label": segment_label(name, seg),
             "road_class": road_class,
@@ -406,6 +530,7 @@ def build_registry(city: CityConfig) -> dict:
             "n_alias_clusters_merged": n_clusters_multi,
             "n_confetti_boundaries_dropped": n_confetti_dropped,
             "n_len_outlier_instances": n_outlier_instances,
+            "n_geom_gtfs_fallback": n_geom_fallback[0],
             "n_with_reverse_twin": sum(1 for r in registry.values() if r["rev_seg_id"]),
         },
         "segments": registry,

@@ -170,7 +170,10 @@ async function renderNetwork() {
   document.body.classList.toggle("network-areas", S.ntab === "areas");
   if (!S.network.data) {
     try {
-      S.network.data = await new NetworkData().init();
+      // Cache the init promise: startup can trigger two renders (hash apply +
+      // init flow) and both must share one NetworkData (and one download set).
+      if (!S.network._dataPromise) S.network._dataPromise = new NetworkData().init();
+      S.network.data = await S.network._dataPromise;
     } catch (err) {
       $("chart").innerHTML = `<div class="nw-empty">Network payloads missing —
         run analysis/network/build_payloads.py.<br><code>${err}</code></div>`;
