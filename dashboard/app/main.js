@@ -154,6 +154,7 @@ function teardownMap() {
 }
 
 function render() {
+  syncHash();
   if (S.main === "network") { renderNetwork(); return; }
   teardownNetwork();
   if (S.main === "average") { renderAverage(); return; }
@@ -268,6 +269,48 @@ async function loadAggregate(key) {
   render();
 }
 
+// ---------------------------------------------------------------- deep links
+// Shareable hash routes: #single/trajectory, #single/speed, #average/overall,
+// #average/segment, #network/map, #network/areas. Network adds ?metric=<key>.
+// The hash is updated on navigation and applied on load / back-forward.
+
+function currentHash() {
+  let h = `#${S.main}`;
+  const sub = { single: S.tab, average: S.atab, network: S.ntab }[S.main];
+  if (sub) h += `/${sub}`;
+  if (S.main === "network") h += `?metric=${S.network.metric}`;
+  return h;
+}
+
+function syncHash() {
+  if (S._applyingHash) return;
+  const h = currentHash();
+  if (location.hash !== h) history.replaceState(null, "", h);
+}
+
+function applyHash() {
+  const raw = (location.hash || "").replace(/^#/, "");
+  if (!raw) return false;
+  const [path, query] = raw.split("?");
+  const [main, sub] = path.split("/");
+  if (!["single", "average", "network"].includes(main)) return false;
+  S._applyingHash = true;
+  if (main === "single" && ["trajectory", "speed"].includes(sub)) S.tab = sub;
+  if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
+  if (main === "network" && ["map", "areas"].includes(sub)) S.ntab = sub;
+  const metric = new URLSearchParams(query || "").get("metric");
+  if (main === "network" && metric && METRICS[metric]) S.network.metric = metric;
+  // reflect sub-tab button states
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
+  document.querySelectorAll("#atabs button").forEach((b) => b.classList.toggle("active", b.dataset.atab === S.atab));
+  document.querySelectorAll("#ntabs button").forEach((b) => b.classList.toggle("active", b.dataset.ntab === S.ntab));
+  const metricSel = $("nw-metric");
+  if (metricSel && metricSel.options.length) metricSel.value = S.network.metric;
+  setMain(main);
+  S._applyingHash = false;
+  return true;
+}
+
 // Switch main tab: toggle the per-main selector bars, sub-tabs, and controls.
 function setMain(main) {
   S.main = main;
@@ -349,7 +392,7 @@ async function init() {
     metricSel.appendChild(o);
   }
   metricSel.value = S.network.metric;
-  metricSel.onchange = () => { S.network.metric = metricSel.value; networkView.refresh(); };
+  metricSel.onchange = () => { S.network.metric = metricSel.value; syncHash(); networkView.refresh(); };
 
   const bind = (id, key) => { $(id).onchange = (e) => { S.toggles[key] = e.target.checked; render(); }; };
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");
@@ -399,7 +442,16 @@ async function init() {
   };
   window.addEventListener("resize", render);
 
-  if (trips.length) { tripSel.value = trips[0].key; await loadTrip(trips[0].key); }
+  window.addEventListener("hashchange", () => { applyHash(); });
+
+  const routed = applyHash();
+  if (routed && S.main === "network") {
+    // network payloads need no trip; still load trips in the background for tab switches
+    if (trips.length) { tripSel.value = trips[0].key; loadTrip(trips[0].key); }
+  } else if (routed && S.main === "average" && aggs.length) {
+    routeSel.value = aggs[0].key; await loadAggregate(aggs[0].key);
+    if (trips.length) { tripSel.value = trips[0].key; loadTrip(trips[0].key); }
+  } else if (trips.length) { tripSel.value = trips[0].key; await loadTrip(trips[0].key); }
   else { setMain("network"); }  // network-only payload set: land on the map
 }
 
