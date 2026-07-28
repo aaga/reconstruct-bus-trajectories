@@ -79,12 +79,15 @@ def cluster_nodes(
     positions: dict[int, tuple[float, float]],  # node -> (lat, lon)
     usage: dict[int, int],  # node -> #shapes using it (for representative pick)
     radius_m: float = CLUSTER_RADIUS_M,
+    primary: set[int] | frozenset[int] = frozenset(),
 ) -> dict[int, int]:
     """Union-find nodes within ``radius_m``; return node -> canonical node.
 
-    Canonical = the member used by the most shapes (tie: lowest node id) —
+    Canonical = prefer a ``primary`` member (true highway=traffic_signals
+    node), then the member used by the most shapes, then lowest node id —
     a deterministic global rule, unlike the corridor study's per-shape
-    "first in route order".
+    "first in route order". ``primary`` matters at junctions whose signals
+    OSM maps only as signalized crossings (promoted ped nodes).
     """
     ids = sorted(positions)
     if not ids:
@@ -125,7 +128,7 @@ def cluster_nodes(
         groups[find(i)].append(n)
     out: dict[int, int] = {}
     for members in groups.values():
-        rep = max(members, key=lambda n: (usage.get(n, 0), -n))
+        rep = max(members, key=lambda n: (n in primary, usage.get(n, 0), -n))
         for n in members:
             out[n] = rep
     return out
@@ -222,6 +225,7 @@ def way_chain_geometry(
     trim_start: tuple[float, float],
     trim_end: tuple[float, float],
     expected_len_m: float,
+    gtfs_bridge=None,  # callable (a_m, b_m) -> [[lat, lon], ...] for dead ways
 ) -> list | None:
     """Segment polyline along OSM ways, oriented in travel direction.
 
@@ -243,10 +247,18 @@ def way_chain_geometry(
     for w in use:
         g = way_geoms.get(str(w["way_id"]))
         if not g:
-            return None
-        part = [list(pt) for pt in g]
-        if w.get("direction") == "reverse":
-            part = part[::-1]
+            # Way deleted/replaced upstream (OSM edited after the way cache was
+            # built — e.g. remapped 6-way junctions). Bridge just this span
+            # with the GTFS slice rather than abandoning the whole chain.
+            if gtfs_bridge is None:
+                return None
+            part = [list(pt) for pt in gtfs_bridge(w["dist_start_m"], w["dist_end_m"])]
+            if len(part) < 2:
+                continue
+        else:
+            part = [list(pt) for pt in g]
+            if w.get("direction") == "reverse":
+                part = part[::-1]
         if not chain:
             chain = part
             continue
@@ -314,9 +326,17 @@ def dominant_way_attrs(
     return name, road_class
 
 
-def segment_label(name: str | None, seg: Segment) -> str:
+def segment_label(
+    name: str | None, seg: Segment, node_names: dict[int, set] | None = None
+) -> str:
     def cross(cp) -> str:
-        return cp.cross_street_names[0] if cp.cross_street_names else "mid-block"
+        if cp.cross_street_names:
+            return cp.cross_street_names[0]
+        if node_names:
+            cands = node_names.get(cp.intersection_node_id, set()) - {name}
+            if cands:
+                return sorted(cands, key=len)[0]
+        return "mid-block"
 
     span = f"{cross(seg.upstream_signal)} → {cross(seg.downstream_signal)}"
     return f"{name}: {span}" if name else span
@@ -355,18 +375,56 @@ def build_registry(city: CityConfig) -> dict:
         gtfs_zip, {s: shape_meta[s]["rep_trip_id"] for s in bus_shapes}
     )
 
-    # ---- global clustering of boundary-signal nodes ----------------------
+    # ---- promote intersection-anchored ped-signal nodes ------------------
+    # Some (often recently remapped, multi-leg) junctions carry NO
+    # highway=traffic_signals node in OSM — the signal exists only as
+    # signalized crossing nodes (e.g. Milwaukee/Kimball, Milwaukee/Damen).
+    # A ped_crossing_signal ANCHORED to an intersection vertex (40 m rule
+    # from the corridor pipeline) is evidence of a signalized intersection →
+    # boundary. Mid-block ped signals (never anchored on any shape) stay
+    # demoted. Promotion is global per node so shapes can't disagree.
+    anchored_ped: set[int] = set()
+    for shape_id in bus_shapes:
+        for cp in intersections[shape_id]:
+            if (
+                cp.control_type == "ped_crossing_signal"
+                and cp.anchor_intersection_node_id is not None
+            ):
+                anchored_ped.add(cp.intersection_node_id)
+
+    # ---- global clustering: traffic signals + ALL ped-signal nodes -------
+    # Ped nodes participate in clustering so junction crossings chain into
+    # one supernode; PROMOTION then happens per cluster (below): a cluster is
+    # a boundary if it contains a true signal or any anchored crossing. This
+    # catches 6-way junctions where the bus street's own crossing nodes are
+    # unanchored but a cross street's are (e.g. Milwaukee/Damen/North).
     positions: dict[int, tuple[float, float]] = {}
     usage: Counter = Counter()
+    primary: set[int] = set()
     for shape_id in bus_shapes:
         seen_in_shape = set()
         for cp in intersections[shape_id]:
-            if cp.control_type in BOUNDARY_TYPES:
+            if cp.control_type in BOUNDARY_TYPES or cp.control_type == "ped_crossing_signal":
                 positions[cp.intersection_node_id] = (cp.lat, cp.lon)
+                if cp.control_type in BOUNDARY_TYPES:
+                    primary.add(cp.intersection_node_id)
                 if cp.intersection_node_id not in seen_in_shape:
                     usage[cp.intersection_node_id] += 1
                     seen_in_shape.add(cp.intersection_node_id)
-    canon = cluster_nodes(positions, usage, CLUSTER_RADIUS_M)
+    canon = cluster_nodes(positions, usage, CLUSTER_RADIUS_M, primary=primary)
+
+    boundary_clusters: set[int] = {canon[n] for n in primary} | {
+        canon[n] for n in anchored_ped
+    }
+    promoted_ped = {
+        n for n, c in canon.items() if c in boundary_clusters and n not in primary
+    }
+
+    def is_boundary_cp(cp) -> bool:
+        n = cp.intersection_node_id
+        if cp.control_type in BOUNDARY_TYPES:
+            return True
+        return cp.control_type == "ped_crossing_signal" and canon.get(n) in boundary_clusters
     node_positions = positions  # node -> (lat, lon), incl. every canonical rep
     n_geom_fallback = [0]
     n_clusters_multi = len(
@@ -380,27 +438,43 @@ def build_registry(city: CityConfig) -> dict:
     seg_objs: dict[str, Segment] = {}
     traversal_map: dict[str, list[list[str]]] = {}
     n_confetti_dropped = 0
+    # canonical node -> street names of ways passing its position (for labels
+    # at promoted junction nodes, whose crossing CPs carry no street names)
+    node_names: dict[int, set] = defaultdict(set)
 
     for shape_id in bus_shapes:
         cps = intersections[shape_id]
         stops = stops_map.get(shape_id, [])
 
-        # Canonical segmentation: traffic signals only, cluster-deduped.
+        # Canonical segmentation: traffic signals + promoted (intersection-
+        # anchored) ped-signal nodes, cluster-deduped. Un-promoted ped-signal
+        # CPs are excluded outright so the type-based boundary filter inside
+        # build_segments_from_records can't resurrect them.
         signals = sorted(
-            (c for c in cps if c.control_type in BOUNDARY_TYPES),
+            (c for c in cps if is_boundary_cp(c)),
             key=lambda c: c.dist_along_route_m,
         )
         dedup = _dedupe_by_cluster(signals, canon)
         n_confetti_dropped += len(signals) - len(dedup)
-        non_boundary = [c for c in cps if c.control_type not in BOUNDARY_TYPES]
+        non_boundary = [
+            c for c in cps
+            if not is_boundary_cp(c) and c.control_type != "ped_crossing_signal"
+        ]
         new_segs = build_segments_from_records(
-            dedup + non_boundary, stops, boundary_types=BOUNDARY_TYPES
+            dedup + non_boundary, stops,
+            boundary_types=("traffic_signals", "ped_crossing_signal"),
         )
 
         def canon_seg_id(seg: Segment) -> str:
             cu = canon[seg.upstream_signal.intersection_node_id]
             cd = canon[seg.downstream_signal.intersection_node_id]
             return f"SIG_{cu}__SIG_{cd}"
+
+        spans_for_names = way_cache.get(shape_id, [])
+        for cp in dedup:
+            for w in spans_for_names:
+                if w.get("name") and w["dist_start_m"] - 25 <= cp.dist_along_route_m <= w["dist_end_m"] + 25:
+                    node_names[canon[cp.intersection_node_id]].add(w["name"])
 
         shape_seqs[shape_id] = [canon_seg_id(s) for s in new_segs]
         shape_bounds[shape_id] = [
@@ -430,6 +504,12 @@ def build_registry(city: CityConfig) -> dict:
             if new is not None:
                 mapping.append([os_.seg_id, canon_seg_id(new)])
         traversal_map[shape_id] = mapping
+
+    # Every raw member node resolves to its canonical cluster's name pool, so
+    # labels see cross streets contributed by OTHER routes through the node.
+    node_names_resolved: dict[int, set] = {
+        n: node_names.get(c, set()) for n, c in canon.items()
+    }
 
     # ---- canonicalize each seg_id across shapes --------------------------
     registry: dict[str, dict] = {}
@@ -466,6 +546,7 @@ def build_registry(city: CityConfig) -> dict:
                 rep["x_start_m"], rep["x_end_m"],
                 canon_up_pos, canon_down_pos,
                 med_len,
+                gtfs_bridge=lambda a, b: slice_polyline(polyline, dist_m, a, b),
             )
         geom_src = "osm" if geom is not None else "gtfs"
         if geom is None:
@@ -501,7 +582,7 @@ def build_registry(city: CityConfig) -> dict:
             "geometry_lonlat": [[round(lon, 6), round(lat, 6)] for lat, lon in geom],
             "geom_src": geom_src,
             "name": name,
-            "label": segment_label(name, seg),
+            "label": segment_label(name, seg, node_names_resolved),
             "road_class": road_class,
             "routes": sorted(by_route.values(), key=lambda r: r["route_id"]),
             "rev_seg_id": None,  # filled below
@@ -528,6 +609,10 @@ def build_registry(city: CityConfig) -> dict:
             "n_instances": sum(len(v) for v in instances.values()),
             "n_boundary_nodes": len({canon[n] for n in canon}),
             "n_alias_clusters_merged": n_clusters_multi,
+            "n_promoted_ped_signal_nodes": len(promoted_ped),
+            "n_boundary_clusters_from_ped_only": sum(
+                1 for c in boundary_clusters if c not in {canon[n] for n in primary}
+            ),
             "n_confetti_boundaries_dropped": n_confetti_dropped,
             "n_len_outlier_instances": n_outlier_instances,
             "n_geom_gtfs_fallback": n_geom_fallback[0],
