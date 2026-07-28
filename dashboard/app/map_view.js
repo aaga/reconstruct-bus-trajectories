@@ -19,7 +19,9 @@ const MARKER_STYLE = {
   ped_crossing_signal:   { color: "#7b3fa0", radius: 4, label: "Ped signal crossing" },
 };
 
-const TILE_STYLE = {
+// Exported so the network tab's standalone map reuses the identical basemap
+// (Carto Positron + optional Mapbox satellite) without duplicating tile URLs.
+export const TILE_STYLE = {
   version: 8,
   glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
   sources: {

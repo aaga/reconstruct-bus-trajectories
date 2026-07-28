@@ -17,6 +17,9 @@ import { TrajectoryView } from "./views/trajectory_view.js";
 import { SpeedView } from "./views/speed_view.js";
 import { OverallDelayView } from "./views/overall_delay_view.js";
 import { DelayView } from "./views/delay_view.js";
+import { NetworkData } from "./network_data.js";
+import { NetworkView, METRICS } from "./views/network_view.js";
+import { AreasView } from "./views/areas_view.js";
 
 const S = {
   main: "single",          // "single" | "average"
@@ -39,11 +42,25 @@ const S = {
   cursor: null,                 // persisted cursor: {kind:"chart",v} | {kind:"map",distM}
   tToDist: null, distToT: null, // High-Freq (phone) time<->distance
   r2ToDist: null,               // Low-Freq (R2) time->distance
+  // Network tab (see views/network_view.js)
+  ntab: "map",                  // "map" | "areas"
+  network: {
+    data: null,                 // NetworkData (lazy, cached across tab switches)
+    map: null,                  // NetworkMap (owned by NetworkView)
+    filters: { routes: [], corridors: [], direction: null,
+               periods: ["am_peak", "pm_peak"], daytype: "weekday", dow: null,
+               pick: null, season: null, weather: null },
+    metric: "mean_delay",
+    minN: 10,
+    selected: null,
+  },
 };
 
 const trajView = new TrajectoryView(S);
 const speedView = new SpeedView(S);
 const overallView = new OverallDelayView(S);
+const networkView = new NetworkView(S);
+const areasView = new AreasView(S);
 
 // Display modes. Rich = every source + delay row; Lite = the primary source +
 // its inferred delays only (emulating the single-trip route dashboard). Modes
@@ -137,8 +154,38 @@ function teardownMap() {
 }
 
 function render() {
+  syncHash();
+  if (S.main === "network") { renderNetwork(); return; }
+  teardownNetwork();
   if (S.main === "average") { renderAverage(); return; }
   renderSingle();
+}
+
+// Network: the NetworkMap persists across map/areas sub-tabs (areas rows
+// highlight on it); NetworkData persists across main-tab switches.
+async function renderNetwork() {
+  teardownMap();
+  teardownAggViews();
+  document.body.classList.add("show-map", "network-mode");
+  document.body.classList.toggle("network-areas", S.ntab === "areas");
+  if (!S.network.data) {
+    try {
+      S.network.data = await new NetworkData().init();
+    } catch (err) {
+      $("chart").innerHTML = `<div class="nw-empty">Network payloads missing —
+        run analysis/network/build_payloads.py.<br><code>${err}</code></div>`;
+      return;
+    }
+  }
+  await networkView.render();          // map + filter panel (both sub-tabs)
+  if (S.ntab === "areas") await areasView.render();
+  else $("chart").innerHTML = "";
+}
+
+function teardownNetwork() {
+  if (!document.body.classList.contains("network-mode")) return;
+  document.body.classList.remove("network-mode", "network-areas");
+  networkView.destroy();
 }
 
 function renderSingle() {
@@ -222,6 +269,48 @@ async function loadAggregate(key) {
   render();
 }
 
+// ---------------------------------------------------------------- deep links
+// Shareable hash routes: #single/trajectory, #single/speed, #average/overall,
+// #average/segment, #network/map, #network/areas. Network adds ?metric=<key>.
+// The hash is updated on navigation and applied on load / back-forward.
+
+function currentHash() {
+  let h = `#${S.main}`;
+  const sub = { single: S.tab, average: S.atab, network: S.ntab }[S.main];
+  if (sub) h += `/${sub}`;
+  if (S.main === "network") h += `?metric=${S.network.metric}`;
+  return h;
+}
+
+function syncHash() {
+  if (S._applyingHash) return;
+  const h = currentHash();
+  if (location.hash !== h) history.replaceState(null, "", h);
+}
+
+function applyHash() {
+  const raw = (location.hash || "").replace(/^#/, "");
+  if (!raw) return false;
+  const [path, query] = raw.split("?");
+  const [main, sub] = path.split("/");
+  if (!["single", "average", "network"].includes(main)) return false;
+  S._applyingHash = true;
+  if (main === "single" && ["trajectory", "speed"].includes(sub)) S.tab = sub;
+  if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
+  if (main === "network" && ["map", "areas"].includes(sub)) S.ntab = sub;
+  const metric = new URLSearchParams(query || "").get("metric");
+  if (main === "network" && metric && METRICS[metric]) S.network.metric = metric;
+  // reflect sub-tab button states
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
+  document.querySelectorAll("#atabs button").forEach((b) => b.classList.toggle("active", b.dataset.atab === S.atab));
+  document.querySelectorAll("#ntabs button").forEach((b) => b.classList.toggle("active", b.dataset.ntab === S.ntab));
+  const metricSel = $("nw-metric");
+  if (metricSel && metricSel.options.length) metricSel.value = S.network.metric;
+  setMain(main);
+  S._applyingHash = false;
+  return true;
+}
+
 // Switch main tab: toggle the per-main selector bars, sub-tabs, and controls.
 function setMain(main) {
   S.main = main;
@@ -234,8 +323,18 @@ function setMain(main) {
 }
 
 async function init() {
-  const idx = await fetch("../data/index.json", { cache: "no-store" }).then((r) => r.json());
-  const items = idx.items;
+  // Tolerate a payload set with no single-trip data (e.g. network-only build):
+  // the Network tab must still work.
+  let items = [];
+  try {
+    const idx = await fetch("../data/index.json", { cache: "no-store" }).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    });
+    items = idx.items;
+  } catch (e) {
+    console.warn("no data/index.json — single/average tabs will be empty", e);
+  }
   const trips = items.filter((i) => i.kind === "trip");
   const aggs = items.filter((i) => i.kind === "aggregate");
 
@@ -278,6 +377,22 @@ async function init() {
       b.classList.add("active");
       S.atab = b.dataset.atab; render();
     }));
+  // Network sub-tabs
+  document.querySelectorAll("#ntabs button").forEach((b) =>
+    (b.onclick = () => {
+      document.querySelectorAll("#ntabs button").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      S.ntab = b.dataset.ntab; render();
+    }));
+  // Network metric selector
+  const metricSel = $("nw-metric");
+  for (const [key, m] of Object.entries(METRICS)) {
+    const o = document.createElement("option");
+    o.value = key; o.textContent = m.label;
+    metricSel.appendChild(o);
+  }
+  metricSel.value = S.network.metric;
+  metricSel.onchange = () => { S.network.metric = metricSel.value; syncHash(); networkView.refresh(); };
 
   const bind = (id, key) => { $(id).onchange = (e) => { S.toggles[key] = e.target.checked; render(); }; };
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");
@@ -308,6 +423,11 @@ async function init() {
       else if (k === "s") S.aggState.publish("basemap:changed", { value: "satellite" });
       return;
     }
+    if (S.main === "network" && S.network.map) {
+      if (k === "m") S.network.map.setBasemap("map");
+      else if (k === "s") S.network.map.setBasemap("satellite");
+      return;
+    }
     if (!S.mapState) return;
     if (k === "m") S.mapState.publish("basemap:changed", { value: "map" });
     else if (k === "s") S.mapState.publish("basemap:changed", { value: "satellite" });
@@ -322,7 +442,17 @@ async function init() {
   };
   window.addEventListener("resize", render);
 
-  if (trips.length) { tripSel.value = trips[0].key; await loadTrip(trips[0].key); }
+  window.addEventListener("hashchange", () => { applyHash(); });
+
+  const routed = applyHash();
+  if (routed && S.main === "network") {
+    // network payloads need no trip; still load trips in the background for tab switches
+    if (trips.length) { tripSel.value = trips[0].key; loadTrip(trips[0].key); }
+  } else if (routed && S.main === "average" && aggs.length) {
+    routeSel.value = aggs[0].key; await loadAggregate(aggs[0].key);
+    if (trips.length) { tripSel.value = trips[0].key; loadTrip(trips[0].key); }
+  } else if (trips.length) { tripSel.value = trips[0].key; await loadTrip(trips[0].key); }
+  else { setMain("network"); }  // network-only payload set: land on the map
 }
 
 init().catch((err) => {
