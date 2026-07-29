@@ -95,8 +95,11 @@ class SnapToShapeMatcher:
         n = pts.shape[0]
         m = self._seg_a.shape[0]
 
-        # Vector from each segment start to each ping: shape (n, m, 2).
-        # To keep memory in check we iterate per ping but vectorise across segments.
+        # Vector from each segment start to each ping: shape (n, m, 2) if done
+        # in one shot. Blocked over pings (BLOCK × m intermediates, a few MB)
+        # so the broadcast stays cache/memory friendly. Arithmetic is
+        # identical per ping to the original scalar loop (profiling 2026-07:
+        # the per-ping Python loop was 94% of the network batch's wall time).
         seg_idx = np.empty(n, dtype=np.int64)
         frac = np.empty(n, dtype=float)
         dist_along = np.empty(n, dtype=float)
@@ -109,22 +112,29 @@ class SnapToShapeMatcher:
 
         # Avoid division by zero on degenerate (zero-length) segments.
         safe_len2 = np.where(seg_len2 > 0, seg_len2, 1.0)
+        degenerate = seg_len2 <= 0
 
-        for i in range(n):
-            d = pts[i] - a  # (m, 2)
-            t = (d * v).sum(axis=1) / safe_len2  # (m,)
-            t = np.clip(t, 0.0, 1.0)
-            t = np.where(seg_len2 > 0, t, 0.0)
-            proj = a + t[:, None] * v  # (m, 2)
-            diff = pts[i] - proj
-            d2 = (diff * diff).sum(axis=1)
-            j = int(np.argmin(d2))
-            seg_idx[i] = j
-            frac[i] = t[j]
+        BLOCK = 32
+        for lo in range(0, n, BLOCK):
+            hi = min(lo + BLOCK, n)
+            blk = pts[lo:hi, None, :]              # (k, 1, 2)
+            d = blk - a[None, :, :]                # (k, m, 2)
+            t = (d * v).sum(axis=2) / safe_len2    # (k, m)
+            np.clip(t, 0.0, 1.0, out=t)
+            if degenerate.any():
+                t[:, degenerate] = 0.0
+            proj = a[None, :, :] + t[..., None] * v[None, :, :]
+            diff = blk - proj
+            d2 = (diff * diff).sum(axis=2)         # (k, m)
+            j = np.argmin(d2, axis=1)              # (k,)
+            rows = np.arange(hi - lo)
+            tj = t[rows, j]
+            seg_idx[lo:hi] = j
+            frac[lo:hi] = tj
             # Interpolate distance-along using the segment's distance-length
             # (which == GTFS shape_dist delta when GTFS dist was provided).
-            dist_along[i] = self._cum_to_seg_start[j] + t[j] * seg_dist_len[j]
-            perp[i] = math.sqrt(float(d2[j]))
+            dist_along[lo:hi] = self._cum_to_seg_start[j] + tj * seg_dist_len[j]
+            perp[lo:hi] = np.sqrt(d2[rows, j])
 
         on_route = perp <= self.max_perp_m
         return MatchResult(

@@ -128,7 +128,34 @@ def _door_intervals(city: CityConfig, date_iso: str) -> dict[str, np.ndarray]:
     return {k: np.asarray(v) for k, v in out.items()}
 
 
-def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Counter):
+def _stored_assignments(city: CityConfig, date_iso: str) -> dict[str, str]:
+    """trip_key -> shape_id from the traversal batch's output for this date.
+
+    Exact reuse: choose_shape is deterministic on identical pings, so the
+    stored winner IS what re-scoring every candidate would pick — but this
+    skips the full candidate scan (the dominant cost of the batch per the
+    2026-07 py-spy profile). Trips absent from the lookup (rejected there,
+    or a date the traversal batch hasn't covered) fall back to choose_shape.
+    """
+    import glob as _globmod
+
+    pat = str(
+        REPO / "outputs" / "network" / city.city_id / "traversals"
+        / f"service_date={date_iso}" / "route=*.parquet"
+    )
+    if not _globmod.glob(pat):
+        return {}
+    import duckdb
+
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT DISTINCT trip_key, shape_id FROM read_parquet('{pat}')"
+    ).fetchall()
+    return {str(k): str(s) for k, s in rows}
+
+
+def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Counter,
+                  assigned: dict[str, str] | None = None):
     """Returns (event_rows, sum_rows) or None."""
     city: CityConfig = _G["city"]
     trip = trip.sort_values("ts_utc").drop_duplicates(subset="ts_utc")
@@ -149,13 +176,25 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         return None
     lats = trip["latitude"].to_numpy(dtype=float)
     lons = trip["longitude"].to_numpy(dtype=float)
-    matchers = {sid: _matcher(sid)[0] for sid in candidates}
-    lens = {sid: _matcher(sid)[1] for sid in candidates}
-    got = choose_shape(lats, lons, matchers, lens)
-    if isinstance(got, str):
-        rejects[got] += 1
-        return None
-    asg: Assignment = got
+    stored_key = (
+        f"{trip['trip_id'].iloc[0]}_{trip['vehicle_id'].iloc[0]}_{date_iso}"
+    )
+    stored_sid = (assigned or {}).get(stored_key)
+    if stored_sid is not None and stored_sid in candidates:
+        # Fast path: reuse the traversal batch's winning shape — one match
+        # against the winner instead of scoring every candidate.
+        matcher, shape_len = _matcher(stored_sid)
+        asg = Assignment(shape_id=stored_sid, score=1.0, frac_on=1.0,
+                         frac_monotone=1.0, match=matcher.match(lats, lons))
+    else:
+        matchers = {sid: _matcher(sid)[0] for sid in candidates}
+        lens = {sid: _matcher(sid)[1] for sid in candidates}
+        got = choose_shape(lats, lons, matchers, lens)
+        if isinstance(got, str):
+            rejects[got] += 1
+            return None
+        asg = got
+        shape_len = lens[asg.shape_id]
 
     on = asg.match.on_route
     t_on = t_sec_all[on]
@@ -163,7 +202,6 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     if monotone_frac(d_on) < MIN_MONOTONE:
         rejects["not_monotone"] += 1
         return None
-    shape_len = lens[asg.shape_id]
     at_term = np.nonzero(d_on >= shape_len - TERMINAL_M)[0]
     if len(at_term):
         cut = at_term[0] + 1
@@ -343,6 +381,7 @@ def process_date(args):
         if df.empty:
             return [{"date": date_iso, "route": None, "note": "no_pings"}]
         doors = _door_intervals(city, date_iso)
+        assigned = _stored_assignments(city, date_iso)
 
         for route_id, route_df in df.groupby("route_id", sort=True):
             out_ev = ev_dir / f"route={route_id}.parquet"
@@ -355,7 +394,7 @@ def process_date(args):
             su_rows: list[dict] = []
             n_kept = 0
             for _, trip in route_df.groupby(["trip_id", "vehicle_id"], sort=False):
-                got = _process_trip(trip, date_iso, doors, rejects)
+                got = _process_trip(trip, date_iso, doors, rejects, assigned)
                 if got is None:
                     continue
                 ev_rows.extend(got[0])

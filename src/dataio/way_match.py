@@ -58,8 +58,9 @@ _VALHALLA_FILTERS = (
     "edge.speed",
     "edge.begin_shape_index",
     "edge.end_shape_index",
-    "edge.source_percent_along",
-    "edge.target_percent_along",
+    # NB: edge.source_percent_along / target_percent_along were removed in
+    # Valhalla 3.7 (it logs "Invalid filter attribute" per request) and our
+    # code never read them — distances come from the shape indices above.
     "matched.type",
     "matched.edge_index",
     "matched.point",
