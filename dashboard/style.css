@@ -231,7 +231,7 @@ body.network-areas .nw-panel { left: calc(46% + 10px); }
 
 /* Detail panel */
 .nw-detail {
-  position: absolute; top: 10px; right: 10px; z-index: 5; width: 356px;
+  position: absolute; top: 10px; right: 10px; z-index: 5; width: 380px;
   background: rgba(255,255,255,.97); border: 1px solid #ddd; border-radius: 10px;
   padding: 10px 12px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.14);
 }
@@ -345,3 +345,16 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
   font-size: 10px; padding: 0 6px; color: #345; line-height: 16px;
 }
 .nw-dirbtns button.on { background: #2d4a75; border-color: #2d4a75; color: #fff; font-weight: 600; }
+
+/* delay-location distribution */
+.dist-head { font-weight: 600; margin: 10px 0 2px; }
+.dist-svg { display: block; }
+.dist-tick { font-size: 9px; fill: #666; }
+.dist-legend { display: flex; gap: 12px; font-size: 11px; color: #444; margin-top: 2px; }
+.dist-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 4px; vertical-align: -1px; }
+
+.dist-toggle { display: inline-flex; gap: 2px; margin-left: 8px; vertical-align: 1px; }
+.dist-toggle button { border: 1px solid #ccc; background: #fff; border-radius: 4px;
+  font-size: 10px; padding: 0 7px; cursor: pointer; color: #555; }
+.dist-toggle button.on { background: #2d4a75; border-color: #2d4a75; color: #fff; }

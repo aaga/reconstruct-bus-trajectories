@@ -86,6 +86,21 @@ export class NetworkMap {
       });
 
       this.map.addLayer({
+        id: "seg-hover",
+        type: "line",
+        source: "segs",
+        layout: { "line-cap": "round" },
+        paint: {
+          "line-color": "#000",
+          "line-width": 4,
+          "line-opacity": ["case", ["boolean", ["feature-state", "hov"], false], 0.85, 0],
+          "line-offset": [
+            "interpolate", ["linear"], ["zoom"],
+            10, 0.6, 13, 2.0, 16, 3.5,
+          ],
+        },
+      });
+      this.map.addLayer({
         id: "seg-highlight",
         type: "line",
         source: "segs",
@@ -133,10 +148,22 @@ export class NetworkMap {
       );
       const f = feats[0] || null;
       if (hovered !== (f && f.id)) {
-        hovered = f && f.id;
+        if (hovered != null) {
+          this.map.setFeatureState({ source: "segs", id: hovered }, { hov: false });
+        }
+        hovered = f ? f.id : null;
+        if (hovered != null) {
+          this.map.setFeatureState({ source: "segs", id: hovered }, { hov: true });
+        }
         this.map.getCanvas().style.cursor = f ? "pointer" : "";
       }
       this.onHover?.(f, e.lngLat, e.point);
+    });
+    this.map.on("mouseout", () => {
+      if (hovered != null) {
+        this.map.setFeatureState({ source: "segs", id: hovered }, { hov: false });
+        hovered = null;
+      }
     });
     this.map.on("mouseout", () => this.onHover?.(null));
     this.map.on("contextmenu", (e) => {

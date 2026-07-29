@@ -19,7 +19,7 @@ import { State } from "../state.js";
 import { deriveStat, cleanLabel } from "../network_data.js";
 
 export const METRICS = {
-  overall:          { label: "Overall delay",          kind: "delay", unit: "s" },
+  overall:          { label: "Overall delay (t_obs − t_ff)", kind: "delay", unit: "s" },
   pax:              { label: "Passenger-weighted delay", kind: "delay", unit: "pax·s" },
   nondwell:         { label: "Non-dwell delay",        kind: "delay", unit: "s" },
   dwell:            { label: "Dwell delay",            kind: "delay", unit: "s" },
@@ -121,7 +121,7 @@ export class NetworkView {
       <div class="nw-group"><b>Metric</b>
         <select id="nw-metric">
           <optgroup label="Delays">
-            <option value="overall">Overall delay</option>
+            <option value="overall">Overall delay (t_obs − t_ff)</option>
             <option value="pax">Passenger-weighted delay</option>
             <option value="nondwell">Non-dwell delay</option>
             <option value="dwell">Dwell delay</option>
@@ -604,6 +604,122 @@ export class NetworkView {
     this._svPopup.openAt(lngLat.lat, lngLat.lng, heading, title);
   }
 
+  // ---- delay-location distribution (road strip + stacked bars) -----------
+  // Locations are meters upstream of the DOWNSTREAM signal; the traffic
+  // light sits at the LEFT and the road extends right (travel is right-to-
+  // left, toward the light). Classes: red = non-dwell events, turquoise =
+  // pre-boarding dwell (>10 s before door open), purple = post-boarding
+  // (>10 s after door close). NOTE: uses strict event classification — NOT
+  // the same as the (time-subtraction) map metrics until the event batch
+  // redefines them.
+  async _renderDistribution(host, props) {
+    let d;
+    try {
+      const r = await fetch(`../data/network/dist/${props.sid}.json`);
+      if (!r.ok) throw new Error();
+      d = await r.json();
+    } catch {
+      host.innerHTML = `<div class="nw-note">no delay-event data for this segment yet</div>`;
+      return;
+    }
+    this._distMode ??= "events"; // "events" | "seconds"
+    const KEY = this._distMode === "seconds"
+      ? { nd: "nd_s", pre: "pre_s", post: "post_s" }
+      : { nd: "nd", pre: "pre", post: "post" };
+    const src = { nd: d[KEY.nd] ?? d.nd, pre: d[KEY.pre] ?? d.pre, post: d[KEY.post] ?? d.post };
+    const W = 330, chartH = 90, roadH = 26, axisH = 18, padL = 34, padR = 6;
+    const H = chartH + roadH + axisH + 8;
+    const lenFt = d.len_ft;
+    const nB = d.nd.length;
+    const innerW = W - padL - padR;
+    const xOf = (ft) => padL + (ft / lenFt) * innerW;   // 0 ft (light) at left
+    const bw = Math.max(1, (BUCKET => (BUCKET / lenFt) * innerW)(d.bucket_ft));
+
+    const totals = src.nd.map((v, i) => v + src.pre[i] + src.post[i]);
+    const yMax = Math.max(1, ...totals);
+    const yOf = (n) => chartH - (n / yMax) * (chartH - 6);
+
+    const COLORS = { nd: "#d63a2f", pre: "#1fb8b0", post: "#8a4fc8" };
+    let bars = "";
+    for (let i = 0; i < nB; i++) {
+      let y = chartH;
+      for (const cls of ["nd", "pre", "post"]) {
+        const v = src[cls][i];
+        if (!v) continue;
+        const h = ((v / yMax) * (chartH - 6));
+        y -= h;
+        bars += `<rect x="${xOf(i * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
+                 width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[cls]}"/>`;
+      }
+    }
+
+    // y axis: 0 and max
+    const yTop = this._distMode === "seconds"
+      ? (yMax >= 3600 ? `${(yMax / 3600).toFixed(1)}h` : yMax >= 60 ? `${(yMax / 60).toFixed(0)}m` : `${yMax.toFixed(0)}s`)
+      : String(yMax);
+    const yAxis = `
+      <line x1="${padL - 3}" y1="6" x2="${padL - 3}" y2="${chartH}" stroke="#999"/>
+      <text x="${padL - 6}" y="12" text-anchor="end" class="dist-tick">${yTop}</text>
+      <text x="${padL - 6}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>`;
+
+    // road strip
+    const roadY = chartH + 4;
+    let road = `<rect x="${padL}" y="${roadY}" width="${innerW}" height="${roadH - 8}"
+                 rx="3" fill="#4a4a52"/>
+      <line x1="${padL}" y1="${roadY + (roadH - 8) / 2}" x2="${W - padR}"
+            y2="${roadY + (roadH - 8) / 2}" stroke="#fff" stroke-width="1"
+            stroke-dasharray="6 5" opacity=".7"/>`;
+    // traffic light pictogram at the left edge
+    const ly = roadY + (roadH - 8) / 2;
+    road += `<g transform="translate(${padL - 14}, ${ly - 9})">
+        <rect x="0" y="0" width="8" height="18" rx="2" fill="#222"/>
+        <circle cx="4" cy="4" r="2" fill="#e33"/>
+        <circle cx="4" cy="9" r="2" fill="#fb3"/>
+        <circle cx="4" cy="14" r="2" fill="#3c4"/>
+      </g>`;
+    // stops (blue bars) + crossings (white/purple stripes)
+    for (const st of props.stops_off ?? []) {
+      const x = xOf(st.off_m * 3.28084);
+      road += `<rect x="${(x - 2.5).toFixed(1)}" y="${roadY - 3}" width="5"
+               height="${roadH - 2}" rx="1.5" fill="#2f6fd6">
+               <title>${st.name}</title></rect>`;
+    }
+    for (const c of props.crossings_off ?? []) {
+      const x = xOf(c.off_m * 3.28084);
+      road += `<rect x="${(x - 1.5).toFixed(1)}" y="${roadY}" width="3"
+               height="${roadH - 8}" fill="${c.type === "ped_crossing_signal" ? "#e9d5ff" : "#fff"}"
+               opacity=".9"><title>${c.type.replace(/_/g, " ")}</title></rect>`;
+    }
+
+    // feet scale
+    const step = lenFt > 2000 ? 500 : lenFt > 800 ? 200 : 100;
+    let axis = `<line x1="${padL}" y1="${roadY + roadH - 4}" x2="${W - padR}"
+                y2="${roadY + roadH - 4}" stroke="#999"/>`;
+    for (let ft = 0; ft <= lenFt; ft += step) {
+      const x = xOf(ft);
+      axis += `<line x1="${x}" y1="${roadY + roadH - 4}" x2="${x}" y2="${roadY + roadH}" stroke="#999"/>
+        <text x="${x}" y="${roadY + roadH + 10}" text-anchor="middle" class="dist-tick">${ft}</text>`;
+    }
+
+    host.innerHTML = `
+      <div class="dist-head">Where non-dwell delays happen
+        <span class="dist-toggle">
+          <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
+          <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">delay seconds</button>
+        </span>
+        <span class="nw-note">(${d.n_events} events · ft from the signal ahead · travel →light)</span>
+      </div>
+      <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
+      <div class="dist-legend">
+        <span><i style="background:#d63a2f"></i>non-dwell</span>
+        <span><i style="background:#1fb8b0"></i>pre-boarding dwell</span>
+        <span><i style="background:#8a4fc8"></i>post-boarding dwell</span>
+      </div>`;
+    host.querySelectorAll(".dist-toggle button").forEach((b) => {
+      b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props); };
+    });
+  }
+
   _hover(f, point) {
     if (!this._tooltip) {
       this._tooltip = document.createElement("div");
@@ -672,8 +788,10 @@ export class NetworkView {
             <td>${cell(med, "s")}</td><td>${cell(dw, "s")}</td><td>${cell(nd, "s")}</td><td>${cell(px)}</td></tr>`;
         }).join("")}
       </table>
-      <div class="nw-facts" id="nw-apc"></div>`;
+      <div class="nw-facts" id="nw-apc"></div>
+      <div id="nw-dist"></div>`;
     $("stage").appendChild(el);
+    this._renderDistribution(el.querySelector("#nw-dist"), p);
     const accAll = (await this.data.combine(this.F)).get(sid);
     if (accAll && (accAll.nDoor ?? 0) > 0) {
       const dd = this.data.doorDateCount(this.F) || 1;

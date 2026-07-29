@@ -337,6 +337,8 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
                     ],
                     "rev_sid": seg_index.get(rec["rev_seg_id"]),
                     "n_stops": rec["n_stops"],
+                    "stops_off": rec.get("stops_off", []),
+                    "crossings_off": rec.get("crossings_off", []),
                 },
             }
         )

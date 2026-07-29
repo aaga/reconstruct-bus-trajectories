@@ -569,6 +569,30 @@ def build_registry(city: CityConfig) -> dict:
 
         stop_ids = sorted({sid for i in insts for sid in i["stop_ids"]})
         seg = seg_objs[seg_id]
+
+        # Road-strip annotations (delay-distribution viz): stop and mid-block
+        # crossing positions as meters upstream of the DOWNSTREAM signal, from
+        # the representative instance. Includes demoted mid-block ped signals
+        # (excluded from segmentation but physically present).
+        stops_off = []
+        for st in stops_map.get(rep["shape_id"], []):
+            if rep["x_start_m"] < st["dist_along_m"] <= rep["x_end_m"]:
+                stops_off.append({
+                    "id": st["stop_id"], "name": st["name"],
+                    "off_m": round(rep["x_end_m"] - st["dist_along_m"], 1),
+                })
+        crossings_off = []
+        for cp in intersections[rep["shape_id"]]:
+            if not (rep["x_start_m"] < cp.dist_along_route_m < rep["x_end_m"]):
+                continue
+            if cp.control_type == "ped_crossing_marked" or (
+                cp.control_type == "ped_crossing_signal"
+                and canon.get(cp.intersection_node_id) not in boundary_clusters
+            ):
+                crossings_off.append({
+                    "type": cp.control_type,
+                    "off_m": round(rep["x_end_m"] - cp.dist_along_route_m, 1),
+                })
         up_node = canon[seg.upstream_signal.intersection_node_id]
         down_node = canon[seg.downstream_signal.intersection_node_id]
 
@@ -589,6 +613,8 @@ def build_registry(city: CityConfig) -> dict:
             "stop_ids": stop_ids,
             "n_stops": len(stop_ids),
             "has_near_side": any(i["near_side"] for i in insts),
+            "stops_off": stops_off,
+            "crossings_off": crossings_off,
         }
 
     for seg_id, rec in registry.items():
