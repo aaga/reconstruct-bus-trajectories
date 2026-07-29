@@ -70,6 +70,19 @@ export class NetworkView {
 
   async render() {
     if (!this.data) return;
+    // Restore a deep-linked selected segment (opens its detail panel).
+    if (this.N.pendingSeg != null) {
+      const sid = this.N.pendingSeg;
+      this.N.pendingSeg = null;
+      setTimeout(() => {
+        const f = this.data.segments.features.find((x) => x.properties.sid === sid);
+        if (f) {
+          const mid = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)];
+          this.map?.map.jumpTo({ center: mid, zoom: 14.5 });
+          this._select(sid);
+        }
+      }, 800);
+    }
     // Restore route selection deep-linked in the URL (names -> indices).
     if (this.N.pendingRoutes || this.N.pendingActive) {
       const rids = this.data.meta.dims.route_ids;
@@ -684,18 +697,48 @@ export class NetworkView {
         <circle cx="9.5" cy="22" r="5" fill="#fb3"/>
         <circle cx="9.5" cy="35" r="5" fill="#3c4"/>
       </g>`;
-    // stops (blue bars) + crossings (white/purple stripes)
-    for (const st of props.stops_off ?? []) {
-      const x = xOf(st.off_m * 3.28084);
-      road += `<rect x="${(x - 6).toFixed(1)}" y="${roadY - 6}" width="12"
-               height="${roadBodyH + 12}" rx="4" fill="#2f6fd6">
-               <title>${st.name}</title></rect>`;
+    // minor junctions: square box where the dashed centerline breaks
+    for (const off of props.junctions_off ?? []) {
+      const x = xOf(off * 3.28084);
+      road += `<rect x="${(x - 9).toFixed(1)}" y="${(roadY + roadBodyH / 2 - 9).toFixed(1)}"
+               width="18" height="18" fill="#4a4a52" stroke="#9aa3ad"
+               stroke-width="1.5"/>`;
     }
+    // ped crossings: zebra (white ladder rungs on the asphalt)
     for (const c of props.crossings_off ?? []) {
       const x = xOf(c.off_m * 3.28084);
-      road += `<rect x="${(x - 3.5).toFixed(1)}" y="${roadY}" width="7"
-               height="${roadBodyH}" fill="${c.type === "ped_crossing_signal" ? "#e9d5ff" : "#fff"}"
-               opacity=".9"><title>${c.type.replace(/_/g, " ")}</title></rect>`;
+      const bandW = 18;
+      road += `<g data-tip="${c.type.replace(/_/g, " ")}">`;
+      const nRungs = 5;
+      for (let r = 0; r < nRungs; r++) {
+        const ry = roadY + 3 + (r * (roadBodyH - 6)) / nRungs;
+        road += `<rect x="${(x - bandW / 2).toFixed(1)}" y="${ry.toFixed(1)}"
+                 width="${bandW}" height="${((roadBodyH - 6) / nRungs) * 0.55}"
+                 fill="#fff" opacity=".95"/>`;
+      }
+      if (c.type === "ped_crossing_signal") {
+        road += `<circle cx="${x}" cy="${roadY - 8}" r="4" fill="#e9a13a"/>`;
+      }
+      road += `</g>`;
+    }
+    // stop-sign intersections: red octagon above the road
+    for (const off of props.stop_signs_off ?? []) {
+      const x = xOf(off * 3.28084);
+      const r = 8, oy = roadY - 11;
+      const oct = Array.from({length: 8}, (_, i) => {
+        const a = (Math.PI / 8) + (i * Math.PI) / 4;
+        return `${(x + r * Math.cos(a)).toFixed(1)},${(oy + r * Math.sin(a)).toFixed(1)}`;
+      }).join(" ");
+      road += `<g data-tip="stop sign"><polygon points="${oct}" fill="#c22"
+               stroke="#fff" stroke-width="1.5"/>
+               <text x="${x}" y="${oy + 2.5}" text-anchor="middle"
+                 style="font-size:6px;fill:#fff;font-weight:700">STOP</text></g>`;
+    }
+    // stops (blue bars) — instant name tooltip via data-tip
+    for (const st of props.stops_off ?? []) {
+      const x = xOf(st.off_m * 3.28084);
+      road += `<rect data-tip="${st.name}" x="${(x - 6).toFixed(1)}" y="${roadY - 6}"
+               width="12" height="${roadBodyH + 12}" rx="4" fill="#2f6fd6"/>`;
     }
 
     // feet scale
@@ -725,6 +768,23 @@ export class NetworkView {
       </div>`;
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
       b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props); };
+    });
+    // Instant tooltips (native <title> has a hover delay).
+    const tipEl = document.createElement("div");
+    tipEl.className = "nw-tooltip hidden";
+    document.body.appendChild(tipEl);
+    host._tipEl?.remove();
+    host._tipEl = tipEl;
+    host.querySelectorAll("[data-tip]").forEach((n) => {
+      n.addEventListener("mouseenter", (e) => {
+        tipEl.textContent = n.dataset.tip;
+        tipEl.classList.remove("hidden");
+      });
+      n.addEventListener("mousemove", (e) => {
+        tipEl.style.left = `${e.clientX + 12}px`;
+        tipEl.style.top = `${e.clientY + 12}px`;
+      });
+      n.addEventListener("mouseleave", () => tipEl.classList.add("hidden"));
     });
   }
 
@@ -756,6 +816,7 @@ export class NetworkView {
   async _select(sid) {
     document.querySelector(".nw-detail")?.remove();
     this.S.network.selected = sid;
+    this.N.syncHash?.();
     if (sid == null) return;
     const f = this.data.segments.features.find((x) => x.properties.sid === sid);
     if (!f) return;
@@ -807,7 +868,12 @@ export class NetworkView {
         `≈${(accAll.sumOns / dd).toFixed(0)} ons · ${(accAll.sumOffs / dd).toFixed(0)} offs per day here ` +
         `(door data on ${accAll.nDoor} of ${accAll.n} traversals)`;
     }
-    el.querySelector(".nw-close").onclick = () => { el.remove(); this.map.highlight([]); };
+    el.querySelector(".nw-close").onclick = () => {
+      el.remove();
+      this.map.highlight([]);
+      this.S.network.selected = null;
+      this.N.syncHash?.();
+    };
     el.querySelector("#nw-rev")?.addEventListener("click", (e) => {
       e.preventDefault();
       this._select(p.rev_sid);

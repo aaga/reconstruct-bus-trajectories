@@ -309,6 +309,7 @@ function currentHash() {
     }
     if (F.direction) q.set("dir", F.direction);
     if (N.minN !== 10) q.set("minn", N.minN);
+    if (N.selected != null) q.set("seg", N.selected);
     h += `?${q.toString()}`;
   }
   return h;
@@ -360,6 +361,7 @@ function applyHash() {
     if (params.has("active")) N.pendingActive = params.get("active");
     if (params.has("dir")) F.direction = params.get("dir");
     if (params.has("minn")) N.minN = Math.max(1, Number(params.get("minn")) || 10);
+    if (params.has("seg")) N.pendingSeg = Number(params.get("seg"));
   }
   // reflect sub-tab button states
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
