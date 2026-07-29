@@ -88,6 +88,7 @@ EVENTS_SCHEMA = pa.schema(
         ("off_down_m", pa.float32()),  # midpoint, meters upstream of downstream signal
         ("dur_s", pa.float32()),
         ("hour_local", pa.uint8()),
+        ("is_last", pa.bool_()),  # queue marker: traversal's last piece in seg
     ]
 )
 
@@ -200,6 +201,12 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
 
     vehicle = str(trip["vehicle_id"].iloc[0])
     door = doors.get(vehicle)
+    if door is None or len(door) == 0:
+        # 2026-07-29 decision: vehicle-days without a bus-state extract are
+        # DROPPED — without door intervals every stop dwell would be
+        # misclassified as non-dwell (red-at-stops artifact).
+        rejects["no_door_data"] += 1
+        return None
     trip_key = f"{trip['trip_id'].iloc[0]}_{vehicle}_{date_iso}"
     tz = city.tz
 
@@ -231,6 +238,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 "trip_key": trip_key, "cls": cls,
                 "off_down_m": float(off), "dur_s": float(tb - ta),
                 "hour_local": int(hour),
+                "is_last": False, "_t_end": tb,  # stripped before write
             }
         )
 
@@ -294,6 +302,19 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             seg_id, _ = seg_of(x_at((lo + hi) / 2 - t0_epoch))
             if seg_id:
                 dwell_by_seg[seg_id] += hi - lo
+
+    # Queue markers: per segment, the LAST non-boarding piece before the bus
+    # exited (by piece end time). Many sit at the light; a bus released from
+    # a queue that clears the rest of the segment leaves its marker upstream.
+    last_by_seg: dict[str, dict] = {}
+    for row in event_rows:
+        cur = last_by_seg.get(row["seg_id"])
+        if cur is None or row["_t_end"] > cur["_t_end"]:
+            last_by_seg[row["seg_id"]] = row
+    for row in last_by_seg.values():
+        row["is_last"] = True
+    for row in event_rows:
+        row.pop("_t_end", None)
 
     sum_rows = [
         {

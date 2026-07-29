@@ -607,10 +607,24 @@ def find_intersections_for_shape(
 
     # ── Emit: controlled intersection vertices + every ped crossing.
     out: list[ControlPoint] = []
+    _REAL_ROAD_TYPES = frozenset((
+        "motorway", "trunk", "primary", "secondary", "tertiary",
+        "unclassified", "residential", "motorway_link", "trunk_link",
+        "primary_link", "secondary_link", "tertiary_link", "busway",
+    ))
     for v in intersection_vertices:
         if v["control_type"] is None:
             # Uncontrolled street-street vertex: emit as its own type (used
-            # for anchoring AND the dashboard's junction markers).
+            # for anchoring AND the dashboard's junction markers) — but only
+            # when a REAL road crosses. highway=service crossings (parking
+            # aisles, driveways, pull-outs) are not street intersections.
+            crosses_road = any(
+                ((ways_by_id.get(w) or {}).get("tags") or {})
+                .get("highway", "").lower() in _REAL_ROAD_TYPES
+                for w in v.get("cross_way_ids", ())
+            )
+            if not crosses_road:
+                continue
             v = dict(v, control_type="uncontrolled_junction")
         out.append(ControlPoint(
             intersection_node_id=v["node_id"],

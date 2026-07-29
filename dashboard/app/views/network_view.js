@@ -635,11 +635,14 @@ export class NetworkView {
       host.innerHTML = `<div class="nw-note">no delay-event data for this segment yet</div>`;
       return;
     }
-    this._distMode ??= "events"; // "events" | "seconds"
+    this._distMode ??= "events"; // "events" | "seconds" | "queue"
     const secondsMode = this._distMode === "seconds";
+    const queueMode = this._distMode === "queue";
     const KEY = secondsMode
       ? { nd: "nd_s", pre: "pre_s", post: "post_s" }
-      : { nd: "nd", pre: "pre", post: "post" };
+      : queueMode
+        ? { nd: "nd_q", pre: "pre_q", post: "post_q" }
+        : { nd: "nd", pre: "pre", post: "post" };
     // Seconds mode: divide by the segment's traversal count so the y-axis
     // reads as AVERAGE delay seconds per trip (dumb rescale, per user).
     const denom = secondsMode ? Math.max(1, d.n_trips ?? 1) : 1;
@@ -698,29 +701,41 @@ export class NetworkView {
         <circle cx="9.5" cy="35" r="5" fill="#3c4"/>
       </g>`;
     // minor junctions: square box where the dashed centerline breaks
-    for (const off of props.junctions_off ?? []) {
-      const x = xOf(off * 3.28084);
-      road += `<rect x="${(x - 13.5).toFixed(1)}" y="${(roadY + roadBodyH / 2 - 13.5).toFixed(1)}"
-               width="27" height="27" fill="#4a4a52" stroke="#9aa3ad"
-               stroke-width="1.5"/>`;
+    const ownStreet = (props.name ?? "").replace(/^(North|South|East|West) /, "");
+    const stopSignOffs = props.stop_signs_off ?? [];
+    const junctionBox = (x, tip) =>
+      `<rect data-tip="${tip}" x="${(x - 13.5).toFixed(1)}"
+        y="${(roadY + roadBodyH / 2 - 13.5).toFixed(1)}"
+        width="27" height="27" fill="#4a4a52" stroke="#9aa3ad"
+        stroke-width="1.5"/>`;
+    for (const j of props.junctions_off ?? []) {
+      const off = typeof j === "number" ? j : j.off_m;
+      // a stop-sign intersection draws its own box (octagon inside)
+      if (stopSignOffs.some((so) => Math.abs(so - off) <= 20)) continue;
+      const cross = typeof j === "number" ? null : j.cross;
+      const tip = cross
+        ? `${ownStreet} & ${cross.replace(/^(North|South|East|West) /, "")}`
+        : `${ownStreet} — cross street`;
+      road += junctionBox(xOf(off * 3.28084), tip);
     }
-    // stop-sign intersections: red octagon above the road
-    for (const off of props.stop_signs_off ?? []) {
+    // stop-sign intersections: junction box with the octagon inside
+    for (const off of stopSignOffs) {
       const x = xOf(off * 3.28084);
-      const r = 8, oy = roadY - 11;
+      road += junctionBox(x, "stop-sign intersection");
+      const r = 9, oy = roadY + roadBodyH / 2;
       const oct = Array.from({length: 8}, (_, i) => {
         const a = (Math.PI / 8) + (i * Math.PI) / 4;
         return `${(x + r * Math.cos(a)).toFixed(1)},${(oy + r * Math.sin(a)).toFixed(1)}`;
       }).join(" ");
-      road += `<g data-tip="stop sign"><polygon points="${oct}" fill="#c22"
+      road += `<g data-tip="stop-sign intersection"><polygon points="${oct}" fill="#c22"
                stroke="#fff" stroke-width="1.5"/>
                <text x="${x}" y="${oy + 2.5}" text-anchor="middle"
-                 style="font-size:6px;fill:#fff;font-weight:700">STOP</text></g>`;
+                 style="font-size:6.5px;fill:#fff;font-weight:700">STOP</text></g>`;
     }
     // stops (blue bars) — instant name tooltip via data-tip
     for (const st of props.stops_off ?? []) {
       const x = xOf(st.off_m * 3.28084);
-      road += `<rect data-tip="${st.name}" x="${(x - 6).toFixed(1)}" y="${roadY - 6}"
+      road += `<rect data-tip="${st.name} bus stop" x="${(x - 6).toFixed(1)}" y="${roadY - 6}"
                width="12" height="${roadBodyH + 12}" rx="4" fill="#2f6fd6"/>`;
     }
 
@@ -740,6 +755,7 @@ export class NetworkView {
         <span class="dist-toggle">
           <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
           <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
+          ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">queue markers</button>` : ""}
         </span>
         <span class="nw-note">(${d.n_events} events · ${d.n_trips ?? "?"} trips)</span>
       </div>

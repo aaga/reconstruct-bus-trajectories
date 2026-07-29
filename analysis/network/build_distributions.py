@@ -53,25 +53,34 @@ def build(city_id: str) -> None:
 
     con = duckdb.connect()
     glob = str(base / "events" / "service_date=*" / "route=*.parquet")
+    have_is_last = "is_last" in [
+        c[0] for c in con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{glob}') LIMIT 1").fetchall()
+    ]
+    last_expr = ("count(*) FILTER (WHERE is_last)" if have_is_last else "0")
     rows = con.execute(
         f"""
         SELECT seg_id, cls,
                floor(off_down_m * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
                count(*) AS n,
-               sum(dur_s) AS secs
+               sum(dur_s) AS secs,
+               {last_expr} AS n_last
         FROM read_parquet('{glob}')
         GROUP BY 1, 2, 3
         """
     ).fetchall()
 
     per_seg: dict[str, dict] = {}
-    for seg_id, cls, bucket, n, secs in rows:
+    for seg_id, cls, bucket, n, secs, n_last in rows:
         d = per_seg.setdefault(
             seg_id,
-            {"nd": {}, "pre": {}, "post": {}, "nd_s": {}, "pre_s": {}, "post_s": {}},
+            {"nd": {}, "pre": {}, "post": {}, "nd_s": {}, "pre_s": {}, "post_s": {},
+             "nd_q": {}, "pre_q": {}, "post_q": {}},
         )
         d[cls][int(bucket)] = int(n)
         d[cls + "_s"][int(bucket)] = round(float(secs), 1)
+        if n_last:
+            d[cls + "_q"][int(bucket)] = int(n_last)
 
     n_files = 0
     n_events_total = 0
@@ -102,7 +111,8 @@ def build(city_id: str) -> None:
             "n_dates": dates[0],
         }
         total = 0
-        for cls in ("nd", "pre", "post", "nd_s", "pre_s", "post_s"):
+        for cls in ("nd", "pre", "post", "nd_s", "pre_s", "post_s",
+                    "nd_q", "pre_q", "post_q"):
             arr = [0] * n_buckets
             for b, n in classes[cls].items():
                 if 0 <= b < n_buckets:

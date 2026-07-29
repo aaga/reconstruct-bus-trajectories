@@ -612,8 +612,11 @@ def build_registry(city: CityConfig) -> dict:
         if junction_cps:
             for cp in junction_cps:
                 off = round(rep["x_end_m"] - cp.dist_along_route_m, 1)
-                if all(abs(off - j) > 15 for j in junctions_off):
-                    junctions_off.append(off)
+                if all(abs(off - j["off_m"]) > 15 for j in junctions_off):
+                    junctions_off.append({
+                        "off_m": off,
+                        "cross": cp.cross_street_names[0] if cp.cross_street_names else None,
+                    })
         else:
             ped_offs = [c["off_m"] for c in crossings_off]
             for w in way_cache.get(rep["shape_id"], []):
@@ -622,9 +625,9 @@ def build_registry(city: CityConfig) -> dict:
                     off = round(rep["x_end_m"] - x, 1)
                     if any(abs(off - pc) <= 20 for pc in ped_offs):
                         continue  # split caused by a crossing, not a street
-                    if all(abs(off - j) > 15 for j in junctions_off):
-                        junctions_off.append(off)
-        junctions_off.sort()
+                    if all(abs(off - j["off_m"]) > 15 for j in junctions_off):
+                        junctions_off.append({"off_m": off, "cross": None})
+        junctions_off.sort(key=lambda j: j["off_m"])
         up_node = canon[seg.upstream_signal.intersection_node_id]
         down_node = canon[seg.downstream_signal.intersection_node_id]
 
