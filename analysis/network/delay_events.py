@@ -182,10 +182,12 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     stored_sid = (assigned or {}).get(stored_key)
     if stored_sid is not None and stored_sid in candidates:
         # Fast path: reuse the traversal batch's winning shape — one match
-        # against the winner instead of scoring every candidate.
+        # against the winner instead of scoring every candidate. Only
+        # on-route rows are consumed downstream, so skip exact far values.
         matcher, shape_len = _matcher(stored_sid)
         asg = Assignment(shape_id=stored_sid, score=1.0, frac_on=1.0,
-                         frac_monotone=1.0, match=matcher.match(lats, lons))
+                         frac_monotone=1.0,
+                         match=matcher.match(lats, lons, exact_far=False))
     else:
         matchers = {sid: _matcher(sid)[0] for sid in candidates}
         lens = {sid: _matcher(sid)[1] for sid in candidates}
