@@ -304,7 +304,8 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
   gap: 4px; justify-self: start; }
 .nw-radios label input { margin: 0; }
 .nw-radios label:nth-child(5) { grid-column: span 2; }
-.nw-toggle { display: block; margin-top: 5px; }
+.nw-toggle { display: flex; gap: 5px; align-items: flex-start; margin-top: 5px; }
+.nw-toggle input { flex: 0 0 auto; margin: 2px 0 0; }
 .nw-quick { display: inline-flex; gap: 4px; margin-bottom: 4px; }
 .nw-quick button, .nw-smallbtn {
   border: 1px solid #ccc; background: #fff; border-radius: 5px; cursor: pointer;

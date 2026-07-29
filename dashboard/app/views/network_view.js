@@ -29,7 +29,7 @@ export const METRICS = {
 };
 
 export const STATS = {
-  mean: "mean", median: "median", std: "std dev", p95: "p95", buffer: "Buffer (p95−mean)",
+  mean: "mean", median: "median", std: "std dev", p95: "p95", buffer: "buffer (p95−mean)",
 };
 
 const PERIOD_LABELS = {
