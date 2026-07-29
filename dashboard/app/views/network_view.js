@@ -625,7 +625,7 @@ export class NetworkView {
   // (>10 s after door close). NOTE: uses strict event classification — NOT
   // the same as the (time-subtraction) map metrics until the event batch
   // redefines them.
-  async _renderDistribution(host, props) {
+  async _renderDistribution(host, props, coords) {
     let d;
     try {
       const r = await fetch(`../data/network/dist/${props.sid}.json`);
@@ -700,26 +700,9 @@ export class NetworkView {
     // minor junctions: square box where the dashed centerline breaks
     for (const off of props.junctions_off ?? []) {
       const x = xOf(off * 3.28084);
-      road += `<rect x="${(x - 9).toFixed(1)}" y="${(roadY + roadBodyH / 2 - 9).toFixed(1)}"
-               width="18" height="18" fill="#4a4a52" stroke="#9aa3ad"
+      road += `<rect x="${(x - 13.5).toFixed(1)}" y="${(roadY + roadBodyH / 2 - 13.5).toFixed(1)}"
+               width="27" height="27" fill="#4a4a52" stroke="#9aa3ad"
                stroke-width="1.5"/>`;
-    }
-    // ped crossings: zebra (white ladder rungs on the asphalt)
-    for (const c of props.crossings_off ?? []) {
-      const x = xOf(c.off_m * 3.28084);
-      const bandW = 18;
-      road += `<g data-tip="${c.type.replace(/_/g, " ")}">`;
-      const nRungs = 5;
-      for (let r = 0; r < nRungs; r++) {
-        const ry = roadY + 3 + (r * (roadBodyH - 6)) / nRungs;
-        road += `<rect x="${(x - bandW / 2).toFixed(1)}" y="${ry.toFixed(1)}"
-                 width="${bandW}" height="${((roadBodyH - 6) / nRungs) * 0.55}"
-                 fill="#fff" opacity=".95"/>`;
-      }
-      if (c.type === "ped_crossing_signal") {
-        road += `<circle cx="${x}" cy="${roadY - 8}" r="4" fill="#e9a13a"/>`;
-      }
-      road += `</g>`;
     }
     // stop-sign intersections: red octagon above the road
     for (const off of props.stop_signs_off ?? []) {
@@ -767,7 +750,44 @@ export class NetworkView {
         <span><i style="background:#8a4fc8"></i>post-boarding dwell</span>
       </div>`;
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
-      b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props); };
+      b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props, coords); };
+    });
+    // Right-click anywhere on the strip -> Street View at that spot along
+    // the segment, camera facing the traffic light (travel direction).
+    const svg = host.querySelector(".dist-svg");
+    svg.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const ft = ((px - padL) / innerW) * lenFt;
+      if (ft < 0 || ft > lenFt || !coords || coords.length < 2) return;
+      const offM = ft / 3.28084;                 // upstream of the light
+      const fromStartM = Math.max(0, props.len_m - offM);
+      // walk the geometry (travel-oriented) to that arc length
+      const mlat = Math.cos((coords[0][1] * Math.PI) / 180);
+      const segLen = (a, b) =>
+        Math.hypot((b[0] - a[0]) * 111320 * mlat, (b[1] - a[1]) * 111320);
+      let geomLen = 0;
+      for (let i = 0; i < coords.length - 1; i++) geomLen += segLen(coords[i], coords[i + 1]);
+      let target = (fromStartM / props.len_m) * geomLen;
+      let lat = coords[0][1], lon = coords[0][0], heading = 0;
+      for (let i = 0; i < coords.length - 1; i++) {
+        const L = segLen(coords[i], coords[i + 1]);
+        if (target <= L || i === coords.length - 2) {
+          const t = L > 0 ? Math.min(1, target / L) : 0;
+          lon = coords[i][0] + t * (coords[i + 1][0] - coords[i][0]);
+          lat = coords[i][1] + t * (coords[i + 1][1] - coords[i][1]);
+          heading = (Math.atan2(
+            (coords[i + 1][0] - coords[i][0]) * mlat,
+            coords[i + 1][1] - coords[i][1]) * 180) / Math.PI;
+          heading = (heading + 360) % 360;   // travel direction = toward the light
+          break;
+        }
+        target -= L;
+      }
+      this._svPopup ??= new StreetViewPopup({ shape: null }, new State());
+      this._svPopup.openAt(lat, lon, heading,
+        `${Math.round(ft)} ft from signal · ${cleanLabel(props.label)}`);
     });
     // Instant tooltips (native <title> has a hover delay).
     const tipEl = document.createElement("div");
@@ -860,7 +880,7 @@ export class NetworkView {
       <div class="nw-facts" id="nw-apc"></div>
       <div id="nw-dist"></div>`;
     $("stage").appendChild(el);
-    this._renderDistribution(el.querySelector("#nw-dist"), p);
+    this._renderDistribution(el.querySelector("#nw-dist"), p, f.geometry.coordinates);
     const accAll = (await this.data.combine(this.F)).get(sid);
     if (accAll && (accAll.nDoor ?? 0) > 0) {
       const dd = this.data.doorDateCount(this.F) || 1;
