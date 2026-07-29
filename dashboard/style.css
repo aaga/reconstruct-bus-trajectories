@@ -294,3 +294,28 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
 .kbadge-corridor { background: #8a5fc0; }
 .kbadge-route { background: #3d9e57; }
 .nw-empty { padding: 24px; color: #666; font-size: 13px; }
+
+/* metric/stat controls in the panel */
+.nw-radios { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px 6px; margin-top: 5px; }
+.nw-radios label { white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; overflow: hidden; }
+.nw-radios label:nth-child(5) { grid-column: span 2; }
+.nw-toggle { display: block; margin-top: 5px; }
+.nw-quick { display: inline-flex; gap: 4px; margin-bottom: 4px; }
+.nw-quick button, .nw-smallbtn {
+  border: 1px solid #ccc; background: #fff; border-radius: 5px; cursor: pointer;
+  padding: 1px 8px; font-size: 11px;
+}
+.nw-quick button:hover, .nw-smallbtn:hover { background: #f0f4fa; }
+.nw-quick button:disabled { opacity: .45; cursor: default; }
+/* routes checkbox list */
+.nw-routelist {
+  border: 1px solid #ccc; border-radius: 5px; background: #fff;
+  max-height: 132px; overflow-y: auto;
+}
+.nw-routerow {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 2px 8px; cursor: pointer; border-bottom: 1px solid #f2f2f2;
+}
+.nw-routerow:hover { background: #f2f7ff; }
+.nw-routerow.active { background: #e3eefe; font-weight: 600; }
+.nw-routerow input { cursor: pointer; }

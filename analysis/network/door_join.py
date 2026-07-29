@@ -128,19 +128,35 @@ def build_sidecar(city: CityConfig, force: bool = False) -> None:
                 FROM read_parquet('{trav_glob}')
                 WHERE service_date = DATE '{d}'
                   AND vehicle_id IN (SELECT bus_id FROM covered)
+              ),
+              agg AS (
+                SELECT
+                  tr.trip_key, tr.seg_id, tr.shape_id,
+                  any_value(tr.vehicle_id) AS vehicle_id,
+                  any_value(tr.t_enter_utc) AS t_enter_utc,
+                  count(ev.bus_id)::SMALLINT AS door_n,
+                  coalesce(sum(ev.dwell_s), 0)::FLOAT AS dwell_s,
+                  coalesce(sum(ev.ons), 0)::SMALLINT AS ons,
+                  coalesce(sum(ev.offs), 0)::SMALLINT AS offs,
+                  coalesce(sum(ev.passenger_load), 0)::INT AS load_sum
+                FROM tr
+                LEFT JOIN ev
+                  ON ev.bus_id = tr.vehicle_id
+                 AND ev.t_utc BETWEEN tr.t_enter_utc AND tr.t_exit_utc
+                GROUP BY 1, 2, 3
               )
+              -- load_in: the load the bus CARRIES INTO the segment = the
+              -- passenger_load reported when leaving the most recent stop at
+              -- or before segment entry (valid until the next stop starts;
+              -- non-dwell delays occur between stops, per user definition).
               SELECT
-                tr.trip_key, tr.seg_id, tr.shape_id,
-                count(ev.bus_id)::SMALLINT AS door_n,
-                coalesce(sum(ev.dwell_s), 0)::FLOAT AS dwell_s,
-                coalesce(sum(ev.ons), 0)::SMALLINT AS ons,
-                coalesce(sum(ev.offs), 0)::SMALLINT AS offs,
-                coalesce(sum(ev.passenger_load), 0)::INT AS load_sum
-              FROM tr
-              LEFT JOIN ev
-                ON ev.bus_id = tr.vehicle_id
-               AND ev.t_utc BETWEEN tr.t_enter_utc AND tr.t_exit_utc
-              GROUP BY 1, 2, 3
+                agg.trip_key, agg.seg_id, agg.shape_id,
+                agg.door_n, agg.dwell_s, agg.ons, agg.offs, agg.load_sum,
+                coalesce(ev2.passenger_load, 0)::SMALLINT AS load_in
+              FROM agg
+              ASOF LEFT JOIN ev ev2
+                ON ev2.bus_id = agg.vehicle_id
+               AND ev2.t_utc <= agg.t_enter_utc
             ) TO '{tmp}' (FORMAT PARQUET, COMPRESSION ZSTD)
             """
         )

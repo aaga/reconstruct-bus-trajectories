@@ -49,8 +49,12 @@ const S = {
     map: null,                  // NetworkMap (owned by NetworkView)
     filters: { routes: [], direction: null,
                periods: ["am_peak", "pm_peak"], daytype: "weekday", dow: null,
-               pick: null, season: null, weather: null },
-    metric: "mean_delay",
+               pick: null, weather: null },
+    metric: "overall",          // METRICS key (family or rate/static metric)
+    stat: "mean",               // mean|median|std|p95|buffer (delay families)
+    compare: null,              // null | "peak" | "selection"
+    checkedRoutes: [],          // sticky route checkboxes
+    activeRoute: null,          // transient highlighted route row
     minN: 10,
     selected: null,
   },
@@ -166,8 +170,9 @@ function render() {
 async function renderNetwork() {
   teardownMap();
   teardownAggViews();
+  $("trip-meta").textContent = ""; // trip info is irrelevant on this tab
   document.body.classList.add("show-map", "network-mode");
-  document.body.classList.toggle("network-areas", S.ntab === "areas");
+  document.body.classList.remove("network-areas"); // areas sub-tab hidden
   if (!S.network.data) {
     try {
       // Cache the init promise: startup can trigger two renders (hash apply +
@@ -180,9 +185,8 @@ async function renderNetwork() {
       return;
     }
   }
-  await networkView.render();          // map + filter panel (both sub-tabs)
-  if (S.ntab === "areas") await areasView.render();
-  else $("chart").innerHTML = "";
+  await networkView.render();
+  $("chart").innerHTML = "";
 }
 
 function teardownNetwork() {
@@ -281,7 +285,7 @@ function currentHash() {
   let h = `#${S.main}`;
   const sub = { single: S.tab, average: S.atab, network: S.ntab }[S.main];
   if (sub) h += `/${sub}`;
-  if (S.main === "network") h += `?metric=${S.network.metric}`;
+  if (S.main === "network") h += `?metric=${S.network.metric}&stat=${S.network.stat}`;
   return h;
 }
 
@@ -300,9 +304,14 @@ function applyHash() {
   S._applyingHash = true;
   if (main === "single" && ["trajectory", "speed"].includes(sub)) S.tab = sub;
   if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
-  if (main === "network" && ["map", "areas"].includes(sub)) S.ntab = sub;
-  const metric = new URLSearchParams(query || "").get("metric");
+  if (main === "network") S.ntab = "map"; // areas sub-tab hidden (2026-07)
+  const params = new URLSearchParams(query || "");
+  const metric = params.get("metric");
   if (main === "network" && metric && METRICS[metric]) S.network.metric = metric;
+  const stat = params.get("stat");
+  if (main === "network" && ["mean","median","std","p95","buffer"].includes(stat ?? "")) {
+    S.network.stat = stat;
+  }
   // reflect sub-tab button states
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
   document.querySelectorAll("#atabs button").forEach((b) => b.classList.toggle("active", b.dataset.atab === S.atab));
@@ -387,15 +396,6 @@ async function init() {
       b.classList.add("active");
       S.ntab = b.dataset.ntab; render();
     }));
-  // Network metric selector
-  const metricSel = $("nw-metric");
-  for (const [key, m] of Object.entries(METRICS)) {
-    const o = document.createElement("option");
-    o.value = key; o.textContent = m.label;
-    metricSel.appendChild(o);
-  }
-  metricSel.value = S.network.metric;
-  metricSel.onchange = () => { S.network.metric = metricSel.value; syncHash(); networkView.refresh(); };
 
   const bind = (id, key) => { $(id).onchange = (e) => { S.toggles[key] = e.target.checked; render(); }; };
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");
