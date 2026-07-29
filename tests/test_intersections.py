@@ -145,7 +145,8 @@ def test_stop_sign_on_cross_street_only_skipped():
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
     # The intersection node 6 has no traffic_signals tag and no stop on the
     # bus's way → uncontrolled → no event.
-    assert cps == []
+    controlled = [c for c in cps if c.control_type != "uncontrolled_junction"]
+    assert controlled == []
 
 
 def test_direction_mismatch_skipped():
@@ -167,7 +168,8 @@ def test_direction_mismatch_skipped():
     cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
                          direction="forward", name="Bus", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
-    assert cps == []
+    controlled = [c for c in cps if c.control_type != "uncontrolled_junction"]
+    assert controlled == []
 
 
 def test_dedupe_by_intersection_node():
@@ -222,7 +224,8 @@ def test_off_route_node_skipped():
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
     # The off-route signal node isn't on the bus's polyline (perp > 30m), and
     # no other intersection exists here, so no ControlPoints.
-    assert cps == []
+    controlled = [c for c in cps if c.control_type != "uncontrolled_junction"]
+    assert controlled == []
 
 
 # ---------- direction-applies edge cases ----------------------------------
@@ -330,7 +333,8 @@ def test_give_way_filtered_by_default():
                          direction="forward", name="Bus", road_class="primary")]
     # Default keep_types excludes give_way.
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
-    assert cps == []
+    controlled = [c for c in cps if c.control_type != "uncontrolled_junction"]
+    assert controlled == []
     # But include give_way explicitly → kept.
     cps2 = find_intersections_for_shape(cache, poly, dist, _osm(elements),
                                           keep_types=("traffic_signals", "stop", "give_way"))
@@ -409,7 +413,8 @@ def test_ped_crossing_unmarked_skipped():
         crossing_tags={"highway": "crossing", "crossing": "unmarked"},
     )
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
-    assert cps == []
+    controlled = [c for c in cps if c.control_type != "uncontrolled_junction"]
+    assert controlled == []
 
 
 def test_ped_crossing_near_signal_anchored_not_dropped():
@@ -537,7 +542,8 @@ def test_ped_crossing_at_uncontrolled_intersection_anchors():
                          direction="forward", name="Clark", road_class="primary")]
     cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
     # No signal/stop emitted; just the two crossings.
-    assert all(c.control_type == "ped_crossing_marked" for c in cps)
+    controlled = [c for c in cps if c.control_type != "uncontrolled_junction"]
+    assert all(c.control_type == "ped_crossing_marked" for c in controlled)
     assert len(cps) == 2
     # Both anchor to the same uncontrolled intersection vertex (node 50).
     assert {c.anchor_intersection_node_id for c in cps} == {50}

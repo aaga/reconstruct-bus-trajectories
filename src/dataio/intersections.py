@@ -79,6 +79,10 @@ DEFAULT_KEEP_TYPES: tuple[str, ...] = (
     "stop",
     "ped_crossing_signal",
     "ped_crossing_marked",
+    # Street-street vertices with no control (2026-07: kept for the network
+    # dashboard's road-strip junction markers; never a segment boundary and
+    # excluded from Segment.crossings).
+    "uncontrolled_junction",
 )
 
 # Pedestrian crossings within this along-route distance of an intersection
@@ -605,7 +609,9 @@ def find_intersections_for_shape(
     out: list[ControlPoint] = []
     for v in intersection_vertices:
         if v["control_type"] is None:
-            continue  # uncontrolled vertex — used for anchoring only
+            # Uncontrolled street-street vertex: emit as its own type (used
+            # for anchoring AND the dashboard's junction markers).
+            v = dict(v, control_type="uncontrolled_junction")
         out.append(ControlPoint(
             intersection_node_id=v["node_id"],
             lat=v["lat"],

@@ -597,17 +597,33 @@ def build_registry(city: CityConfig) -> dict:
             elif cp.control_type == "stop":
                 stop_signs_off.append(round(rep["x_end_m"] - cp.dist_along_route_m, 1))
 
-        # Minor cross-street junctions (viz: dashed centerline breaks): OSM
-        # ways split at junctions, so way-span boundaries inside the segment
-        # approximate intersection positions. Deduped at 15 m; includes the
-        # occasional non-junction way split — cosmetic only.
+        # Minor cross-street junctions (viz: dashed centerline breaks).
+        # Preferred source: "uncontrolled_junction" control points (real
+        # street-street vertices — present once the intersections cache is
+        # regenerated with them). Fallback: way-span boundaries, FILTERED to
+        # exclude splits caused by ped crossings / crossing footways (which
+        # are not street intersections).
         junctions_off = []
-        for w in way_cache.get(rep["shape_id"], []):
-            x = w["dist_start_m"]
-            if rep["x_start_m"] + 15 < x < rep["x_end_m"] - 15:
-                off = round(rep["x_end_m"] - x, 1)
+        junction_cps = [
+            cp for cp in intersections[rep["shape_id"]]
+            if cp.control_type == "uncontrolled_junction"
+            and rep["x_start_m"] + 15 < cp.dist_along_route_m < rep["x_end_m"] - 15
+        ]
+        if junction_cps:
+            for cp in junction_cps:
+                off = round(rep["x_end_m"] - cp.dist_along_route_m, 1)
                 if all(abs(off - j) > 15 for j in junctions_off):
                     junctions_off.append(off)
+        else:
+            ped_offs = [c["off_m"] for c in crossings_off]
+            for w in way_cache.get(rep["shape_id"], []):
+                x = w["dist_start_m"]
+                if rep["x_start_m"] + 15 < x < rep["x_end_m"] - 15:
+                    off = round(rep["x_end_m"] - x, 1)
+                    if any(abs(off - pc) <= 20 for pc in ped_offs):
+                        continue  # split caused by a crossing, not a street
+                    if all(abs(off - j) > 15 for j in junctions_off):
+                        junctions_off.append(off)
         junctions_off.sort()
         up_node = canon[seg.upstream_signal.intersection_node_id]
         down_node = canon[seg.downstream_signal.intersection_node_id]
