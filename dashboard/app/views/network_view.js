@@ -178,10 +178,6 @@ export class NetworkView {
         <label class="nw-toggle"><input type="checkbox" id="nw-cmp-sel" disabled
           title="select at least one route first"> Compare selected route buses vs all buses</label>
       </div>
-      <div class="nw-group"><b>Direction</b>
-        <select id="nw-direction" disabled><option value="">both</option></select>
-        <span class="nw-note" id="nw-dir-note">select a single route</span>
-      </div>
       <div class="nw-group"><b>Min traversals</b>
         <div class="nw-minirow">
           <input id="nw-minn" type="number" value="${this.N.minN}" min="1" max="10000">
@@ -202,12 +198,32 @@ export class NetworkView {
       }
       const active = this.N.activeRoute;
       host.innerHTML = "";
+      const selection = this._selectedRouteIdx();
+      const single = selection.length === 1 ? selection[0] : null;
       dims.route_ids.forEach((r, i) => {
         if (this._showSelectedOnly && !checked.has(i)) return;
         if (this._routeQuery && !r.toLowerCase().includes(this._routeQuery)) return;
         const row = document.createElement("div");
         row.className = "nw-routerow" + (active === i ? " active" : "");
-        row.innerHTML = `<span>${r}</span><input type="checkbox" ${checked.has(i) ? "checked" : ""}>`;
+        // Direction lives IN the row, only while this route is the single
+        // selection; with 2+ routes selected direction is implicitly Both.
+        let dirBtns = "";
+        if (single === i) {
+          const dirs = this._routeDirs(i);
+          dirBtns = `<span class="nw-dirbtns">` +
+            ["", ...dirs].map((d) =>
+              `<button data-d="${d}" class="${(this.F.direction ?? "") === d ? "on" : ""}">` +
+              `${d || "Both"}</button>`).join("") + `</span>`;
+        }
+        row.innerHTML = `<span>${r}</span>${dirBtns}<input type="checkbox" ${checked.has(i) ? "checked" : ""}>`;
+        row.querySelectorAll(".nw-dirbtns button").forEach((b) => {
+          b.onclick = (e) => {
+            e.stopPropagation();
+            this.F.direction = b.dataset.d || null;
+            renderRoutes();
+            this.refresh();
+          };
+        });
         row.querySelector("input").onclick = (e) => {
           e.stopPropagation();
           const set = new Set(this.N.checkedRoutes ?? []);
@@ -217,7 +233,6 @@ export class NetworkView {
         };
         row.onclick = () => {
           this.N.activeRoute = this.N.activeRoute === i ? null : i;
-          renderRoutes();
           this._applyRouteSelection();
         };
         host.appendChild(row);
@@ -297,10 +312,6 @@ export class NetworkView {
         this.refresh();
       };
     }
-    el.querySelector("#nw-direction").onchange = (e) => {
-      this.F.direction = e.target.value || null;
-      this.refresh();
-    };
     el.querySelector("#nw-minn").onchange = (e) => {
       this.N.minN = Math.max(1, Number(e.target.value) || 1);
       this.refresh();
@@ -308,7 +319,19 @@ export class NetworkView {
 
     this._panelBuilt = true;
     this._syncMetricControls();
-    this._updateDirectionControl();
+  }
+
+  _routeDirs(i) {
+    this._dirCache ??= new Map();
+    if (!this._dirCache.has(i)) {
+      const rid = this.data.meta.dims.route_ids[i];
+      const dirs = new Set();
+      for (const f of this.data.segments.features) {
+        for (const r of f.properties.routes) if (r.r === rid) dirs.add(r.dir);
+      }
+      this._dirCache.set(i, [...dirs].sort());
+    }
+    return this._dirCache.get(i);
   }
 
   // Selected routes = checked set ∪ active row.
@@ -320,14 +343,15 @@ export class NetworkView {
 
   _applyRouteSelection() {
     this.F.routes = this._selectedRouteIdx();
+    if (this.F.routes.length !== 1) this.F.direction = null; // Both
     this._applyRouteButtons();
+    this._renderRoutes?.();
     const sel = document.querySelector("#nw-cmp-sel");
     if (sel && sel.disabled && this.N.compare === "selection") {
       sel.checked = false;
       this.N.compare = null;
       this._syncMetricControls();
     }
-    this._updateDirectionControl();
     this.refresh();
   }
 
@@ -369,9 +393,6 @@ export class NetworkView {
     this._renderRoutes?.();
     this._applyRouteButtons();
     this._syncMetricControls();
-    this._updateDirectionControl();
-    const dir = el.querySelector("#nw-direction");
-    if (dir && this.F.direction) dir.value = this.F.direction;
   }
 
   _applyRouteButtons() {
@@ -383,31 +404,6 @@ export class NetworkView {
     if (clearSel) clearSel.disabled = !any;
     const sel = document.querySelector("#nw-cmp-sel");
     if (sel) sel.disabled = !any;
-  }
-
-  _updateDirectionControl() {
-    const el = document.querySelector("#nw-direction");
-    const note = document.querySelector("#nw-dir-note");
-    if (!el) return;
-    const opts = ['<option value="">both</option>'];
-    let enabled = false;
-    const sel = this._selectedRouteIdx();
-    if (sel.length === 1) {
-      const rid = this.data.meta.dims.route_ids[sel[0]];
-      const dirs = new Set();
-      for (const f of this.data.segments.features) {
-        for (const r of f.properties.routes) if (r.r === rid) dirs.add(r.dir);
-      }
-      for (const d of [...dirs].sort()) opts.push(`<option value="${d}">${d}</option>`);
-      enabled = dirs.size > 0;
-    }
-    const prev = this.F.direction;
-    el.innerHTML = opts.join("");
-    el.disabled = !enabled;
-    note.style.display = enabled ? "none" : "";
-    if (!enabled) this.F.direction = null;
-    else if (prev && [...el.options].some((o) => o.value === prev)) el.value = prev;
-    else this.F.direction = null;
   }
 
   // ---- segment visibility under route/direction --------------------------

@@ -336,3 +336,11 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
   font: inherit; font-size: 11.5px; cursor: pointer; color: #555;
 }
 .nw-basemap button.active { background: #2d4a75; color: #fff; }
+
+/* inline direction buttons inside the single-selected route row */
+.nw-dirbtns { display: inline-flex; gap: 2px; margin: 0 6px; flex: 1 1 auto; justify-content: flex-end; }
+.nw-dirbtns button {
+  border: 1px solid #bcd; background: #fff; border-radius: 4px; cursor: pointer;
+  font-size: 10px; padding: 0 6px; color: #345; line-height: 16px;
+}
+.nw-dirbtns button.on { background: #2d4a75; border-color: #2d4a75; color: #fff; font-weight: 600; }
