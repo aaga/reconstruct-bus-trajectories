@@ -47,15 +47,20 @@ const S = {
   network: {
     data: null,                 // NetworkData (lazy, cached across tab switches)
     map: null,                  // NetworkMap (owned by NetworkView)
-    filters: { routes: [], corridors: [], direction: null,
+    filters: { routes: [], direction: null,
                periods: ["am_peak", "pm_peak"], daytype: "weekday", dow: null,
-               pick: null, season: null, weather: null },
-    metric: "mean_delay",
+               pick: null, weather: null },
+    metric: "overall",          // METRICS key (family or rate/static metric)
+    stat: "mean",               // mean|median|std|p95|buffer (delay families)
+    compare: null,              // null | "peak" | "selection"
+    checkedRoutes: [],          // sticky route checkboxes
+    activeRoute: null,          // transient highlighted route row
     minN: 10,
     selected: null,
   },
 };
 
+window.__S = S; // dev/testing handle
 const trajView = new TrajectoryView(S);
 const speedView = new SpeedView(S);
 const overallView = new OverallDelayView(S);
@@ -166,8 +171,10 @@ function render() {
 async function renderNetwork() {
   teardownMap();
   teardownAggViews();
+  $("trip-meta").textContent = ""; // trip info is irrelevant on this tab
   document.body.classList.add("show-map", "network-mode");
-  document.body.classList.toggle("network-areas", S.ntab === "areas");
+  document.body.classList.remove("network-areas"); // areas sub-tab hidden
+  S.network.syncHash = syncHash;
   if (!S.network.data) {
     try {
       // Cache the init promise: startup can trigger two renders (hash apply +
@@ -180,9 +187,8 @@ async function renderNetwork() {
       return;
     }
   }
-  await networkView.render();          // map + filter panel (both sub-tabs)
-  if (S.ntab === "areas") await areasView.render();
-  else $("chart").innerHTML = "";
+  await networkView.render();
+  $("chart").innerHTML = "";
 }
 
 function teardownNetwork() {
@@ -281,7 +287,30 @@ function currentHash() {
   let h = `#${S.main}`;
   const sub = { single: S.tab, average: S.atab, network: S.ntab }[S.main];
   if (sub) h += `/${sub}`;
-  if (S.main === "network") h += `?metric=${S.network.metric}`;
+  if (S.main === "network") {
+    const N = S.network;
+    const F = N.filters;
+    const q = new URLSearchParams();
+    q.set("metric", N.metric);
+    q.set("stat", N.stat);
+    if (N.compare) q.set("cmp", N.compare);
+    const defPeriods = ["am_peak", "pm_peak"];
+    if (F.periods.join(".") !== defPeriods.join(".")) q.set("periods", F.periods.join("."));
+    if (F.dow != null) q.set("days", `dow${F.dow}`);
+    else if (F.daytype !== "weekday") q.set("days", F.daytype ?? "everyday");
+    if (F.pick != null) q.set("pick", F.pick);
+    if (F.weather != null) q.set("weather", F.weather);
+    const rids = N.data?.meta?.dims?.route_ids;
+    if (rids) {
+      if ((N.checkedRoutes ?? []).length) {
+        q.set("routes", N.checkedRoutes.map((i) => rids[i]).join("."));
+      }
+      if (N.activeRoute != null) q.set("active", rids[N.activeRoute]);
+    }
+    if (F.direction) q.set("dir", F.direction);
+    if (N.minN !== 10) q.set("minn", N.minN);
+    h += `?${q.toString()}`;
+  }
   return h;
 }
 
@@ -300,9 +329,38 @@ function applyHash() {
   S._applyingHash = true;
   if (main === "single" && ["trajectory", "speed"].includes(sub)) S.tab = sub;
   if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
-  if (main === "network" && ["map", "areas"].includes(sub)) S.ntab = sub;
-  const metric = new URLSearchParams(query || "").get("metric");
-  if (main === "network" && metric && METRICS[metric]) S.network.metric = metric;
+  if (main === "network") S.ntab = "map"; // areas sub-tab hidden (2026-07)
+  const params = new URLSearchParams(query || "");
+  if (main === "network") {
+    const N = S.network;
+    const F = N.filters;
+    const metric = params.get("metric");
+    if (metric && METRICS[metric]) N.metric = metric;
+    const stat = params.get("stat");
+    if (["mean", "median", "std", "p95", "buffer"].includes(stat ?? "")) N.stat = stat;
+    const cmp = params.get("cmp");
+    N.compare = ["peak", "selection"].includes(cmp ?? "") ? cmp : null;
+    const periods = params.get("periods");
+    if (periods) {
+      const valid = ["am_peak", "midday", "pm_peak", "evening", "late_night"];
+      const ps = periods.split(".").filter((x) => valid.includes(x));
+      if (ps.length) F.periods = ps;
+    }
+    const days = params.get("days");
+    if (days != null) {
+      if (/^dow[0-6]$/.test(days)) { F.dow = Number(days.slice(3)); F.daytype = null; }
+      else if (days === "everyday") { F.daytype = null; F.dow = null; }
+      else if (["weekday", "weekend"].includes(days)) { F.daytype = days; F.dow = null; }
+    }
+    F.pick = params.has("pick") ? Number(params.get("pick")) : F.pick;
+    F.weather = params.has("weather") ? Number(params.get("weather")) : F.weather;
+    // Route ids can't map to indices until NetworkData's meta is loaded —
+    // stash names; NetworkView resolves them on first render.
+    if (params.has("routes")) N.pendingRoutes = params.get("routes").split(".");
+    if (params.has("active")) N.pendingActive = params.get("active");
+    if (params.has("dir")) F.direction = params.get("dir");
+    if (params.has("minn")) N.minN = Math.max(1, Number(params.get("minn")) || 10);
+  }
   // reflect sub-tab button states
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
   document.querySelectorAll("#atabs button").forEach((b) => b.classList.toggle("active", b.dataset.atab === S.atab));
@@ -387,15 +445,6 @@ async function init() {
       b.classList.add("active");
       S.ntab = b.dataset.ntab; render();
     }));
-  // Network metric selector
-  const metricSel = $("nw-metric");
-  for (const [key, m] of Object.entries(METRICS)) {
-    const o = document.createElement("option");
-    o.value = key; o.textContent = m.label;
-    metricSel.appendChild(o);
-  }
-  metricSel.value = S.network.metric;
-  metricSel.onchange = () => { S.network.metric = metricSel.value; syncHash(); networkView.refresh(); };
 
   const bind = (id, key) => { $(id).onchange = (e) => { S.toggles[key] = e.target.checked; render(); }; };
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");

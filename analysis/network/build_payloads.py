@@ -39,12 +39,15 @@ sys.path.insert(0, str(REPO))
 
 from analysis.network.traversals_view import create_canonical_view  # noqa: E402
 from analysis.network.stats import (  # noqa: E402
+    DWELL_EDGES,
     HIST_EDGES,
+    HIST_FAMILIES,
     N_BUCKETS,
-    OVER_EDGE,
-    UNDER_EDGE,
+    PAX_EDGES,
     emit_golden_vectors,
 )
+
+MAX_LOAD = 150  # clip APC glitches (crush load on an artic is ~110)
 from dataio.cities import CityConfig, get_city  # noqa: E402
 
 MAGIC = b"NWSTATS1"
@@ -113,17 +116,28 @@ def _aggregate(
         )
         return f"CASE {w} ELSE {len(names) - 1} END"
 
-    # Histogram bucket counts as 16 conditional sums over the ratio.
-    lo = [UNDER_EDGE] + list(HIST_EDGES)
-    bucket_cols = []
-    for b in range(N_BUCKETS):
-        if b == 0:
-            cond = f"ratio < {HIST_EDGES[0]}"
-        elif b == N_BUCKETS - 1:
-            cond = f"ratio >= {HIST_EDGES[-1]}"
-        else:
-            cond = f"ratio >= {HIST_EDGES[b-1]} AND ratio < {HIST_EDGES[b]}"
-        bucket_cols.append(f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)::BIGINT AS h{b}")
+    # Histogram bucket counts as 16 conditional sums, per family.
+    def hist_cols(expr: str, edges, prefix: str, guard: str = "") -> list[str]:
+        cols = []
+        for b in range(N_BUCKETS):
+            if b == 0:
+                cond = f"{expr} < {edges[0]}"
+            elif b == N_BUCKETS - 1:
+                cond = f"{expr} >= {edges[-1]}"
+            else:
+                cond = f"{expr} >= {edges[b-1]} AND {expr} < {edges[b]}"
+            if guard:
+                cond = f"({guard}) AND ({cond})"
+            cols.append(f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)::BIGINT AS {prefix}{b}")
+        return cols
+
+    bucket_cols = hist_cols("ratio", HIST_EDGES, "h")
+    door = "t.has_door"
+    bucket_cols += hist_cols("(t.dwell_s / t.t_ff_s)", DWELL_EDGES, "hd", door)
+    bucket_cols += hist_cols(
+        "((t.t_obs_s - t.dwell_s) / t.t_ff_s)", HIST_EDGES, "hn", door
+    )
+    bucket_cols += hist_cols("t.pax_s", PAX_EDGES, "hp", door)
 
     seg_enc = {s: i for i, s in enumerate(dims["seg_ids"])}
     con.execute("CREATE TABLE segenc(seg_id TEXT, sid INT)")
@@ -140,7 +154,10 @@ def _aggregate(
         tr.t_obs_s, ff.t_ff_s,
         (tr.t_obs_s - ff.t_ff_s) AS delay_s,
         (tr.t_obs_s / ff.t_ff_s) AS ratio,
-        tr.has_door, tr.dwell_s, tr.ons, tr.offs, tr.load_sum
+        tr.has_door, tr.dwell_s, tr.ons, tr.offs, tr.load_sum,
+        -- passenger-weighted NON-DWELL delay (pax-seconds): the load carried
+        -- into the segment applies to all between-stop delay, per user spec
+        ((tr.t_obs_s - tr.dwell_s - ff.t_ff_s) * least(tr.load_in, 150)) AS pax_s
       FROM trav tr
       JOIN ff ON ff.seg_id = tr.seg_id
       WHERE tr.t_obs_s > 0
@@ -164,6 +181,13 @@ def _aggregate(
       COALESCE(SUM(t.ons)      FILTER (WHERE t.has_door), 0)   AS sum_ons,
       COALESCE(SUM(t.offs)     FILTER (WHERE t.has_door), 0)   AS sum_offs,
       COALESCE(SUM(t.load_sum) FILTER (WHERE t.has_door), 0)   AS sum_load,
+      COALESCE(VAR_POP(t.dwell_s) FILTER (WHERE t.has_door)
+               * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_dw,
+      COALESCE(VAR_POP(t.delay_s - t.dwell_s) FILTER (WHERE t.has_door)
+               * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_nd,
+      COALESCE(SUM(t.pax_s) FILTER (WHERE t.has_door), 0.0) AS sum_pax,
+      COALESCE(VAR_POP(t.pax_s) FILTER (WHERE t.has_door)
+               * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_pax,
       {', '.join(bucket_cols)}
     FROM t
     JOIN da ON da.date_iso = t.date_iso
@@ -174,18 +198,28 @@ def _aggregate(
     return con, con.sql(q)
 
 
+SHARD_DTYPES = {
+    "sid": "<u2", "rid": "<u1", "pick": "<u1", "season": "<u1",
+    "dow": "<u1", "weather": "<u1",
+    "n": "<u2", "sum_delay": "<f4", "m2": "<f4",
+    # door/APC (zero when the bin's dates precede door coverage);
+    # sum_load stays un-surfaced in the UI for now, by design.
+    "n_door": "<u2", "sum_dwell": "<f4", "sum_delay_door": "<f4",
+    "sum_ons": "<f4", "sum_offs": "<f4", "sum_load": "<f4",
+    "m2_dw": "<f4", "m2_nd": "<f4", "sum_pax": "<f4", "m2_pax": "<f4",
+    **{f"h{b}": "<u2" for b in range(N_BUCKETS)},
+    **{f"hd{b}": "<u2" for b in range(N_BUCKETS)},
+    **{f"hn{b}": "<u2" for b in range(N_BUCKETS)},
+    **{f"hp{b}": "<u2" for b in range(N_BUCKETS)},
+}
+SHARD_ROW_BYTES = sum(
+    {"<u1": 1, "<u2": 2, "<f4": 4}[d] for d in SHARD_DTYPES.values()
+)
+
+
 def _write_shard(path: Path, rows: dict[str, np.ndarray]) -> int:
     """Write one packed columnar shard; returns byte size."""
-    dtypes = {
-        "sid": "<u2", "rid": "<u1", "pick": "<u1", "season": "<u1",
-        "dow": "<u1", "weather": "<u1",
-        "n": "<u2", "sum_delay": "<f4", "m2": "<f4",
-        # door/APC (zero when the bin's dates precede door coverage);
-        # sum_load stays un-surfaced in the UI for now, by design.
-        "n_door": "<u2", "sum_dwell": "<f4", "sum_delay_door": "<f4",
-        "sum_ons": "<f4", "sum_offs": "<f4", "sum_load": "<f4",
-        **{f"h{b}": "<u2" for b in range(N_BUCKETS)},
-    }
+    dtypes = SHARD_DTYPES
     n_rows = len(rows["sid"])
     header = {
         "n_rows": n_rows,
@@ -218,14 +252,12 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     registry = json.loads((base / "segment_registry.json").read_text())
-    corridors = json.loads((base / "corridors.json").read_text())
     freeflow = json.loads((base / "freeflow.json").read_text())
     date_attrs = json.loads((base / "date_attrs.json").read_text())
 
     sha = registry["meta"]["intersections_sha256"]
-    for name, payload in (("freeflow", freeflow), ("corridors", corridors)):
-        if payload["meta"].get("intersections_sha256") not in (None, sha):
-            raise SystemExit(f"{name}.json built against a different intersections cache")
+    if freeflow["meta"].get("intersections_sha256") not in (None, sha):
+        raise SystemExit("freeflow.json built against a different intersections cache")
 
     dims = _dims(city, registry, date_attrs)
     seg_index = {s: i for i, s in enumerate(dims["seg_ids"])}
@@ -256,21 +288,33 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
             "sum_ons": sub.sum_ons.to_numpy(),
             "sum_offs": sub.sum_offs.to_numpy(),
             "sum_load": sub.sum_load.to_numpy(),
+            "m2_dw": sub.m2_dw.to_numpy(),
+            "m2_nd": sub.m2_nd.to_numpy(),
+            "sum_pax": sub.sum_pax.to_numpy(),
+            "m2_pax": sub.m2_pax.to_numpy(),
             **{f"h{b}": sub[f"h{b}"].to_numpy() for b in range(N_BUCKETS)},
+            **{f"hd{b}": sub[f"hd{b}"].to_numpy() for b in range(N_BUCKETS)},
+            **{f"hn{b}": sub[f"hn{b}"].to_numpy() for b in range(N_BUCKETS)},
+            **{f"hp{b}": sub[f"hp{b}"].to_numpy() for b in range(N_BUCKETS)},
         }
-        path = out / f"stats_{period}.bin"
-        size = _write_shard(path, cols)
-        mb = size / 1e6
-        assert mb < MAX_SHARD_MB, f"{path.name} is {mb:.1f} MB — split needed"
-        shard_meta[period] = {"rows": len(sub), "bytes": size}
-        print(f"  {path.name}: {len(sub)} rows, {mb:.2f} MB")
+        # Multi-part shards: keep every file under the Pages 25 MB limit.
+        n_rows = len(sub)
+        rows_per_part = max(1, int((MAX_SHARD_MB * 1e6 - 8192) // SHARD_ROW_BYTES))
+        parts = []
+        for pi in range(0, n_rows, rows_per_part):
+            piece = {k: v[pi : pi + rows_per_part] for k, v in cols.items()}
+            name = (
+                f"stats_{period}.bin" if n_rows <= rows_per_part
+                else f"stats_{period}_p{pi // rows_per_part}.bin"
+            )
+            size = _write_shard(out / name, piece)
+            assert size / 1e6 < MAX_SHARD_MB, f"{name} still too big"
+            parts.append({"name": name, "rows": len(piece["sid"]), "bytes": size})
+        shard_meta[period] = {"rows": n_rows, "parts": parts}
+        print(f"  {period}: {n_rows} rows in {len(parts)} part(s), "
+              f"{sum(x['bytes'] for x in parts)/1e6:.1f} MB total")
 
     # ---- segments.json (GeoJSON) -----------------------------------------
-    seg_corridors: dict[str, list[str]] = {}
-    for c in corridors["corridors"]:
-        for s in c["seg_ids_fwd"] + c["seg_ids_rev"]:
-            seg_corridors.setdefault(s, []).append(c["cid"])
-
     features = []
     for seg_id in dims["seg_ids"]:
         rec = registry["segments"][seg_id]
@@ -292,7 +336,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
                         {"r": r["route_id"], "dir": r["direction"]} for r in rec["routes"]
                     ],
                     "rev_sid": seg_index.get(rec["rev_seg_id"]),
-                    "corridors": seg_corridors.get(seg_id, []),
                     "n_stops": rec["n_stops"],
                 },
             }
@@ -300,20 +343,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     (out / "segments.json").write_text(
         json.dumps({"type": "FeatureCollection", "features": features})
     )
-
-    # ---- corridors.json ---------------------------------------------------
-    cor_out = {
-        "meta": corridors["meta"],
-        "corridors": [
-            {
-                **{k: c[k] for k in ("cid", "name", "routes", "len_m", "dir_fwd", "dir_rev")},
-                "sids_fwd": [seg_index[s] for s in c["seg_ids_fwd"] if s in seg_index],
-                "sids_rev": [seg_index[s] for s in c["seg_ids_rev"] if s in seg_index],
-            }
-            for c in corridors["corridors"]
-        ],
-    }
-    (out / "corridors.json").write_text(json.dumps(cor_out))
 
     # ---- meta.json --------------------------------------------------------
     # Date counts per (pick, season, dow, weather) — only dates that actually
@@ -372,9 +401,11 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
         "intersections_sha256": sha,
         "dims": dims,
         "period_hours": {name: (hi - lo) % 24 for name, lo, hi in city.periods},
-        "hist_edges": list(HIST_EDGES),
-        "under_edge": UNDER_EDGE,
-        "over_edge": OVER_EDGE,
+        "hist_edges": list(HIST_EDGES),  # legacy field (overall family)
+        "hist_families": {
+            k: {"edges": [float(x) for x in e], "under": u, "over": o}
+            for k, (e, u, o) in HIST_FAMILIES.items()
+        },
         "date_counts": date_counts,
         "door_date_counts": door_date_counts,
         "n_dates": len(dates_present),

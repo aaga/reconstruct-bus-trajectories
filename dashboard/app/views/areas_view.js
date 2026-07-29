@@ -50,7 +50,10 @@ export class AreasView {
     }
 
     const groups = { level: [], diff: [] };
-    for (const c of this.areas.contexts) groups[c.type].push(c);
+    for (const c of this.areas.contexts) {
+      if (c.kind === "corridor") continue; // corridors removed from the UI (2026-07)
+      groups[c.type].push(c);
+    }
     const ctx = this.areas.contexts.find((c) => c.id === this.context) ?? this.areas.contexts[0];
     this.context = ctx.id;
 
@@ -139,7 +142,7 @@ export class AreasView {
         .filter((f) => f.properties.routes.some((r) => r.r === e.eid))
         .map((f) => f.properties.sid);
     } else {
-      sids = e.seg_ids.map((s) => bySegId.get(s)).filter((s) => s != null);
+      sids = (e.seg_ids || []).map((s) => bySegId.get(s)).filter((s) => s != null);
     }
     map.highlight(sids, { zoom: true });
   }

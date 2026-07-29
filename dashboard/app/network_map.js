@@ -12,12 +12,14 @@ import { TILE_STYLE } from "./map_view.js";
 const DIM_COLOR = "#d8d8d8";
 
 export class NetworkMap {
-  // onHover(feature|null, lngLat), onClick(feature|null)
-  constructor(container, segmentsGeojson, { onHover, onClick } = {}) {
+  // onHover(feature|null, lngLat), onClick(feature|null),
+  // onContextMenu(feature|null, lngLat)
+  constructor(container, segmentsGeojson, { onHover, onClick, onContextMenu } = {}) {
     this.container = container;
     this.geojson = segmentsGeojson;
     this.onHover = onHover;
     this.onClick = onClick;
+    this.onContextMenu = onContextMenu;
     this._ready = false;
     this._pendingColors = null;
     this._highlighted = [];
@@ -56,6 +58,33 @@ export class NetworkMap {
           ],
         },
       });
+      // Direction half-arrows (harpoons): geometries are oriented in travel
+      // direction, so a line-placed icon with map rotation-alignment points
+      // the way the bus travels. The single barb sits on the RIGHT side —
+      // the same side as the paired-direction line-offset — so a two-way
+      // street reads as two opposing lanes.
+      this.map.addImage("halfarrow", makeHalfArrow(22));
+      this.map.addLayer({
+        id: "seg-arrows",
+        type: "symbol",
+        source: "segs",
+        minzoom: 12.5,
+        layout: {
+          "symbol-placement": "line",
+          "symbol-spacing": 180,
+          "icon-image": "halfarrow",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 12.5, 0.45, 16, 0.85],
+          "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+          "icon-offset": [0, 5],
+        },
+        paint: {
+          // arrows only on segments in the current view scope (route filter)
+          "icon-opacity": ["case", ["boolean", ["feature-state", "vis"], true], 0.9, 0],
+        },
+      });
+
       this.map.addLayer({
         id: "seg-highlight",
         type: "line",
@@ -74,7 +103,7 @@ export class NetworkMap {
       this._wireInteractions();
       this._ready = true;
       if (this._pendingColors) {
-        this.setColors(this._pendingColors);
+        this.setColors(...this._pendingColors);
         this._pendingColors = null;
       }
     });
@@ -82,6 +111,16 @@ export class NetworkMap {
     this._legend = document.createElement("div");
     this._legend.className = "maplegend nw-legend";
     container.appendChild(this._legend);
+
+    // Map / satellite toggle (M and S keys still work and stay in sync).
+    this._basemapCtl = document.createElement("div");
+    this._basemapCtl.className = "nw-basemap";
+    this._basemapCtl.innerHTML = `
+      <button data-b="map" class="active">Map</button><button data-b="satellite">Satellite</button>`;
+    this._basemapCtl.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => this.setBasemap(b.dataset.b);
+    });
+    container.appendChild(this._basemapCtl);
     window.__nwmap = this.map; // dev/testing handle (harmless in production)
   }
 
@@ -100,6 +139,14 @@ export class NetworkMap {
       this.onHover?.(f, e.lngLat, e.point);
     });
     this.map.on("mouseout", () => this.onHover?.(null));
+    this.map.on("contextmenu", (e) => {
+      e.preventDefault();
+      const feats = this.map.queryRenderedFeatures(
+        [[e.point.x - 5, e.point.y - 5], [e.point.x + 5, e.point.y + 5]],
+        { layers: ["seg-lines"] },
+      );
+      this.onContextMenu?.(feats[0] || null, e.lngLat);
+    });
     this.map.on("click", (e) => {
       const feats = this.map.queryRenderedFeatures(
         [[e.point.x - 5, e.point.y - 5], [e.point.x + 5, e.point.y + 5]],
@@ -110,20 +157,22 @@ export class NetworkMap {
   }
 
   // colors: Map<sid, {color, width?, opacity?}>. Sids absent from the map are
-  // dimmed (grey, thin, translucent).
-  setColors(colors) {
+  // dimmed (grey, thin, translucent). visibleSet (null = whole network)
+  // additionally gates the direction arrows to in-scope segments.
+  setColors(colors, visibleSet = null) {
     if (!this._ready) {
-      this._pendingColors = colors;
+      this._pendingColors = [colors, visibleSet];
       return;
     }
     for (const f of this.geojson.features) {
       const sid = f.properties.sid;
       const c = colors.get(sid);
+      const vis = visibleSet ? visibleSet.has(sid) : true;
       this.map.setFeatureState(
         { source: "segs", id: sid },
         c
-          ? { c: c.color, w: c.width ?? 2.2, o: c.opacity ?? 0.9 }
-          : { c: DIM_COLOR, w: 1.0, o: 0.35 },
+          ? { c: c.color, w: c.width ?? 2.2, o: c.opacity ?? 0.9, vis }
+          : { c: DIM_COLOR, w: 1.0, o: 0.35, vis },
       );
     }
   }
@@ -158,6 +207,8 @@ export class NetworkMap {
     if (!this._ready) return;
     this.map.setLayoutProperty("carto", "visibility", which === "satellite" ? "none" : "visible");
     this.map.setLayoutProperty("satellite", "visibility", which === "satellite" ? "visible" : "none");
+    this._basemapCtl?.querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("active", b.dataset.b === which));
   }
 
   resize() {
@@ -166,8 +217,35 @@ export class NetworkMap {
 
   destroy() {
     this._legend.remove();
+    this._basemapCtl?.remove();
     this.map.remove();
   }
+}
+
+// A white full arrow with a dark outline, drawn on canvas so it stays
+// legible over any choropleth color. Points +x; rotated along travel
+// direction by the symbol layer.
+function makeHalfArrow(size) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const mid = size * 0.5;
+  const draw = (w, color) => {
+    g.strokeStyle = color;
+    g.lineWidth = w;
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    g.beginPath();
+    g.moveTo(size * 0.10, mid);          // stem tail
+    g.lineTo(size * 0.82, mid);          // stem to tip
+    g.moveTo(size * 0.40, size * 0.16);  // upper barb
+    g.lineTo(size * 0.82, mid);
+    g.lineTo(size * 0.40, size * 0.84);  // lower barb
+    g.stroke();
+  };
+  draw(size * 0.30, "rgba(40,40,40,0.9)");
+  draw(size * 0.14, "#ffffff");
+  return g.getImageData(0, 0, size, size);
 }
 
 function geojsonBounds(fc) {

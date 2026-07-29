@@ -133,9 +133,11 @@ def test_view_door_sidecar_merge(synthetic, tmp_path):
     # 3+2 ons); trip3's vehicle NOT covered (no rows at all).
     df = pd.DataFrame([
         {"trip_key": "trip1", "seg_id": "SIG_A__SIG_P", "shape_id": "S1",
-         "door_n": 1, "dwell_s": 12.0, "ons": 3, "offs": 1, "load_sum": 20},
+         "door_n": 1, "dwell_s": 12.0, "ons": 3, "offs": 1, "load_sum": 20,
+         "load_in": 17},
         {"trip_key": "trip1", "seg_id": "SIG_P__SIG_B", "shape_id": "S1",
-         "door_n": 2, "dwell_s": 20.0, "ons": 2, "offs": 0, "load_sum": 41},
+         "door_n": 2, "dwell_s": 20.0, "ons": 2, "offs": 0, "load_sum": 41,
+         "load_in": 20},
     ])
     pq.write_table(pa.Table.from_pandas(df), side / "service_date=2026-05-05.parquet")
 
@@ -145,13 +147,14 @@ def test_view_door_sidecar_merge(synthetic, tmp_path):
         door_sidecar_glob=str(side / "service_date=*.parquet"),
     )
     got = {r[0]: r for r in con.execute(
-        "SELECT trip_key, has_door, door_n, dwell_s, ons, offs, load_sum FROM trav"
+        "SELECT trip_key, has_door, door_n, dwell_s, ons, offs, load_sum, load_in FROM trav"
     ).fetchall()}
     assert got["trip1"][1] is True
     assert got["trip1"][2] == 3          # 1 + 2 door cycles
     assert got["trip1"][3] == pytest.approx(32.0)
     assert got["trip1"][4] == 5 and got["trip1"][5] == 1
     assert got["trip1"][6] == 61
+    assert got["trip1"][7] == 17         # load entering the merged span (as-of first constituent)
     assert got["trip3"][1] is False      # vehicle-day not covered
     assert got["trip3"][3] == pytest.approx(0.0)
 

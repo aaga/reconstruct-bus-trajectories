@@ -76,7 +76,8 @@ def create_canonical_view(
         )
         door_part_cols = (
             "(sc.trip_key IS NOT NULL) AS part_covered, sc.door_n, "
-            "sc.dwell_s AS part_dwell_s, sc.ons, sc.offs, sc.load_sum,"
+            "sc.dwell_s AS part_dwell_s, sc.ons, sc.offs, sc.load_sum, "
+            "sc.load_in AS part_load_in,"
         )
         door_merge_cols = """
             (count(*) FILTER (WHERE part_covered) = count(*)) AS has_door,
@@ -84,13 +85,14 @@ def create_canonical_view(
             coalesce(sum(part_dwell_s), 0) AS dwell_s,
             coalesce(sum(ons), 0) AS ons,
             coalesce(sum(offs), 0) AS offs,
-            coalesce(sum(load_sum), 0) AS load_sum,"""
+            coalesce(sum(load_sum), 0) AS load_sum,
+            coalesce(arg_min(part_load_in, t_enter_utc), 0) AS load_in,"""
     else:
         door_join = ""
         door_part_cols = ""
         door_merge_cols = """
             FALSE AS has_door, 0 AS door_n, 0.0 AS dwell_s,
-            0 AS ons, 0 AS offs, 0 AS load_sum,"""
+            0 AS ons, 0 AS offs, 0 AS load_sum, 0 AS load_in,"""
 
     hour_expr = f"hour(t_enter_utc AT TIME ZONE '{city.tz}')"
     con.execute(
@@ -128,7 +130,7 @@ def create_canonical_view(
           t_enter_utc, t_exit_utc, t_obs_s, n_pings_in_seg, max_gap_in_seg_s,
           {hour_expr}::UTINYINT AS hour_local,
           {_period_case(city, hour_expr)} AS period,
-          flags, has_door, door_n, dwell_s, ons, offs, load_sum
+          flags, has_door, door_n, dwell_s, ons, offs, load_sum, load_in
         FROM merged
         WHERE n_parts = k        -- full coverage of the canonical span only
         """

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from analysis.network.stats import (
     HIST_EDGES,
@@ -93,3 +94,53 @@ def test_derive_metrics_congested_segment():
     assert m["mean_delay_s"] > 20.0
     assert m["p90_delay_s"] > m["median_delay_s"]
     assert m["buffer_s"] > 0.0
+
+
+def test_derive_stat_families_consistent():
+    import numpy as np
+    from analysis.network.stats import (
+        DWELL_EDGES, PAX_EDGES, derive_stat, hist_counts, welford_from_samples,
+    )
+    rng = np.random.default_rng(5)
+    n, t_ff = 800, 50.0
+    ratios = rng.lognormal(0.3, 0.4, n)
+    delays = (ratios - 1) * t_ff
+    n_door = 500
+    dwell = np.abs(rng.normal(9, 5, n_door))
+    nd = delays[:n_door] - dwell
+    loads = rng.integers(1, 50, n_door).astype(float)
+    pax = nd * loads
+    acc = {
+        "n": n, "sum": float(delays.sum()), "m2": welford_from_samples(delays)[2],
+        "hist": hist_counts(ratios),
+        "n_door": n_door,
+        "sum_dwell": float(dwell.sum()),
+        "sum_delay_door": float(delays[:n_door].sum()),
+        "m2_dw": welford_from_samples(dwell)[2],
+        "m2_nd": welford_from_samples(nd)[2],
+        "hist_dw": hist_counts(dwell / t_ff, DWELL_EDGES),
+        "hist_nd": hist_counts((nd + t_ff) / t_ff),
+        "sum_pax": float(pax.sum()),
+        "m2_pax": welford_from_samples(pax)[2],
+        "hist_pax": hist_counts(pax, PAX_EDGES),
+    }
+    # means exact
+    assert derive_stat("overall", "mean", acc, t_ff) == pytest.approx(delays.mean())
+    assert derive_stat("dwell", "mean", acc, t_ff) == pytest.approx(dwell.mean())
+    assert derive_stat("nondwell", "mean", acc, t_ff) == pytest.approx(nd.mean())
+    assert derive_stat("pax", "mean", acc, t_ff) == pytest.approx(pax.mean())
+    # stds exact
+    assert derive_stat("pax", "std", acc, t_ff) == pytest.approx(pax.std())
+    # hist quantiles within tolerance of exact
+    for fam, samples in (("overall", delays), ("dwell", dwell), ("nondwell", nd)):
+        for st, q in (("median", 0.5), ("p95", 0.95)):
+            got = derive_stat(fam, st, acc, t_ff)
+            exact = float(np.quantile(samples, q))
+            assert abs(got - exact) <= max(2.5, 0.12 * abs(exact)), (fam, st, got, exact)
+    # buffer = p95 - mean by construction
+    assert derive_stat("overall", "buffer", acc, t_ff) == pytest.approx(
+        derive_stat("overall", "p95", acc, t_ff) - derive_stat("overall", "mean", acc, t_ff))
+    # empty door subset -> NaN
+    acc0 = dict(acc, n_door=0)
+    import math
+    assert math.isnan(derive_stat("dwell", "mean", acc0, t_ff))

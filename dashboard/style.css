@@ -220,6 +220,8 @@ body.network-areas .nw-panel { left: calc(46% + 10px); }
 .nw-checks label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nw-minirow { display: flex; gap: 6px; align-items: center; }
 .nw-minirow input { flex: 0 0 64px; }
+.nw-minirow input.nw-search { flex: 1 1 auto; min-width: 0; }
+.nw-smallbtn:disabled { opacity: .45; cursor: default; }
 .nw-clear { flex: 0 0 auto; border: 1px solid #ccc; background: #fff; border-radius: 5px;
   cursor: pointer; padding: 2px 7px; }
 .nw-note { color: #888; font-size: 11px; }
@@ -294,3 +296,52 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
 .kbadge-corridor { background: #8a5fc0; }
 .kbadge-route { background: #3d9e57; }
 .nw-empty { padding: 24px; color: #666; font-size: 13px; }
+
+/* metric/stat controls in the panel */
+.nw-radios { display: grid; grid-template-columns: auto auto auto; justify-content: start;
+  gap: 2px 12px; margin-top: 5px; }
+.nw-radios label { white-space: nowrap; display: inline-flex; align-items: center;
+  gap: 4px; justify-self: start; }
+.nw-radios label input { margin: 0; }
+.nw-radios label:nth-child(5) { grid-column: span 2; }
+.nw-toggle { display: flex; gap: 5px; align-items: flex-start; margin-top: 5px; }
+.nw-toggle input { flex: 0 0 auto; margin: 2px 0 0; }
+.nw-quick { display: inline-flex; gap: 4px; margin-bottom: 4px; }
+.nw-quick button, .nw-smallbtn {
+  border: 1px solid #ccc; background: #fff; border-radius: 5px; cursor: pointer;
+  padding: 1px 8px; font-size: 11px;
+}
+.nw-quick button:hover, .nw-smallbtn:hover { background: #f0f4fa; }
+.nw-quick button:disabled { opacity: .45; cursor: default; }
+/* routes checkbox list */
+.nw-routelist {
+  border: 1px solid #ccc; border-radius: 5px; background: #fff;
+  max-height: 132px; overflow-y: auto;
+}
+.nw-routerow {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 2px 8px; cursor: pointer; border-bottom: 1px solid #f2f2f2;
+}
+.nw-routerow:hover { background: #f2f7ff; }
+.nw-routerow.active { background: #e3eefe; font-weight: 600; }
+.nw-routerow input { cursor: pointer; }
+
+/* map/satellite toggle (network map, bottom-right) */
+.nw-basemap {
+  position: absolute; bottom: 22px; right: 10px; z-index: 5;
+  background: rgba(255,255,255,.95); border: 1px solid #ddd; border-radius: 7px;
+  padding: 2px; box-shadow: 0 1px 5px rgba(0,0,0,.14); display: inline-flex; gap: 2px;
+}
+.nw-basemap button {
+  border: none; background: transparent; border-radius: 5px; padding: 3px 10px;
+  font: inherit; font-size: 11.5px; cursor: pointer; color: #555;
+}
+.nw-basemap button.active { background: #2d4a75; color: #fff; }
+
+/* inline direction buttons inside the single-selected route row */
+.nw-dirbtns { display: inline-flex; gap: 2px; margin: 0 6px; flex: 1 1 auto; justify-content: flex-end; }
+.nw-dirbtns button {
+  border: 1px solid #bcd; background: #fff; border-radius: 4px; cursor: pointer;
+  font-size: 10px; padding: 0 6px; color: #345; line-height: 16px;
+}
+.nw-dirbtns button.on { background: #2d4a75; border-color: #2d4a75; color: #fff; font-weight: 600; }
