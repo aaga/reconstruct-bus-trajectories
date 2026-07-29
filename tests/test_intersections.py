@@ -545,12 +545,15 @@ def test_ped_crossing_at_uncontrolled_intersection_anchors():
     controlled = [c for c in cps if c.control_type != "uncontrolled_junction"]
     assert all(c.control_type == "ped_crossing_marked" for c in controlled)
     assert len(controlled) == 2
-    # Both anchor to the same uncontrolled intersection vertex (node 50).
-    assert {c.anchor_intersection_node_id for c in cps} == {50}
+    # The uncontrolled vertex itself is now emitted too (dashboard markers).
+    assert {c.intersection_node_id for c in cps
+            if c.control_type == "uncontrolled_junction"} == {50}
+    # Both crossings anchor to the same uncontrolled intersection vertex.
+    assert {c.anchor_intersection_node_id for c in controlled} == {50}
     # Crossings remain distinct (not merged) but share the anchor.
-    assert {c.intersection_node_id for c in cps} == {48, 52}
+    assert {c.intersection_node_id for c in controlled} == {48, 52}
     # Metadata captured.
-    a = next(c for c in cps if c.intersection_node_id == 48)
+    a = next(c for c in controlled if c.intersection_node_id == 48)
     assert a.markings == "zebra"
     assert a.has_island is True
     b = next(c for c in cps if c.intersection_node_id == 52)
