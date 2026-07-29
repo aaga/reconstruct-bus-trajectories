@@ -220,6 +220,8 @@ body.network-areas .nw-panel { left: calc(46% + 10px); }
 .nw-checks label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nw-minirow { display: flex; gap: 6px; align-items: center; }
 .nw-minirow input { flex: 0 0 64px; }
+.nw-minirow input.nw-search { flex: 1 1 auto; min-width: 0; }
+.nw-smallbtn:disabled { opacity: .45; cursor: default; }
 .nw-clear { flex: 0 0 auto; border: 1px solid #ccc; background: #fff; border-radius: 5px;
   cursor: pointer; padding: 2px 7px; }
 .nw-note { color: #888; font-size: 11px; }
@@ -296,8 +298,11 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
 .nw-empty { padding: 24px; color: #666; font-size: 13px; }
 
 /* metric/stat controls in the panel */
-.nw-radios { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px 6px; margin-top: 5px; }
-.nw-radios label { white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; overflow: hidden; }
+.nw-radios { display: grid; grid-template-columns: auto auto auto; justify-content: start;
+  gap: 2px 12px; margin-top: 5px; }
+.nw-radios label { white-space: nowrap; display: inline-flex; align-items: center;
+  gap: 4px; justify-self: start; }
+.nw-radios label input { margin: 0; }
 .nw-radios label:nth-child(5) { grid-column: span 2; }
 .nw-toggle { display: block; margin-top: 5px; }
 .nw-quick { display: inline-flex; gap: 4px; margin-bottom: 4px; }

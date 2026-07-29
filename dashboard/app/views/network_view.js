@@ -117,9 +117,7 @@ export class NetworkView {
           ${Object.entries(STATS).map(([k, lab], i) =>
             `<label><input type="radio" name="nw-stat" value="${k}" ${i === 0 ? "checked" : ""}> ${lab}</label>`).join("")}
         </span>
-        <label class="nw-toggle"><input type="checkbox" id="nw-cmp-peak"> Show peak vs off-peak</label>
-        <label class="nw-toggle"><input type="checkbox" id="nw-cmp-sel" disabled
-          title="select at least one route first"> Show selection vs all routes</label>
+        <label class="nw-toggle"><input type="checkbox" id="nw-cmp-peak"> Compare peak vs off-peak</label>
       </div>
       <div class="nw-group"><b>Periods</b>
         <span class="nw-quick">
@@ -151,13 +149,15 @@ export class NetworkView {
       </div>
       <div class="nw-group"><b>Routes</b>
         <div class="nw-minirow" style="margin-bottom:4px">
-          <input id="nw-route-search" placeholder="type to filter routes…">
+          <input id="nw-route-search" class="nw-search" placeholder="type to filter routes…">
+        </div>
+        <div class="nw-minirow" style="margin-bottom:4px">
+          <button class="nw-smallbtn" id="nw-show-selected" disabled>show selected</button>
+          <button class="nw-smallbtn" id="nw-routes-clear" disabled>clear selections</button>
         </div>
         <div class="nw-routelist" id="nw-routelist"></div>
-        <div class="nw-minirow" style="margin-top:4px">
-          <button class="nw-smallbtn" id="nw-show-selected">show selected</button>
-          <button class="nw-smallbtn" id="nw-routes-clear">clear selections</button>
-        </div>
+        <label class="nw-toggle"><input type="checkbox" id="nw-cmp-sel" disabled
+          title="select at least one route first"> Compare selected route buses vs all buses</label>
       </div>
       <div class="nw-group"><b>Direction</b>
         <select id="nw-direction" disabled><option value="">both</option></select>
@@ -294,6 +294,12 @@ export class NetworkView {
 
   _applyRouteSelection() {
     this.F.routes = this._selectedRouteIdx();
+    const any = this.F.routes.length > 0;
+    const anyChecked = (this.N.checkedRoutes ?? []).length > 0;
+    const showSel = document.querySelector("#nw-show-selected");
+    const clearSel = document.querySelector("#nw-routes-clear");
+    if (showSel) showSel.disabled = !anyChecked;
+    if (clearSel) clearSel.disabled = !any;
     const sel = document.querySelector("#nw-cmp-sel");
     if (sel) {
       sel.disabled = this.F.routes.length === 0;
@@ -483,7 +489,7 @@ export class NetworkView {
       .filter(([sid]) => !visible || visible.has(sid))
       .map(([, v]) => v);
     if (!vals.length) {
-      this.map.setColors(new Map());
+      this.map.setColors(new Map(), visible);
       this.map.setLegend({ title: legendTitle, gradient: ["#ddd", "#ddd"], ticks: ["no data", ""], note: "" });
       return;
     }
@@ -512,7 +518,7 @@ export class NetworkView {
       if (visible && !visible.has(sid)) continue;
       colors.set(sid, { color: colorOf(Math.max(lo, Math.min(hi, v))) });
     }
-    this.map.setColors(colors);
+    this.map.setColors(colors, visible);
     const doorNote = ["pax", "nondwell", "dwell", "boardings_per_hr"].includes(metric)
       ? ` · door data: ${this.data.meta.n_door_dates ?? "?"} of ${this.data.meta.n_dates} days`
       : "";

@@ -69,7 +69,7 @@ export class NetworkMap {
         minzoom: 12.5,
         layout: {
           "symbol-placement": "line",
-          "symbol-spacing": 90,
+          "symbol-spacing": 180,
           "icon-image": "halfarrow",
           "icon-size": ["interpolate", ["linear"], ["zoom"], 12.5, 0.45, 16, 0.85],
           "icon-rotation-alignment": "map",
@@ -77,7 +77,10 @@ export class NetworkMap {
           "icon-ignore-placement": true,
           "icon-offset": [0, 5],
         },
-        paint: { "icon-opacity": 0.9 },
+        paint: {
+          // arrows only on segments in the current view scope (route filter)
+          "icon-opacity": ["case", ["boolean", ["feature-state", "vis"], true], 0.9, 0],
+        },
       });
 
       this.map.addLayer({
@@ -98,7 +101,7 @@ export class NetworkMap {
       this._wireInteractions();
       this._ready = true;
       if (this._pendingColors) {
-        this.setColors(this._pendingColors);
+        this.setColors(...this._pendingColors);
         this._pendingColors = null;
       }
     });
@@ -134,20 +137,22 @@ export class NetworkMap {
   }
 
   // colors: Map<sid, {color, width?, opacity?}>. Sids absent from the map are
-  // dimmed (grey, thin, translucent).
-  setColors(colors) {
+  // dimmed (grey, thin, translucent). visibleSet (null = whole network)
+  // additionally gates the direction arrows to in-scope segments.
+  setColors(colors, visibleSet = null) {
     if (!this._ready) {
-      this._pendingColors = colors;
+      this._pendingColors = [colors, visibleSet];
       return;
     }
     for (const f of this.geojson.features) {
       const sid = f.properties.sid;
       const c = colors.get(sid);
+      const vis = visibleSet ? visibleSet.has(sid) : true;
       this.map.setFeatureState(
         { source: "segs", id: sid },
         c
-          ? { c: c.color, w: c.width ?? 2.2, o: c.opacity ?? 0.9 }
-          : { c: DIM_COLOR, w: 1.0, o: 0.35 },
+          ? { c: c.color, w: c.width ?? 2.2, o: c.opacity ?? 0.9, vis }
+          : { c: DIM_COLOR, w: 1.0, o: 0.35, vis },
       );
     }
   }
@@ -194,23 +199,25 @@ export class NetworkMap {
   }
 }
 
-// A white half-arrow ("harpoon") with a dark outline, drawn on canvas so it
-// stays legible over any choropleth color. Points +x; barb on top (which is
-// the right-hand side once rotated along the travel direction).
+// A white full arrow with a dark outline, drawn on canvas so it stays
+// legible over any choropleth color. Points +x; rotated along travel
+// direction by the symbol layer.
 function makeHalfArrow(size) {
   const c = document.createElement("canvas");
   c.width = c.height = size;
   const g = c.getContext("2d");
-  const mid = size * 0.55;
+  const mid = size * 0.5;
   const draw = (w, color) => {
     g.strokeStyle = color;
     g.lineWidth = w;
     g.lineCap = "round";
     g.lineJoin = "round";
     g.beginPath();
-    g.moveTo(size * 0.12, mid);          // stem tail
+    g.moveTo(size * 0.10, mid);          // stem tail
     g.lineTo(size * 0.82, mid);          // stem to tip
-    g.lineTo(size * 0.38, size * 0.18);  // single barb (top = travel-right)
+    g.moveTo(size * 0.40, size * 0.16);  // upper barb
+    g.lineTo(size * 0.82, mid);
+    g.lineTo(size * 0.40, size * 0.84);  // lower barb
     g.stroke();
   };
   draw(size * 0.30, "rgba(40,40,40,0.9)");
