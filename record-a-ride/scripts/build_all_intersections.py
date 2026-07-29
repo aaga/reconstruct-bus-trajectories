@@ -161,7 +161,11 @@ def fetch_osm_chunked(way_ids: list[int], args) -> dict:
                 osm = fetch(chunk, endpoint=args.overpass,
                             timeout_s=args.overpass_timeout)
                 break
-            except OverpassError as e:
+            # Catch-all: throttled public endpoints also fail with raw
+            # socket/http errors (RemoteDisconnected, ConnectionReset,
+            # timeouts) that OverpassError doesn't wrap — a multi-hour
+            # build must retry those, not die.
+            except Exception as e:  # noqa: BLE001
                 if transport == "auto" and isinstance(e, OverpassUnreachable):
                     print(f"[stage2]   chunk {ci}: urllib unreachable "
                           f"({e}) — switching to curl transport")
@@ -170,8 +174,8 @@ def fetch_osm_chunked(way_ids: list[int], args) -> dict:
                 if attempt == args.max_retries:
                     raise
                 wait = args.overpass_delay * 2 ** attempt
-                print(f"[stage2]   chunk {ci}: {e} — retry {attempt}/"
-                      f"{args.max_retries - 1} in {wait:.0f}s")
+                print(f"[stage2]   chunk {ci}: {type(e).__name__}: {e} — "
+                      f"retry {attempt}/{args.max_retries - 1} in {wait:.0f}s")
                 time.sleep(wait)
         n_new = 0
         for el in osm.get("elements") or []:

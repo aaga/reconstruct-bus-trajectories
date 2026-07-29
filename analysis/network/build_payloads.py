@@ -91,6 +91,14 @@ def _aggregate(
 ) -> "duckdb.DuckDBPyRelation":
     """One duckdb query: filter, join attrs + freeflow, bin, histogram."""
     con = duckdb.connect()
+    # The event_sums join (20M+ rows) can blow past duckdb's default 80%-of-
+    # RAM ceiling on a loaded machine — cap it and let it spill to disk.
+    spill = REPO / "outputs" / "network" / "duckdb_spill"
+    spill.mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET temp_directory='{spill}'")
+    con.execute("SET memory_limit='12GB'")
+    con.execute("SET preserve_insertion_order=false")
+    con.execute("SET threads=4")
     sidecar = str(
         REPO / "outputs" / "network" / city.city_id / "door_sidecar" / "service_date=*.parquet"
     )
