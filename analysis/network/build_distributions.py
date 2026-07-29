@@ -111,8 +111,10 @@ def build(city_id: str) -> None:
             "n_dates": dates[0],
         }
         total = 0
-        for cls in ("nd", "pre", "post", "nd_s", "pre_s", "post_s",
-                    "nd_q", "pre_q", "post_q"):
+        cls_list = ["nd", "pre", "post", "nd_s", "pre_s", "post_s"]
+        if have_is_last:  # queue arrays only when the batch carried the flag
+            cls_list += ["nd_q", "pre_q", "post_q"]
+        for cls in cls_list:
             arr = [0] * n_buckets
             for b, n in classes[cls].items():
                 if 0 <= b < n_buckets:
