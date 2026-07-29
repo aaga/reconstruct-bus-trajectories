@@ -627,8 +627,8 @@ export class NetworkView {
       ? { nd: "nd_s", pre: "pre_s", post: "post_s" }
       : { nd: "nd", pre: "pre", post: "post" };
     const src = { nd: d[KEY.nd] ?? d.nd, pre: d[KEY.pre] ?? d.pre, post: d[KEY.post] ?? d.post };
-    const W = 330, chartH = 90, roadH = 26, axisH = 18, padL = 34, padR = 6;
-    const H = chartH + roadH + axisH + 8;
+    const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 12;
+    const H = chartH + roadH + axisH + 12;
     const lenFt = d.len_ft;
     const nB = d.nd.length;
     const innerW = W - padL - padR;
@@ -653,52 +653,54 @@ export class NetworkView {
       }
     }
 
-    // y axis: 0 and max
-    const yTop = this._distMode === "seconds"
-      ? (yMax >= 3600 ? `${(yMax / 3600).toFixed(1)}h` : yMax >= 60 ? `${(yMax / 60).toFixed(0)}m` : `${yMax.toFixed(0)}s`)
-      : String(yMax);
+    // y axis: 0, mid, max
+    const fmtY = (v) => this._distMode === "seconds"
+      ? (v >= 3600 ? `${(v / 3600).toFixed(1)}h` : v >= 60 ? `${(v / 60).toFixed(0)}m` : `${v.toFixed(0)}s`)
+      : String(Math.round(v));
     const yAxis = `
-      <line x1="${padL - 3}" y1="6" x2="${padL - 3}" y2="${chartH}" stroke="#999"/>
-      <text x="${padL - 6}" y="12" text-anchor="end" class="dist-tick">${yTop}</text>
-      <text x="${padL - 6}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>`;
+      <line x1="${padL - 4}" y1="8" x2="${padL - 4}" y2="${chartH}" stroke="#999"/>
+      <text x="${padL - 8}" y="16" text-anchor="end" class="dist-tick">${fmtY(yMax)}</text>
+      <text x="${padL - 8}" y="${(chartH + 16) / 2}" text-anchor="end" class="dist-tick">${fmtY(yMax / 2)}</text>
+      <text x="${padL - 8}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>`;
 
     // road strip
-    const roadY = chartH + 4;
-    let road = `<rect x="${padL}" y="${roadY}" width="${innerW}" height="${roadH - 8}"
-                 rx="3" fill="#4a4a52"/>
-      <line x1="${padL}" y1="${roadY + (roadH - 8) / 2}" x2="${W - padR}"
-            y2="${roadY + (roadH - 8) / 2}" stroke="#fff" stroke-width="1"
-            stroke-dasharray="6 5" opacity=".7"/>`;
+    const roadY = chartH + 8;
+    const roadBodyH = roadH - 18;
+    let road = `<rect x="${padL}" y="${roadY}" width="${innerW}" height="${roadBodyH}"
+                 rx="6" fill="#4a4a52"/>
+      <line x1="${padL}" y1="${roadY + roadBodyH / 2}" x2="${W - padR}"
+            y2="${roadY + roadBodyH / 2}" stroke="#fff" stroke-width="2.5"
+            stroke-dasharray="16 13" opacity=".7"/>`;
     // traffic light pictogram at the left edge
-    const ly = roadY + (roadH - 8) / 2;
-    road += `<g transform="translate(${padL - 14}, ${ly - 9})">
-        <rect x="0" y="0" width="8" height="18" rx="2" fill="#222"/>
-        <circle cx="4" cy="4" r="2" fill="#e33"/>
-        <circle cx="4" cy="9" r="2" fill="#fb3"/>
-        <circle cx="4" cy="14" r="2" fill="#3c4"/>
+    const ly = roadY + roadBodyH / 2;
+    road += `<g transform="translate(${padL - 34}, ${ly - 22})">
+        <rect x="0" y="0" width="19" height="44" rx="4" fill="#222"/>
+        <circle cx="9.5" cy="9" r="5" fill="#e33"/>
+        <circle cx="9.5" cy="22" r="5" fill="#fb3"/>
+        <circle cx="9.5" cy="35" r="5" fill="#3c4"/>
       </g>`;
     // stops (blue bars) + crossings (white/purple stripes)
     for (const st of props.stops_off ?? []) {
       const x = xOf(st.off_m * 3.28084);
-      road += `<rect x="${(x - 2.5).toFixed(1)}" y="${roadY - 3}" width="5"
-               height="${roadH - 2}" rx="1.5" fill="#2f6fd6">
+      road += `<rect x="${(x - 6).toFixed(1)}" y="${roadY - 6}" width="12"
+               height="${roadBodyH + 12}" rx="4" fill="#2f6fd6">
                <title>${st.name}</title></rect>`;
     }
     for (const c of props.crossings_off ?? []) {
       const x = xOf(c.off_m * 3.28084);
-      road += `<rect x="${(x - 1.5).toFixed(1)}" y="${roadY}" width="3"
-               height="${roadH - 8}" fill="${c.type === "ped_crossing_signal" ? "#e9d5ff" : "#fff"}"
+      road += `<rect x="${(x - 3.5).toFixed(1)}" y="${roadY}" width="7"
+               height="${roadBodyH}" fill="${c.type === "ped_crossing_signal" ? "#e9d5ff" : "#fff"}"
                opacity=".9"><title>${c.type.replace(/_/g, " ")}</title></rect>`;
     }
 
     // feet scale
     const step = lenFt > 2000 ? 500 : lenFt > 800 ? 200 : 100;
-    let axis = `<line x1="${padL}" y1="${roadY + roadH - 4}" x2="${W - padR}"
-                y2="${roadY + roadH - 4}" stroke="#999"/>`;
+    const axisY = roadY + roadBodyH + 12;
+    let axis = `<line x1="${padL}" y1="${axisY}" x2="${W - padR}" y2="${axisY}" stroke="#999"/>`;
     for (let ft = 0; ft <= lenFt; ft += step) {
       const x = xOf(ft);
-      axis += `<line x1="${x}" y1="${roadY + roadH - 4}" x2="${x}" y2="${roadY + roadH}" stroke="#999"/>
-        <text x="${x}" y="${roadY + roadH + 10}" text-anchor="middle" class="dist-tick">${ft}</text>`;
+      axis += `<line x1="${x}" y1="${axisY}" x2="${x}" y2="${axisY + 6}" stroke="#999"/>
+        <text x="${x}" y="${axisY + 20}" text-anchor="middle" class="dist-tick">${ft} ft</text>`;
     }
 
     host.innerHTML = `
@@ -707,7 +709,7 @@ export class NetworkView {
           <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
           <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">delay seconds</button>
         </span>
-        <span class="nw-note">(${d.n_events} events · ft from the signal ahead · travel →light)</span>
+        <span class="nw-note">(${d.n_events} events)</span>
       </div>
       <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
       <div class="dist-legend">
