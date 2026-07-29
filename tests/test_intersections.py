@@ -753,3 +753,64 @@ def test_save_load_roundtrip(tmp_path: Path):
     save_intersections(data, p)
     loaded = load_intersections(p)
     assert loaded == data
+
+
+def test_standalone_per_approach_signal_emitted_and_anchored():
+    """A highway=traffic_signals node mid-way on the bus's OWN way (per-
+    approach stop-line style, 2026 junction-remap tagging) is emitted even
+    though it shares no node with a cross way — anchored to the nearest
+    street-street vertex and inheriting its cross-street names."""
+    poly, dist = _straight_polyline(n=11, total_m=300.0)
+    bus_node_ids = list(range(1, 12))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "secondary",
+                                            "name": "North Milwaukee Avenue"})
+    # Uncontrolled junction vertex at node 6 (x=150); the signal is the
+    # per-approach node 5 (x=120), 30 m upstream — inside the 40 m anchor
+    # radius — and on no cross way.
+    cross_way = _way(200, [100, 6, 200], tags={"highway": "residential",
+                                               "name": "North Damen Avenue"})
+    elements: list[dict] = [bus_way, cross_way]
+    for i, nid in enumerate(bus_node_ids):
+        tags = (
+            {"highway": "traffic_signals", "traffic_signals": "signal"}
+            if nid == 5 else None
+        )
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+    elements.append(_node(100, float(poly[5, 0]) + 0.001, float(poly[5, 1])))
+    elements.append(_node(200, float(poly[5, 0]) - 0.001, float(poly[5, 1])))
+
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=300.0,
+                        direction="forward", name="North Milwaukee Avenue",
+                        road_class="secondary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    sigs = [c for c in cps if c.control_type == "traffic_signals"]
+    assert len(sigs) == 1
+    assert sigs[0].intersection_node_id == 5
+    assert sigs[0].anchor_intersection_node_id == 6  # nearest junction, 30 m
+    assert "North Damen Avenue" in sigs[0].cross_street_names
+
+
+def test_standalone_ped_signal_node_not_emitted():
+    """highway=traffic_signals tagged as a pedestrian crossing signal
+    (crossing tag present / traffic_signals=pedestrian_crossing) must NOT
+    become a standalone signal vertex."""
+    poly, dist = _straight_polyline(n=11, total_m=1000.0)
+    bus_node_ids = list(range(1, 12))
+    bus_way = _way(100, bus_node_ids, tags={"highway": "secondary",
+                                            "name": "North Milwaukee Avenue"})
+    elements: list[dict] = [bus_way]
+    for i, nid in enumerate(bus_node_ids):
+        if nid == 4:
+            tags = {"highway": "traffic_signals",
+                    "traffic_signals": "pedestrian_crossing"}
+        elif nid == 8:
+            tags = {"highway": "traffic_signals", "crossing": "traffic_signals"}
+        else:
+            tags = None
+        elements.append(_node(nid, float(poly[i, 0]), float(poly[i, 1]), tags))
+
+    cache = [WaySegment(way_id=100, dist_start_m=0.0, dist_end_m=1000.0,
+                        direction="forward", name="North Milwaukee Avenue",
+                        road_class="secondary")]
+    cps = find_intersections_for_shape(cache, poly, dist, _osm(elements))
+    assert not [c for c in cps if c.control_type == "traffic_signals"]

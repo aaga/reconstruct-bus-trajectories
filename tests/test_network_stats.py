@@ -106,8 +106,10 @@ def test_derive_stat_families_consistent():
     ratios = rng.lognormal(0.3, 0.4, n)
     delays = (ratios - 1) * t_ff
     n_door = 500
+    # Event-classified semantics: dwell = door∪event union seconds; nd =
+    # zero-door-overlap event seconds (0-centric, nonnegative); pax ≥ 0.
     dwell = np.abs(rng.normal(9, 5, n_door))
-    nd = delays[:n_door] - dwell
+    nd = np.where(rng.random(n_door) < 0.5, 0.0, rng.lognormal(2.6, 0.8, n_door))
     loads = rng.integers(1, 50, n_door).astype(float)
     pax = nd * loads
     acc = {
@@ -116,10 +118,11 @@ def test_derive_stat_families_consistent():
         "n_door": n_door,
         "sum_dwell": float(dwell.sum()),
         "sum_delay_door": float(delays[:n_door].sum()),
+        "sum_nd": float(nd.sum()),
         "m2_dw": welford_from_samples(dwell)[2],
         "m2_nd": welford_from_samples(nd)[2],
         "hist_dw": hist_counts(dwell / t_ff, DWELL_EDGES),
-        "hist_nd": hist_counts((nd + t_ff) / t_ff),
+        "hist_nd": hist_counts(nd / t_ff, DWELL_EDGES),
         "sum_pax": float(pax.sum()),
         "m2_pax": welford_from_samples(pax)[2],
         "hist_pax": hist_counts(pax, PAX_EDGES),

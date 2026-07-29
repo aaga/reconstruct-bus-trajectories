@@ -33,6 +33,7 @@ smoothed trajectory point at the same distance value.
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -345,6 +346,8 @@ def cluster_signals(
                 control_type=prev.control_type,
                 cross_street_names=tuple(sorted(cluster_names)),
                 merged_node_ids=tuple(cluster_merged),
+                signalized=prev.signalized,
+                anchor_intersection_node_id=prev.anchor_intersection_node_id,
             )
         else:
             out.append(cp)
@@ -482,10 +485,20 @@ def find_intersections_for_shape(
             ):
                 pending_stop = (node_id, dist_route_m, highway_tag)
 
-            # Intersection vertices only: must share a node with at least
-            # one non-bus highway way.
+            # Intersection vertices: must share a node with at least one
+            # non-bus highway way — EXCEPT per-approach stop-line signals
+            # (``highway=traffic_signals`` mid-way on the bus's own way, the
+            # 2026 junction-remap tagging style at e.g. Milwaukee/Damen).
+            # Those sit on no cross way but are the only signal evidence at
+            # such junctions, so they are emitted and later anchored to the
+            # nearest street-street vertex.
             other_ways = node_to_ways.get(node_id, set()) - bus_way_ids
-            if not other_ways:
+            standalone_signal = (
+                highway_tag == "traffic_signals"
+                and "crossing" not in tags
+                and tags.get("traffic_signals") != "pedestrian_crossing"
+            )
+            if not other_ways and not standalone_signal:
                 continue
             if node_id in seen_intersection_nodes:
                 continue
@@ -527,6 +540,27 @@ def find_intersections_for_shape(
                 pending_stop = None
 
     intersection_vertices.sort(key=lambda v: v["dist_along_route_m"])
+
+    # Anchor per-approach signals (no cross way at the node) to the nearest
+    # true street-street vertex within anchor_radius_m — EUCLIDEAN distance,
+    # so every shape through the junction picks the same anchor and the
+    # network registry can union all approach signals into one boundary
+    # cluster. The signal also inherits the anchor's cross-street names.
+    junction_vs = [v for v in intersection_vertices if v["cross_way_ids"]]
+    for v in intersection_vertices:
+        if v["control_type"] != "traffic_signals" or v["cross_way_ids"]:
+            continue
+        mlat = 111320.0 * math.cos(math.radians(v["lat"]))
+        best, best_d = None, anchor_radius_m
+        for j in junction_vs:
+            d = math.hypot((j["lon"] - v["lon"]) * mlat,
+                           (j["lat"] - v["lat"]) * 111320.0)
+            if d < best_d:
+                best, best_d = j, d
+        if best is not None:
+            v["anchor_node_id"] = best["node_id"]
+            if not v["cross_street_names"]:
+                v["cross_street_names"] = best["cross_street_names"]
 
     # ── Pass 2: ped crossings, every one emitted, each anchored to the
     # nearest intersection vertex within anchor_radius_m (controlled or
@@ -636,6 +670,7 @@ def find_intersections_for_shape(
             cross_street_names=v["cross_street_names"],
             merged_node_ids=v["merged_node_ids"],
             signalized=v["control_type"] == "traffic_signals",
+            anchor_intersection_node_id=v.get("anchor_node_id"),
         ))
     out.extend(ped_controls)
 

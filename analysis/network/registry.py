@@ -80,14 +80,19 @@ def cluster_nodes(
     usage: dict[int, int],  # node -> #shapes using it (for representative pick)
     radius_m: float = CLUSTER_RADIUS_M,
     primary: set[int] | frozenset[int] = frozenset(),
+    extra_edges: list[tuple[int, int]] | tuple = (),
 ) -> dict[int, int]:
     """Union-find nodes within ``radius_m``; return node -> canonical node.
 
     Canonical = prefer a ``primary`` member (true highway=traffic_signals
     node), then the member used by the most shapes, then lowest node id —
     a deterministic global rule, unlike the corridor study's per-shape
-    "first in route order". ``primary`` matters at junctions whose signals
-    OSM maps only as signalized crossings (promoted ped nodes).
+    "first in route order".
+
+    ``extra_edges`` unions specific node pairs regardless of distance —
+    used to fold per-approach stop-line signals (which can sit > radius
+    apart across a big junction) into one cluster via their shared anchor
+    junction vertex. Pairs with ids missing from ``positions`` are ignored.
     """
     ids = sorted(positions)
     if not ids:
@@ -122,6 +127,12 @@ def cluster_nodes(
             for j in cand:
                 if i < j and np.hypot(*(xy[i] - xy[j])) < radius_m:
                     union(i, j)
+
+    idx = {n: i for i, n in enumerate(ids)}
+    for a, b in extra_edges:
+        ia, ib = idx.get(a), idx.get(b)
+        if ia is not None and ib is not None:
+            union(ia, ib)
 
     groups: dict[int, list[int]] = defaultdict(list)
     for i, n in enumerate(ids):
@@ -375,56 +386,60 @@ def build_registry(city: CityConfig) -> dict:
         gtfs_zip, {s: shape_meta[s]["rep_trip_id"] for s in bus_shapes}
     )
 
-    # ---- promote intersection-anchored ped-signal nodes ------------------
-    # Some (often recently remapped, multi-leg) junctions carry NO
-    # highway=traffic_signals node in OSM — the signal exists only as
-    # signalized crossing nodes (e.g. Milwaukee/Kimball, Milwaukee/Damen).
-    # A ped_crossing_signal ANCHORED to an intersection vertex (40 m rule
-    # from the corridor pipeline) is evidence of a signalized intersection →
-    # boundary. Mid-block ped signals (never anchored on any shape) stay
-    # demoted. Promotion is global per node so shapes can't disagree.
-    anchored_ped: set[int] = set()
-    for shape_id in bus_shapes:
-        for cp in intersections[shape_id]:
-            if (
-                cp.control_type == "ped_crossing_signal"
-                and cp.anchor_intersection_node_id is not None
-            ):
-                anchored_ped.add(cp.intersection_node_id)
-
-    # ---- global clustering: traffic signals + ALL ped-signal nodes -------
-    # Ped nodes participate in clustering so junction crossings chain into
-    # one supernode; PROMOTION then happens per cluster (below): a cluster is
-    # a boundary if it contains a true signal or any anchored crossing. This
-    # catches 6-way junctions where the bus street's own crossing nodes are
-    # unanchored but a cross street's are (e.g. Milwaukee/Damen/North).
+    # ---- global clustering: true traffic-signal nodes --------------------
+    # Boundaries come ONLY from highway=traffic_signals nodes (junction-node
+    # style, or per-approach stop-line style emitted by intersections.py
+    # since the 2026-07 regen). Ped signals stay demoted everywhere — the
+    # earlier cluster-level "promotion" workaround for junctions whose
+    # signals OSM mapped only as crossings (Milwaukee/Kimball, /Damen) is
+    # gone: those junctions now carry real per-approach signal nodes.
+    #
+    # Per-approach signals of one junction can sit farther apart than the
+    # cluster radius (~65 m across a 6-way), so each carries an anchor (its
+    # nearest street-street vertex, Euclidean → identical across shapes).
+    # Signal→anchor union edges plus the anchor vertices themselves as
+    # cluster members (anchors of one junction are mutually near) fold every
+    # approach signal into a single boundary cluster. Anchors are never
+    # ``primary`` so the representative stays a real signal node.
     positions: dict[int, tuple[float, float]] = {}
     usage: Counter = Counter()
     primary: set[int] = set()
+    anchor_edges: list[tuple[int, int]] = []
+    anchor_pos: dict[int, tuple[float, float]] = {}
     for shape_id in bus_shapes:
         seen_in_shape = set()
-        for cp in intersections[shape_id]:
-            if cp.control_type in BOUNDARY_TYPES or cp.control_type == "ped_crossing_signal":
+        cps = intersections[shape_id]
+        by_node = {}
+        for cp in cps:
+            by_node.setdefault(cp.intersection_node_id, cp)
+        for cp in cps:
+            if cp.control_type in BOUNDARY_TYPES:
                 positions[cp.intersection_node_id] = (cp.lat, cp.lon)
-                if cp.control_type in BOUNDARY_TYPES:
-                    primary.add(cp.intersection_node_id)
+                primary.add(cp.intersection_node_id)
                 if cp.intersection_node_id not in seen_in_shape:
                     usage[cp.intersection_node_id] += 1
                     seen_in_shape.add(cp.intersection_node_id)
-    canon = cluster_nodes(positions, usage, CLUSTER_RADIUS_M, primary=primary)
-
-    boundary_clusters: set[int] = {canon[n] for n in primary} | {
-        canon[n] for n in anchored_ped
-    }
-    promoted_ped = {
-        n for n, c in canon.items() if c in boundary_clusters and n not in primary
-    }
+                a = cp.anchor_intersection_node_id
+                if a is not None:
+                    anchor_edges.append((cp.intersection_node_id, a))
+                    ref = by_node.get(a)
+                    # Anchor position if the vertex is a CP on some shape;
+                    # else fall back to the signal's own position (≤ 40 m
+                    # away — close enough for grid membership; the explicit
+                    # edge does the actual union).
+                    if ref is not None:
+                        anchor_pos[a] = (ref.lat, ref.lon)
+                    else:
+                        anchor_pos.setdefault(a, (cp.lat, cp.lon))
+    for n, pos in anchor_pos.items():
+        positions.setdefault(n, pos)
+    canon = cluster_nodes(
+        positions, usage, CLUSTER_RADIUS_M, primary=primary,
+        extra_edges=anchor_edges,
+    )
 
     def is_boundary_cp(cp) -> bool:
-        n = cp.intersection_node_id
-        if cp.control_type in BOUNDARY_TYPES:
-            return True
-        return cp.control_type == "ped_crossing_signal" and canon.get(n) in boundary_clusters
+        return cp.control_type in BOUNDARY_TYPES
     node_positions = positions  # node -> (lat, lon), incl. every canonical rep
     n_geom_fallback = [0]
     n_clusters_multi = len(
@@ -446,23 +461,19 @@ def build_registry(city: CityConfig) -> dict:
         cps = intersections[shape_id]
         stops = stops_map.get(shape_id, [])
 
-        # Canonical segmentation: traffic signals + promoted (intersection-
-        # anchored) ped-signal nodes, cluster-deduped. Un-promoted ped-signal
-        # CPs are excluded outright so the type-based boundary filter inside
-        # build_segments_from_records can't resurrect them.
+        # Canonical segmentation: true traffic-signal nodes, cluster-deduped
+        # (per-approach signals of one junction collapse to one boundary).
+        # Ped-signal CPs stay non-boundary control points.
         signals = sorted(
             (c for c in cps if is_boundary_cp(c)),
             key=lambda c: c.dist_along_route_m,
         )
         dedup = _dedupe_by_cluster(signals, canon)
         n_confetti_dropped += len(signals) - len(dedup)
-        non_boundary = [
-            c for c in cps
-            if not is_boundary_cp(c) and c.control_type != "ped_crossing_signal"
-        ]
+        non_boundary = [c for c in cps if not is_boundary_cp(c)]
         new_segs = build_segments_from_records(
             dedup + non_boundary, stops,
-            boundary_types=("traffic_signals", "ped_crossing_signal"),
+            boundary_types=BOUNDARY_TYPES,
         )
 
         def canon_seg_id(seg: Segment) -> str:
@@ -586,10 +597,7 @@ def build_registry(city: CityConfig) -> dict:
         for cp in intersections[rep["shape_id"]]:
             if not (rep["x_start_m"] < cp.dist_along_route_m < rep["x_end_m"]):
                 continue
-            if cp.control_type == "ped_crossing_marked" or (
-                cp.control_type == "ped_crossing_signal"
-                and canon.get(cp.intersection_node_id) not in boundary_clusters
-            ):
+            if cp.control_type in ("ped_crossing_marked", "ped_crossing_signal"):
                 crossings_off.append({
                     "type": cp.control_type,
                     "off_m": round(rep["x_end_m"] - cp.dist_along_route_m, 1),
@@ -675,9 +683,9 @@ def build_registry(city: CityConfig) -> dict:
             "n_instances": sum(len(v) for v in instances.values()),
             "n_boundary_nodes": len({canon[n] for n in canon}),
             "n_alias_clusters_merged": n_clusters_multi,
-            "n_promoted_ped_signal_nodes": len(promoted_ped),
-            "n_boundary_clusters_from_ped_only": sum(
-                1 for c in boundary_clusters if c not in {canon[n] for n in primary}
+            "n_anchor_union_edges": len(set(anchor_edges)),
+            "n_anchored_approach_signals": len(
+                {a for a, _ in set(anchor_edges)}
             ),
             "n_confetti_boundaries_dropped": n_confetti_dropped,
             "n_len_outlier_instances": n_outlier_instances,

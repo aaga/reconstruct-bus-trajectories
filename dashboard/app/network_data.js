@@ -105,7 +105,7 @@ export class NetworkData {
         let acc = out.get(sid);
         if (!acc) {
           acc = { n: 0, sum: 0, m2: 0, hist: new Float64Array(N_BUCKETS),
-                  nDoor: 0, sumDwell: 0, sumDelayDoor: 0, m2Dw: 0, m2Nd: 0,
+                  nDoor: 0, sumDwell: 0, sumDelayDoor: 0, sumNd: 0, m2Dw: 0, m2Nd: 0,
                   sumPax: 0, m2Pax: 0, sumOns: 0, sumOffs: 0, sumLoad: 0,
                   hist_dw: new Float64Array(N_BUCKETS),
                   hist_nd: new Float64Array(N_BUCKETS),
@@ -121,9 +121,8 @@ export class NetworkData {
           const nd = c.n_door[i];
           // Welford-merge each door-subset family (n = door-covered count).
           const dw = welfordMerge(acc.nDoor, acc.sumDwell, acc.m2Dw, nd, c.sum_dwell[i], c.m2_dw?.[i] ?? 0);
-          const ndl = welfordMerge(acc.nDoor,
-            acc.sumDelayDoor - acc.sumDwell, acc.m2Nd,
-            nd, c.sum_delay_door[i] - c.sum_dwell[i], c.m2_nd?.[i] ?? 0);
+          const ndl = welfordMerge(acc.nDoor, acc.sumNd, acc.m2Nd,
+            nd, c.sum_nd?.[i] ?? 0, c.m2_nd?.[i] ?? 0);
           const px = welfordMerge(acc.nDoor, acc.sumPax, acc.m2Pax, nd, c.sum_pax?.[i] ?? 0, c.m2_pax?.[i] ?? 0);
           acc.m2Dw = dw[2];
           acc.m2Nd = ndl[2];
@@ -131,6 +130,7 @@ export class NetworkData {
           acc.nDoor += nd;
           acc.sumDwell += c.sum_dwell[i];
           acc.sumDelayDoor += c.sum_delay_door[i];
+          acc.sumNd += c.sum_nd?.[i] ?? 0;
           acc.sumPax += c.sum_pax?.[i] ?? 0;
           acc.sumOns += c.sum_ons[i];
           acc.sumOffs += c.sum_offs[i];
@@ -291,8 +291,9 @@ export function deriveStat(family, stat, acc, tFf, meta) {
     return block(nd, acc.sumDwell, acc.m2Dw, acc.hist_dw, "dw", (r) => r * tFf);
   }
   if (family === "nondwell") {
-    return block(nd, acc.sumDelayDoor - acc.sumDwell, acc.m2Nd, acc.hist_nd,
-                 "nd", (r) => (r - 1) * tFf);
+    // Event-classified non-dwell seconds (nd_event_s): 0-centric ratio to
+    // t_ff on the dwell-style edges, so seconds = r * t_ff (no −1 shift).
+    return block(nd, acc.sumNd, acc.m2Nd, acc.hist_nd, "nd", (r) => r * tFf);
   }
   if (family === "pax") {
     return block(nd, acc.sumPax, acc.m2Pax, acc.hist_pax, "pax", (v) => v);
@@ -343,7 +344,7 @@ export async function selfTestGolden(baseUrl = "../data/network") {
     const acc = {
       n: a.n, sum: a.sum, m2: a.m2, hist: Float64Array.from(a.hist),
       nDoor: a.n_door, sumDwell: a.sum_dwell, sumDelayDoor: a.sum_delay_door,
-      m2Dw: a.m2_dw, m2Nd: a.m2_nd, sumPax: a.sum_pax, m2Pax: a.m2_pax,
+      sumNd: a.sum_nd, m2Dw: a.m2_dw, m2Nd: a.m2_nd, sumPax: a.sum_pax, m2Pax: a.m2_pax,
       hist_dw: Float64Array.from(a.hist_dw),
       hist_nd: Float64Array.from(a.hist_nd),
       hist_pax: Float64Array.from(a.hist_pax),

@@ -61,6 +61,37 @@ class _CP:
         self.dist_along_route_m = x
 
 
+
+
+def test_cluster_nodes_extra_edges_union_via_anchor():
+    """Per-approach signals ~65 m apart (beyond the 30 m radius) union into
+    one cluster through signal->anchor edges + anchor vertices as members
+    (the anchors of one junction sit within the radius of each other)."""
+    positions = {
+        # two approach signals straddling a junction, ~82 m apart, each
+        # ~36 m from its own anchor (outside the 30 m radius, inside the
+        # 40 m anchor rule) — distance alone must NOT merge anything here
+        101: (41.91013, -87.67755),
+        102: (41.91087, -87.67765),
+        # their (distinct) anchor junction vertices, ~14 m apart
+        901: (41.91045, -87.67755),
+        902: (41.91055, -87.67765),
+    }
+    usage = {101: 3, 102: 3}
+    primary = {101, 102}
+    canon = cluster_nodes(
+        positions, usage, radius_m=30.0, primary=primary,
+        extra_edges=[(101, 901), (102, 902)],
+    )
+    assert canon[101] == canon[102]          # one boundary cluster
+    assert canon[101] in primary             # rep is a real signal, not an anchor
+    # edges referencing unknown ids are ignored, not fatal
+    canon2 = cluster_nodes(positions, usage, radius_m=30.0, primary=primary,
+                           extra_edges=[(101, 999999)])
+    assert canon2[101] != canon2[102]
+
+
+
 def test_dedupe_keeps_first_of_each_run():
     canon = {1: 1, 2: 1, 3: 3, 4: 3, 5: 5}
     sigs = [_CP(1, 0), _CP(2, 15), _CP(3, 300), _CP(4, 318), _CP(5, 700)]
