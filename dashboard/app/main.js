@@ -60,6 +60,7 @@ const S = {
   },
 };
 
+window.__S = S; // dev/testing handle
 const trajView = new TrajectoryView(S);
 const speedView = new SpeedView(S);
 const overallView = new OverallDelayView(S);
@@ -173,6 +174,7 @@ async function renderNetwork() {
   $("trip-meta").textContent = ""; // trip info is irrelevant on this tab
   document.body.classList.add("show-map", "network-mode");
   document.body.classList.remove("network-areas"); // areas sub-tab hidden
+  S.network.syncHash = syncHash;
   if (!S.network.data) {
     try {
       // Cache the init promise: startup can trigger two renders (hash apply +
@@ -285,7 +287,30 @@ function currentHash() {
   let h = `#${S.main}`;
   const sub = { single: S.tab, average: S.atab, network: S.ntab }[S.main];
   if (sub) h += `/${sub}`;
-  if (S.main === "network") h += `?metric=${S.network.metric}&stat=${S.network.stat}`;
+  if (S.main === "network") {
+    const N = S.network;
+    const F = N.filters;
+    const q = new URLSearchParams();
+    q.set("metric", N.metric);
+    q.set("stat", N.stat);
+    if (N.compare) q.set("cmp", N.compare);
+    const defPeriods = ["am_peak", "pm_peak"];
+    if (F.periods.join(".") !== defPeriods.join(".")) q.set("periods", F.periods.join("."));
+    if (F.dow != null) q.set("days", `dow${F.dow}`);
+    else if (F.daytype !== "weekday") q.set("days", F.daytype ?? "everyday");
+    if (F.pick != null) q.set("pick", F.pick);
+    if (F.weather != null) q.set("weather", F.weather);
+    const rids = N.data?.meta?.dims?.route_ids;
+    if (rids) {
+      if ((N.checkedRoutes ?? []).length) {
+        q.set("routes", N.checkedRoutes.map((i) => rids[i]).join("."));
+      }
+      if (N.activeRoute != null) q.set("active", rids[N.activeRoute]);
+    }
+    if (F.direction) q.set("dir", F.direction);
+    if (N.minN !== 10) q.set("minn", N.minN);
+    h += `?${q.toString()}`;
+  }
   return h;
 }
 
@@ -306,11 +331,35 @@ function applyHash() {
   if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
   if (main === "network") S.ntab = "map"; // areas sub-tab hidden (2026-07)
   const params = new URLSearchParams(query || "");
-  const metric = params.get("metric");
-  if (main === "network" && metric && METRICS[metric]) S.network.metric = metric;
-  const stat = params.get("stat");
-  if (main === "network" && ["mean","median","std","p95","buffer"].includes(stat ?? "")) {
-    S.network.stat = stat;
+  if (main === "network") {
+    const N = S.network;
+    const F = N.filters;
+    const metric = params.get("metric");
+    if (metric && METRICS[metric]) N.metric = metric;
+    const stat = params.get("stat");
+    if (["mean", "median", "std", "p95", "buffer"].includes(stat ?? "")) N.stat = stat;
+    const cmp = params.get("cmp");
+    N.compare = ["peak", "selection"].includes(cmp ?? "") ? cmp : null;
+    const periods = params.get("periods");
+    if (periods) {
+      const valid = ["am_peak", "midday", "pm_peak", "evening", "late_night"];
+      const ps = periods.split(".").filter((x) => valid.includes(x));
+      if (ps.length) F.periods = ps;
+    }
+    const days = params.get("days");
+    if (days != null) {
+      if (/^dow[0-6]$/.test(days)) { F.dow = Number(days.slice(3)); F.daytype = null; }
+      else if (days === "everyday") { F.daytype = null; F.dow = null; }
+      else if (["weekday", "weekend"].includes(days)) { F.daytype = days; F.dow = null; }
+    }
+    F.pick = params.has("pick") ? Number(params.get("pick")) : F.pick;
+    F.weather = params.has("weather") ? Number(params.get("weather")) : F.weather;
+    // Route ids can't map to indices until NetworkData's meta is loaded —
+    // stash names; NetworkView resolves them on first render.
+    if (params.has("routes")) N.pendingRoutes = params.get("routes").split(".");
+    if (params.has("active")) N.pendingActive = params.get("active");
+    if (params.has("dir")) F.direction = params.get("dir");
+    if (params.has("minn")) N.minN = Math.max(1, Number(params.get("minn")) || 10);
   }
   // reflect sub-tab button states
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));

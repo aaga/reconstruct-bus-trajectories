@@ -68,6 +68,20 @@ export class NetworkView {
 
   async render() {
     if (!this.data) return;
+    // Restore route selection deep-linked in the URL (names -> indices).
+    if (this.N.pendingRoutes || this.N.pendingActive) {
+      const rids = this.data.meta.dims.route_ids;
+      if (this.N.pendingRoutes) {
+        this.N.checkedRoutes = this.N.pendingRoutes
+          .map((r) => rids.indexOf(r)).filter((i) => i >= 0);
+      }
+      if (this.N.pendingActive) {
+        const i = rids.indexOf(this.N.pendingActive);
+        this.N.activeRoute = i >= 0 ? i : null;
+      }
+      this.N.pendingRoutes = this.N.pendingActive = null;
+      this.F.routes = this._selectedRouteIdx();
+    }
     if (!this._panelBuilt) this._buildPanel();
     if (!this.map) {
       this.map = new NetworkMap($("map"), this.data.segments, {
@@ -177,6 +191,10 @@ export class NetworkView {
     const renderRoutes = () => {
       const host = el.querySelector("#nw-routelist");
       const checked = new Set(this.N.checkedRoutes ?? []);
+      if (this._showSelectedOnly && checked.size === 0) {
+        this._showSelectedOnly = false;
+        el.querySelector("#nw-show-selected").textContent = "show selected";
+      }
       const active = this.N.activeRoute;
       host.innerHTML = "";
       dims.route_ids.forEach((r, i) => {
@@ -215,6 +233,9 @@ export class NetworkView {
     el.querySelector("#nw-routes-clear").onclick = () => {
       this.N.checkedRoutes = [];
       this.N.activeRoute = null;
+      // Snap back to the full list — an empty "selected only" view is a trap.
+      this._showSelectedOnly = false;
+      el.querySelector("#nw-show-selected").textContent = "show selected";
       renderRoutes();
       this._applyRouteSelection();
     };
@@ -294,20 +315,12 @@ export class NetworkView {
 
   _applyRouteSelection() {
     this.F.routes = this._selectedRouteIdx();
-    const any = this.F.routes.length > 0;
-    const anyChecked = (this.N.checkedRoutes ?? []).length > 0;
-    const showSel = document.querySelector("#nw-show-selected");
-    const clearSel = document.querySelector("#nw-routes-clear");
-    if (showSel) showSel.disabled = !anyChecked;
-    if (clearSel) clearSel.disabled = !any;
+    this._applyRouteButtons();
     const sel = document.querySelector("#nw-cmp-sel");
-    if (sel) {
-      sel.disabled = this.F.routes.length === 0;
-      if (sel.disabled && this.N.compare === "selection") {
-        sel.checked = false;
-        this.N.compare = null;
-        this._syncMetricControls();
-      }
+    if (sel && sel.disabled && this.N.compare === "selection") {
+      sel.checked = false;
+      this.N.compare = null;
+      this._syncMetricControls();
     }
     this._updateDirectionControl();
     this.refresh();
@@ -336,6 +349,35 @@ export class NetworkView {
     if (stat) stat.checked = true;
     const metricSel = el.querySelector("#nw-metric");
     if (metricSel) metricSel.value = this.N.metric;
+    const days = el.querySelector("#nw-daytype");
+    if (days) {
+      days.value = this.F.dow != null ? `dow${this.F.dow}` : (this.F.daytype ?? "");
+    }
+    const pick = el.querySelector("#nw-pick");
+    if (pick) pick.value = this.F.pick == null ? "" : String(this.F.pick);
+    const weather = el.querySelector("#nw-weather");
+    if (weather) weather.value = this.F.weather == null ? "" : String(this.F.weather);
+    el.querySelector("#nw-cmp-peak").checked = this.N.compare === "peak";
+    el.querySelector("#nw-cmp-sel").checked = this.N.compare === "selection";
+    const minn = el.querySelector("#nw-minn");
+    if (minn) minn.value = this.N.minN;
+    this._renderRoutes?.();
+    this._applyRouteButtons();
+    this._syncMetricControls();
+    this._updateDirectionControl();
+    const dir = el.querySelector("#nw-direction");
+    if (dir && this.F.direction) dir.value = this.F.direction;
+  }
+
+  _applyRouteButtons() {
+    const any = this._selectedRouteIdx().length > 0;
+    const anyChecked = (this.N.checkedRoutes ?? []).length > 0;
+    const showSel = document.querySelector("#nw-show-selected");
+    const clearSel = document.querySelector("#nw-routes-clear");
+    if (showSel) showSel.disabled = !anyChecked;
+    if (clearSel) clearSel.disabled = !any;
+    const sel = document.querySelector("#nw-cmp-sel");
+    if (sel) sel.disabled = !any;
   }
 
   _updateDirectionControl() {
@@ -427,6 +469,7 @@ export class NetworkView {
   }
 
   async refresh() {
+    this.N.syncHash?.();
     const cnt = document.querySelector("#nw-count");
     if (cnt) cnt.textContent = "loading data…";
     try {
