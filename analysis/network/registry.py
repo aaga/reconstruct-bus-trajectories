@@ -595,7 +595,10 @@ def build_registry(city: CityConfig) -> dict:
                     "off_m": round(rep["x_end_m"] - cp.dist_along_route_m, 1),
                 })
             elif cp.control_type == "stop":
-                stop_signs_off.append(round(rep["x_end_m"] - cp.dist_along_route_m, 1))
+                stop_signs_off.append({
+                    "off_m": round(rep["x_end_m"] - cp.dist_along_route_m, 1),
+                    "cross": cp.cross_street_names[0] if cp.cross_street_names else None,
+                })
 
         # Minor cross-street junctions (viz: dashed centerline breaks).
         # Preferred source: "uncontrolled_junction" control points (real

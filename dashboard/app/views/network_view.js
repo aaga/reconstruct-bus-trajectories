@@ -700,9 +700,14 @@ export class NetworkView {
         <circle cx="9.5" cy="22" r="5" fill="#fb3"/>
         <circle cx="9.5" cy="35" r="5" fill="#3c4"/>
       </g>`;
-    // minor junctions: square box where the dashed centerline breaks
     const ownStreet = (props.name ?? "").replace(/^(North|South|East|West) /, "");
-    const stopSignOffs = props.stop_signs_off ?? [];
+    // minor junctions: square box where the dashed centerline breaks
+    const stopSigns = (props.stop_signs_off ?? []).map((ss) =>
+      typeof ss === "number" ? { off_m: ss, cross: null } : ss);
+    const stopSignOffs = stopSigns.map((ss) => ss.off_m);
+    const junctionTip = (cross) => cross
+      ? `${ownStreet} & ${cross.replace(/^(North|South|East|West) /, "")}`
+      : `${ownStreet} — cross street`;
     const junctionBox = (x, tip) =>
       `<rect data-tip="${tip}" x="${(x - 13.5).toFixed(1)}"
         y="${(roadY + roadBodyH / 2 - 13.5).toFixed(1)}"
@@ -713,21 +718,20 @@ export class NetworkView {
       // a stop-sign intersection draws its own box (octagon inside)
       if (stopSignOffs.some((so) => Math.abs(so - off) <= 20)) continue;
       const cross = typeof j === "number" ? null : j.cross;
-      const tip = cross
-        ? `${ownStreet} & ${cross.replace(/^(North|South|East|West) /, "")}`
-        : `${ownStreet} — cross street`;
-      road += junctionBox(xOf(off * 3.28084), tip);
+      road += junctionBox(xOf(off * 3.28084), junctionTip(cross));
     }
-    // stop-sign intersections: junction box with the octagon inside
-    for (const off of stopSignOffs) {
-      const x = xOf(off * 3.28084);
-      road += junctionBox(x, "stop-sign intersection");
+    // stop-sign intersections: junction box with the octagon inside; hover
+    // reads like any other junction ("Street & Cross")
+    for (const ss of stopSigns) {
+      const x = xOf(ss.off_m * 3.28084);
+      const tip = junctionTip(ss.cross);
+      road += junctionBox(x, tip);
       const r = 9, oy = roadY + roadBodyH / 2;
       const oct = Array.from({length: 8}, (_, i) => {
         const a = (Math.PI / 8) + (i * Math.PI) / 4;
         return `${(x + r * Math.cos(a)).toFixed(1)},${(oy + r * Math.sin(a)).toFixed(1)}`;
       }).join(" ");
-      road += `<g data-tip="stop-sign intersection"><polygon points="${oct}" fill="#c22"
+      road += `<g data-tip="${tip}"><polygon points="${oct}" fill="#c22"
                stroke="#fff" stroke-width="1.5"/>
                <text x="${x}" y="${oy + 2.5}" text-anchor="middle"
                  style="font-size:6.5px;fill:#fff;font-weight:700">STOP</text></g>`;
