@@ -12,12 +12,14 @@ import { TILE_STYLE } from "./map_view.js";
 const DIM_COLOR = "#d8d8d8";
 
 export class NetworkMap {
-  // onHover(feature|null, lngLat), onClick(feature|null)
-  constructor(container, segmentsGeojson, { onHover, onClick } = {}) {
+  // onHover(feature|null, lngLat), onClick(feature|null),
+  // onContextMenu(feature|null, lngLat)
+  constructor(container, segmentsGeojson, { onHover, onClick, onContextMenu } = {}) {
     this.container = container;
     this.geojson = segmentsGeojson;
     this.onHover = onHover;
     this.onClick = onClick;
+    this.onContextMenu = onContextMenu;
     this._ready = false;
     this._pendingColors = null;
     this._highlighted = [];
@@ -109,6 +111,16 @@ export class NetworkMap {
     this._legend = document.createElement("div");
     this._legend.className = "maplegend nw-legend";
     container.appendChild(this._legend);
+
+    // Map / satellite toggle (M and S keys still work and stay in sync).
+    this._basemapCtl = document.createElement("div");
+    this._basemapCtl.className = "nw-basemap";
+    this._basemapCtl.innerHTML = `
+      <button data-b="map" class="active">Map</button><button data-b="satellite">Satellite</button>`;
+    this._basemapCtl.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => this.setBasemap(b.dataset.b);
+    });
+    container.appendChild(this._basemapCtl);
     window.__nwmap = this.map; // dev/testing handle (harmless in production)
   }
 
@@ -127,6 +139,14 @@ export class NetworkMap {
       this.onHover?.(f, e.lngLat, e.point);
     });
     this.map.on("mouseout", () => this.onHover?.(null));
+    this.map.on("contextmenu", (e) => {
+      e.preventDefault();
+      const feats = this.map.queryRenderedFeatures(
+        [[e.point.x - 5, e.point.y - 5], [e.point.x + 5, e.point.y + 5]],
+        { layers: ["seg-lines"] },
+      );
+      this.onContextMenu?.(feats[0] || null, e.lngLat);
+    });
     this.map.on("click", (e) => {
       const feats = this.map.queryRenderedFeatures(
         [[e.point.x - 5, e.point.y - 5], [e.point.x + 5, e.point.y + 5]],
@@ -187,6 +207,8 @@ export class NetworkMap {
     if (!this._ready) return;
     this.map.setLayoutProperty("carto", "visibility", which === "satellite" ? "none" : "visible");
     this.map.setLayoutProperty("satellite", "visibility", which === "satellite" ? "visible" : "none");
+    this._basemapCtl?.querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("active", b.dataset.b === which));
   }
 
   resize() {
@@ -195,6 +217,7 @@ export class NetworkMap {
 
   destroy() {
     this._legend.remove();
+    this._basemapCtl?.remove();
     this.map.remove();
   }
 }

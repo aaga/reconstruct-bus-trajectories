@@ -14,6 +14,8 @@
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
 import { $ } from "../chart_util.js";
 import { NetworkMap } from "../network_map.js";
+import { StreetViewPopup } from "../street_view.js";
+import { State } from "../state.js";
 import { deriveStat, cleanLabel } from "../network_data.js";
 
 export const METRICS = {
@@ -87,6 +89,7 @@ export class NetworkView {
       this.map = new NetworkMap($("map"), this.data.segments, {
         onHover: (f, lngLat, point) => this._hover(f, point),
         onClick: (f) => this._select(f ? f.properties.sid : null),
+        onContextMenu: (f, lngLat) => this._streetView(f, lngLat),
       });
       this.S.network.map = this.map;
     }
@@ -96,6 +99,8 @@ export class NetworkView {
   }
 
   destroy() {
+    this._svPopup?.destroy();
+    this._svPopup = null;
     this.map?.destroy();
     this.map = null;
     this.S.network.map = null;
@@ -575,6 +580,33 @@ export class NetworkView {
   }
 
   // ---- hover tooltip + detail panel --------------------------------------
+
+  _streetView(f, lngLat) {
+    this._svPopup ??= new StreetViewPopup({ shape: null }, new State());
+    let heading = 0;
+    let title = "Street View";
+    if (f) {
+      // bearing of the nearest geometry edge, in the segment's travel direction
+      const coords = f.geometry?.coordinates;
+      if (coords && coords.length >= 2) {
+        let best = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < coords.length - 1; i++) {
+          const mx = (coords[i][0] + coords[i + 1][0]) / 2;
+          const my = (coords[i][1] + coords[i + 1][1]) / 2;
+          const d = (mx - lngLat.lng) ** 2 + (my - lngLat.lat) ** 2;
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        const [lon0, lat0] = coords[best];
+        const [lon1, lat1] = coords[best + 1];
+        const mlat = Math.cos((lat0 * Math.PI) / 180);
+        heading = (Math.atan2((lon1 - lon0) * mlat, lat1 - lat0) * 180) / Math.PI;
+        heading = (heading + 360) % 360;
+      }
+      title = cleanLabel(f.properties.label ?? "Street View");
+    }
+    this._svPopup.openAt(lngLat.lat, lngLat.lng, heading, title);
+  }
 
   _hover(f, point) {
     if (!this._tooltip) {

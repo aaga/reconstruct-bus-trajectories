@@ -44,6 +44,14 @@ export class StreetViewPopup {
     this._updateTitle(distM, ll[1], ll[0]);
   }
 
+  // Direct entry point (network map right-click): no route-distance context.
+  openAt(lat, lon, heading = 0, title = "Street View") {
+    this.iframe.src = streetViewURL(lat, lon, heading);
+    this.el.style.display = "flex";
+    this.currentDistM = null;
+    this.title.textContent = `${title} · ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  }
+
   close() {
     this.el.style.display = "none";
     this.currentDistM = null;
