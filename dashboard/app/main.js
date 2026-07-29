@@ -47,7 +47,7 @@ const S = {
   network: {
     data: null,                 // NetworkData (lazy, cached across tab switches)
     map: null,                  // NetworkMap (owned by NetworkView)
-    filters: { routes: [], corridors: [], direction: null,
+    filters: { routes: [], direction: null,
                periods: ["am_peak", "pm_peak"], daytype: "weekday", dow: null,
                pick: null, season: null, weather: null },
     metric: "mean_delay",

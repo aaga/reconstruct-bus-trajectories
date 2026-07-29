@@ -33,9 +33,9 @@ ln -sfn <main-checkout>/data data
 #    dashboard, copy their gitignored payloads too:
 cp <main-checkout>/dashboard/data/*.json dashboard/data/
 
-# 1. Segment registry + corridors (rebuild after any intersections-cache change)
+# 1. Segment registry (rebuild after any intersections-cache change)
+#    (corridors.py exists but is disabled/unwired for now — 2026-07 decision)
 PYTHONPATH=src uv run python analysis/network/registry.py --city cta
-PYTHONPATH=src uv run python analysis/network/corridors.py --city cta
 
 # 2. Prefetch archive hour-files (idempotent, concurrent)
 PYTHONPATH=src uv run python analysis/network/prefetch.py --city cta

@@ -218,14 +218,12 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     registry = json.loads((base / "segment_registry.json").read_text())
-    corridors = json.loads((base / "corridors.json").read_text())
     freeflow = json.loads((base / "freeflow.json").read_text())
     date_attrs = json.loads((base / "date_attrs.json").read_text())
 
     sha = registry["meta"]["intersections_sha256"]
-    for name, payload in (("freeflow", freeflow), ("corridors", corridors)):
-        if payload["meta"].get("intersections_sha256") not in (None, sha):
-            raise SystemExit(f"{name}.json built against a different intersections cache")
+    if freeflow["meta"].get("intersections_sha256") not in (None, sha):
+        raise SystemExit("freeflow.json built against a different intersections cache")
 
     dims = _dims(city, registry, date_attrs)
     seg_index = {s: i for i, s in enumerate(dims["seg_ids"])}
@@ -266,11 +264,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
         print(f"  {path.name}: {len(sub)} rows, {mb:.2f} MB")
 
     # ---- segments.json (GeoJSON) -----------------------------------------
-    seg_corridors: dict[str, list[str]] = {}
-    for c in corridors["corridors"]:
-        for s in c["seg_ids_fwd"] + c["seg_ids_rev"]:
-            seg_corridors.setdefault(s, []).append(c["cid"])
-
     features = []
     for seg_id in dims["seg_ids"]:
         rec = registry["segments"][seg_id]
@@ -292,7 +285,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
                         {"r": r["route_id"], "dir": r["direction"]} for r in rec["routes"]
                     ],
                     "rev_sid": seg_index.get(rec["rev_seg_id"]),
-                    "corridors": seg_corridors.get(seg_id, []),
                     "n_stops": rec["n_stops"],
                 },
             }
@@ -300,20 +292,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     (out / "segments.json").write_text(
         json.dumps({"type": "FeatureCollection", "features": features})
     )
-
-    # ---- corridors.json ---------------------------------------------------
-    cor_out = {
-        "meta": corridors["meta"],
-        "corridors": [
-            {
-                **{k: c[k] for k in ("cid", "name", "routes", "len_m", "dir_fwd", "dir_rev")},
-                "sids_fwd": [seg_index[s] for s in c["seg_ids_fwd"] if s in seg_index],
-                "sids_rev": [seg_index[s] for s in c["seg_ids_rev"] if s in seg_index],
-            }
-            for c in corridors["corridors"]
-        ],
-    }
-    (out / "corridors.json").write_text(json.dumps(cor_out))
 
     # ---- meta.json --------------------------------------------------------
     # Date counts per (pick, season, dow, weather) — only dates that actually

@@ -19,19 +19,16 @@ export class NetworkData {
     this.base = baseUrl;
     this.meta = null;
     this.segments = null; // GeoJSON FeatureCollection
-    this.corridors = null;
     this.shards = new Map(); // period -> decoded columns
   }
 
   async init() {
-    const [meta, segments, corridors] = await Promise.all([
+    const [meta, segments] = await Promise.all([
       fetch(`${this.base}/meta.json`).then((r) => r.json()),
       fetch(`${this.base}/segments.json`).then((r) => r.json()),
-      fetch(`${this.base}/corridors.json`).then((r) => r.json()),
     ]);
     this.meta = meta;
     this.segments = segments;
-    this.corridors = corridors;
     return this;
   }
 

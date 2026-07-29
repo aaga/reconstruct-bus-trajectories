@@ -103,8 +103,6 @@ def _entity_sql(kind: str) -> tuple[str, str]:
         return "t.seg_id", ""
     if kind == "route":
         return "t.route_id", ""
-    if kind == "corridor":
-        return "cm.cid", "JOIN cormap cm ON cm.seg_id = t.seg_id"
     raise ValueError(kind)
 
 
@@ -132,7 +130,6 @@ def _metrics_query(kind: str, where: str) -> str:
 def build_areas(city: CityConfig) -> dict:
     base = REPO / "outputs" / "network" / city.city_id
     registry = json.loads((base / "segment_registry.json").read_text())
-    corridors = json.loads((base / "corridors.json").read_text())
     freeflow = json.loads((base / "freeflow.json").read_text())
     date_attrs = json.loads((base / "date_attrs.json").read_text())
     glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
@@ -151,16 +148,6 @@ def build_areas(city: CityConfig) -> dict:
             for d, a in date_attrs["days"].items()
         ],
     )
-    con.execute("CREATE TABLE cormap(seg_id TEXT, cid TEXT)")
-    con.executemany(
-        "INSERT INTO cormap VALUES (?, ?)",
-        [
-            (s, c["cid"])
-            for c in corridors["corridors"]
-            for s in c["seg_ids_fwd"] + c["seg_ids_rev"]
-        ],
-    )
-
     create_canonical_view(con, glob, registry, city)
     con.execute(
         f"""
@@ -184,21 +171,14 @@ def build_areas(city: CityConfig) -> dict:
 
     # Entity display names + segment refs.
     seg_label = {k: v["label"] for k, v in registry["segments"].items()}
-    cor_name = {c["cid"]: f"{c['name']} ({'+'.join(c['routes'][:4])})" for c in corridors["corridors"]}
-    cor_sids = {c["cid"]: c["seg_ids_fwd"] + c["seg_ids_rev"] for c in corridors["corridors"]}
-
     def label_of(kind: str, eid: str) -> str:
         if kind == "segment":
             return seg_label.get(eid, eid)
-        if kind == "corridor":
-            return cor_name.get(eid, eid)
         return f"Route {eid}"
 
     def sids_of(kind: str, eid: str) -> list[str]:
         if kind == "segment":
             return [eid]
-        if kind == "corridor":
-            return cor_sids.get(eid, [])
         return []  # route: client resolves via registry
 
     def rank(df, metric: str, hours: float) -> list[dict]:
@@ -229,7 +209,7 @@ def build_areas(city: CityConfig) -> dict:
     for daytype, period in LEVEL_FILTERS:
         where = _filter_sql(daytype, period)
         hours = period_hours.get(period, 18.0)
-        for kind in ("segment", "corridor", "route"):
+        for kind in ("segment", "route"):
             df = con.sql(_metrics_query(kind, where)).df()
             if df.empty:
                 continue
@@ -260,7 +240,7 @@ def build_areas(city: CityConfig) -> dict:
     # ---- DIFF contexts ----------------------------------------------------
     for diff_id, (fa, pa), (fb, pb) in DIFF_PAIRS:
         wa, wb = _filter_sql(fa, pa), _filter_sql(fb, pb)
-        for kind in ("segment", "corridor", "route"):
+        for kind in ("segment", "route"):
             da_ = con.sql(_metrics_query(kind, wa)).df().set_index("eid")
             db_ = con.sql(_metrics_query(kind, wb)).df().set_index("eid")
             common = da_.index.intersection(db_.index)
