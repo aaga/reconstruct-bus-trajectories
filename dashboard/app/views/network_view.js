@@ -623,10 +623,15 @@ export class NetworkView {
       return;
     }
     this._distMode ??= "events"; // "events" | "seconds"
-    const KEY = this._distMode === "seconds"
+    const secondsMode = this._distMode === "seconds";
+    const KEY = secondsMode
       ? { nd: "nd_s", pre: "pre_s", post: "post_s" }
       : { nd: "nd", pre: "pre", post: "post" };
-    const src = { nd: d[KEY.nd] ?? d.nd, pre: d[KEY.pre] ?? d.pre, post: d[KEY.post] ?? d.post };
+    // Seconds mode: divide by the segment's traversal count so the y-axis
+    // reads as AVERAGE delay seconds per trip (dumb rescale, per user).
+    const denom = secondsMode ? Math.max(1, d.n_trips ?? 1) : 1;
+    const pick = (k, fb) => (d[k] ?? fb).map((v) => v / denom);
+    const src = { nd: pick(KEY.nd, d.nd), pre: pick(KEY.pre, d.pre), post: pick(KEY.post, d.post) };
     const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 12;
     const H = chartH + roadH + axisH + 12;
     const lenFt = d.len_ft;
@@ -654,8 +659,8 @@ export class NetworkView {
     }
 
     // y axis: 0, mid, max
-    const fmtY = (v) => this._distMode === "seconds"
-      ? (v >= 3600 ? `${(v / 3600).toFixed(1)}h` : v >= 60 ? `${(v / 60).toFixed(0)}m` : `${v.toFixed(0)}s`)
+    const fmtY = (v) => secondsMode
+      ? (v >= 60 ? `${(v / 60).toFixed(1)}m` : `${v.toFixed(1)}s`)
       : String(Math.round(v));
     const yAxis = `
       <line x1="${padL - 4}" y1="8" x2="${padL - 4}" y2="${chartH}" stroke="#999"/>
@@ -704,12 +709,13 @@ export class NetworkView {
     }
 
     host.innerHTML = `
-      <div class="dist-head">Where non-dwell delays happen
+      <hr class="dist-rule">
+      <div class="dist-head">Distribution of non-boarding delays
         <span class="dist-toggle">
           <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
-          <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">delay seconds</button>
+          <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
         </span>
-        <span class="nw-note">(${d.n_events} events)</span>
+        <span class="nw-note">(${d.n_events} events · ${d.n_trips ?? "?"} trips)</span>
       </div>
       <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
       <div class="dist-legend">

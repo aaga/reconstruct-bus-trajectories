@@ -31,7 +31,9 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))
 
+from analysis.network.traversals_view import create_canonical_view  # noqa: E402
 from dataio.cities import get_city  # noqa: E402
 
 BUCKET_FT = 10.0
@@ -76,6 +78,17 @@ def build(city_id: str) -> None:
     dates = con.execute(
         f"SELECT count(DISTINCT service_date), count(*) FROM read_parquet('{glob}')"
     ).fetchone()
+
+    # Traversal counts per segment over the SAME service dates as the events —
+    # the denominator that turns summed delay seconds into per-trip averages.
+    trav_glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
+    create_canonical_view(con, trav_glob, registry, city)
+    n_trips = dict(con.execute(f"""
+        SELECT seg_id, count(*) FROM trav
+        WHERE service_date IN (
+          SELECT DISTINCT service_date FROM read_parquet('{glob}'))
+        GROUP BY 1
+    """).fetchall())
     for seg_id, classes in per_seg.items():
         sid = seg_index.get(seg_id)
         if sid is None:
@@ -98,6 +111,7 @@ def build(city_id: str) -> None:
                         total += n
             payload[cls] = arr
         payload["n_events"] = total
+        payload["n_trips"] = int(n_trips.get(seg_id, 0))
         n_events_total += total
         (out_dir / f"{sid}.json").write_text(json.dumps(payload))
         n_files += 1
