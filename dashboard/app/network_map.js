@@ -56,6 +56,30 @@ export class NetworkMap {
           ],
         },
       });
+      // Direction half-arrows (harpoons): geometries are oriented in travel
+      // direction, so a line-placed icon with map rotation-alignment points
+      // the way the bus travels. The single barb sits on the RIGHT side —
+      // the same side as the paired-direction line-offset — so a two-way
+      // street reads as two opposing lanes.
+      this.map.addImage("halfarrow", makeHalfArrow(22));
+      this.map.addLayer({
+        id: "seg-arrows",
+        type: "symbol",
+        source: "segs",
+        minzoom: 12.5,
+        layout: {
+          "symbol-placement": "line",
+          "symbol-spacing": 90,
+          "icon-image": "halfarrow",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 12.5, 0.45, 16, 0.85],
+          "icon-rotation-alignment": "map",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+          "icon-offset": [0, 5],
+        },
+        paint: { "icon-opacity": 0.9 },
+      });
+
       this.map.addLayer({
         id: "seg-highlight",
         type: "line",
@@ -168,6 +192,30 @@ export class NetworkMap {
     this._legend.remove();
     this.map.remove();
   }
+}
+
+// A white half-arrow ("harpoon") with a dark outline, drawn on canvas so it
+// stays legible over any choropleth color. Points +x; barb on top (which is
+// the right-hand side once rotated along the travel direction).
+function makeHalfArrow(size) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const mid = size * 0.55;
+  const draw = (w, color) => {
+    g.strokeStyle = color;
+    g.lineWidth = w;
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    g.beginPath();
+    g.moveTo(size * 0.12, mid);          // stem tail
+    g.lineTo(size * 0.82, mid);          // stem to tip
+    g.lineTo(size * 0.38, size * 0.18);  // single barb (top = travel-right)
+    g.stroke();
+  };
+  draw(size * 0.30, "rgba(40,40,40,0.9)");
+  draw(size * 0.14, "#ffffff");
+  return g.getImageData(0, 0, size, size);
 }
 
 function geojsonBounds(fc) {
