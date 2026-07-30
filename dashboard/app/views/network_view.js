@@ -750,6 +750,15 @@ export class NetworkView {
       axis += `<line x1="${x}" y1="${axisY}" x2="${x}" y2="${axisY + 6}" stroke="#999"/>
         <text x="${x}" y="${axisY + 20}" text-anchor="middle" class="dist-tick">${ft} ft</text>`;
     }
+    // Hover cursor: vertical dotted line + exact distance readout on the
+    // axis (pointer-events:none so stop/sign tooltips still fire).
+    axis += `<g class="dist-cursor" style="display:none;pointer-events:none">
+        <line y1="8" y2="${axisY}" stroke="#333" stroke-width="1"
+              stroke-dasharray="3 4"/>
+        <rect y="${axisY + 8}" width="58" height="16" rx="4" fill="#333"/>
+        <text y="${axisY + 20}" text-anchor="middle" class="dist-tick"
+              style="fill:#fff;font-weight:600"></text>
+      </g>`;
 
     host.innerHTML = `
       <hr class="dist-rule">
@@ -772,9 +781,29 @@ export class NetworkView {
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
       b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props, coords); };
     });
+    // Hover cursor: track mouse x, snap the dotted line + axis readout.
+    const svg = host.querySelector(".dist-svg");
+    {
+      const cur = svg.querySelector(".dist-cursor");
+      const [curLine, curBox, curText] = [
+        cur.querySelector("line"), cur.querySelector("rect"), cur.querySelector("text")];
+      svg.addEventListener("mousemove", (e) => {
+        const rect = svg.getBoundingClientRect();
+        // CSS may scale the svg; convert client px -> viewBox units.
+        const px = (e.clientX - rect.left) * (W / rect.width);
+        const ft = ((px - padL) / innerW) * lenFt;
+        if (ft < 0 || ft > lenFt) { cur.style.display = "none"; return; }
+        cur.style.display = "";
+        curLine.setAttribute("x1", px.toFixed(1));
+        curLine.setAttribute("x2", px.toFixed(1));
+        curBox.setAttribute("x", (px - 29).toFixed(1));
+        curText.setAttribute("x", px.toFixed(1));
+        curText.textContent = `${Math.round(ft)} ft`;
+      });
+      svg.addEventListener("mouseleave", () => { cur.style.display = "none"; });
+    }
     // Right-click anywhere on the strip -> Street View at that spot along
     // the segment, camera facing the traffic light (travel direction).
-    const svg = host.querySelector(".dist-svg");
     svg.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       const rect = svg.getBoundingClientRect();
