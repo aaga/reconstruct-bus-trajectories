@@ -260,6 +260,9 @@ def main() -> int:
                     help=f"output JSON (default {DEFAULT_OUT})")
     ap.add_argument("--shape-ids", default=None,
                     help="comma-separated subset (default: all bus shapes)")
+    ap.add_argument("--exclude-route-prefix", default=None,
+                    help="comma-separated route-id prefixes to skip "
+                         "(e.g. 'Shuttle' for MBTA rail replacements)")
     ap.add_argument("--chunk-size", type=int, default=300,
                     help="way_ids per Overpass query (default 300)")
     ap.add_argument("--checkpoint-every", type=int, default=25,
@@ -281,8 +284,11 @@ def main() -> int:
     args = ap.parse_args()
 
     ensure_gtfs(args.gtfs)
+    prefixes = tuple(
+        p for p in (args.exclude_route_prefix or "").split(",") if p
+    )
     targets = (args.shape_ids.split(",") if args.shape_ids
-               else list_bus_shapes(args.gtfs))
+               else list_bus_shapes(args.gtfs, prefixes))
 
     if args.skip_stage1:
         way_cache = load_cache(args.way_cache)

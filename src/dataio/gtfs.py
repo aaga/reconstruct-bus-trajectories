@@ -118,13 +118,21 @@ def _read_routes_and_trips(gtfs_zip_path: str) -> tuple[dict[str, str], list[dic
     return route_type, trips
 
 
-def list_shape_ids(gtfs_zip_path: str | Path, route_type: str | None = None) -> list[str]:
+def list_shape_ids(
+    gtfs_zip_path: str | Path,
+    route_type: str | None = None,
+    exclude_route_prefixes: tuple[str, ...] = (),
+) -> list[str]:
     """Distinct shape_ids referenced by trips on routes of ``route_type``.
 
     ``route_type`` follows GTFS conventions: ``"3"`` = bus, ``"0"`` = tram,
     ``"1"`` = subway/metro, ``"2"`` = rail, etc. ``None`` = no filter (all
     shape_ids referenced by any trip). The function ignores shape_ids that
     appear in ``shapes.txt`` but are not referenced by any trip.
+
+    ``exclude_route_prefixes`` drops routes by id prefix — e.g. MBTA files
+    its 200+ rail-replacement shuttles as route_type 3 with ids like
+    ``Shuttle-…``; they are not scheduled bus service.
     """
     route_type_map, trips = _read_routes_and_trips(str(Path(gtfs_zip_path).resolve()))
     out: set[str] = set()
@@ -135,13 +143,22 @@ def list_shape_ids(gtfs_zip_path: str | Path, route_type: str | None = None) -> 
             rt = route_type_map.get(t["route_id"])
             if rt != route_type:
                 continue
+        if exclude_route_prefixes and t["route_id"].startswith(exclude_route_prefixes):
+            continue
         out.add(t["shape_id"])
     return sorted(out)
 
 
-def list_bus_shapes(gtfs_zip_path: str | Path) -> list[str]:
+def list_bus_shapes(
+    gtfs_zip_path: str | Path,
+    exclude_route_prefixes: tuple[str, ...] = (),
+) -> list[str]:
     """Convenience wrapper: distinct shape_ids on bus routes (``route_type=3``)."""
-    return list_shape_ids(gtfs_zip_path, route_type=GTFS_ROUTE_TYPE_BUS)
+    return list_shape_ids(
+        gtfs_zip_path,
+        route_type=GTFS_ROUTE_TYPE_BUS,
+        exclude_route_prefixes=exclude_route_prefixes,
+    )
 
 
 _FT_PER_M = 3.28084
