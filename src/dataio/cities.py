@@ -54,6 +54,9 @@ class CityConfig:
     picks: tuple[Pick, ...]
     noaa_station: str  # GHCN-D station id for daily weather
     deadhead_route_ids: tuple[str, ...] = ()
+    # Widened fallback window for segments too thin in late_night (cities
+    # with little overnight service — MBTA). None = no widening step.
+    late_night_wide: tuple[int, int] | None = None
     # Route-id prefixes excluded from the network entirely (e.g. MBTA
     # "Shuttle-" rail replacements, filed as route_type 3 in GTFS).
     exclude_route_prefixes: tuple[str, ...] = ()
@@ -147,6 +150,7 @@ _MBTA = CityConfig(
         ("late_night", 22, 6),
     ),
     late_night=(22, 5),
+    late_night_wide=(20, 6),  # Boston sleeps 02-04; widen before class prior
     # MBTA "ratings" (their pick equivalent). The published feed only covers
     # Summer 2026 (feed_info: start 2026-07-21); archive dates before that
     # fall in the Spring rating. NB: spring-era trips are reconstructed
