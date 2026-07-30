@@ -114,7 +114,8 @@ def _aggregate(
     su_files = _globmod.glob(str(su_dir / "service_date=*" / "route=*.parquet"))
     es_dates = sorted({Path(f).parent.name.split("=")[1] for f in su_files})
     con.execute("CREATE TABLE es_dates(date_iso TEXT)")
-    con.executemany("INSERT INTO es_dates VALUES (?)", [(d,) for d in es_dates])
+    if es_dates:  # no-door cities have no event_sums at all
+        con.executemany("INSERT INTO es_dates VALUES (?)", [(d,) for d in es_dates])
     if su_files:
         con.execute(
             f"""CREATE VIEW es AS

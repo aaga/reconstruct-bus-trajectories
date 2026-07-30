@@ -113,13 +113,20 @@ def run(city_id: str, only: set[str] | None, from_stage: str | None,
     log_dir = base / "pipeline_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     profile_path = base / "pipeline_profile.json"
-    profile: dict = {
-        "city": city.city_id,
-        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "workers": workers,
-        "has_door_data": city.has_door_data,
-        "stages": [],
-    }
+    # Resume-friendly: keep prior invocations' successful stage records so
+    # the profile covers the whole run, not just the last resume. A re-run
+    # of a stage replaces its earlier record.
+    if profile_path.exists():
+        profile = json.loads(profile_path.read_text())
+        profile["resumed_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    else:
+        profile = {
+            "city": city.city_id,
+            "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "workers": workers,
+            "has_door_data": city.has_door_data,
+            "stages": [],
+        }
 
     stages = stage_commands(city, workers)
     names = [s for s, _ in stages]
@@ -156,6 +163,7 @@ def run(city_id: str, only: set[str] | None, from_stage: str | None,
             "exit": proc.returncode,
             "log": str(log_path.relative_to(REPO)),
         }
+        profile["stages"] = [s for s in profile["stages"] if s["stage"] != name]
         profile["stages"].append(rec)
         profile["total_wall_s"] = round(
             sum(s["wall_s"] for s in profile["stages"]), 1)
