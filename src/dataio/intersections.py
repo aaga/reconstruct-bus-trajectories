@@ -433,16 +433,39 @@ def find_intersections_for_shape(
         dist_along_m_per_vertex=dist_along_m_per_vertex,
     )
 
+    # Project every node on the bus's ways in ONE batched match() call.
+    # (Per-node single-element match() calls dominated stage-2 wall time —
+    # same per-call-overhead disease the 2026-07 grid work cured for trips.)
+    # exact_far=False is safe: every consumer compares perp against
+    # thresholds ≤ anchor_radius_m, far below the matcher's max_perp, and
+    # on-route rows are bitwise-exact without the far rescan.
+    _bus_node_ids = [
+        nid
+        for seg in way_cache
+        for nid in (ways_by_id.get(seg.way_id) or {}).get("nodes", [])
+        if nid in nodes_by_id
+    ]
+    _bus_node_ids = list(dict.fromkeys(_bus_node_ids))  # dedupe, keep order
     proj_cache: dict[int, tuple[float, float] | None] = {}
+    if _bus_node_ids:
+        _lats = np.array([nodes_by_id[n]["lat"] for n in _bus_node_ids])
+        _lons = np.array([nodes_by_id[n]["lon"] for n in _bus_node_ids])
+        _res = matcher.match(_lats, _lons, exact_far=False)
+        proj_cache = {
+            nid: (float(_res.dist_along_m[i]), float(_res.perp_dist_m[i]))
+            for i, nid in enumerate(_bus_node_ids)
+        }
 
     def project(node_id: int) -> tuple[float, float] | None:
-        if node_id in proj_cache:
-            return proj_cache[node_id]
+        got = proj_cache.get(node_id)
+        if got is not None:
+            return got
         n = nodes_by_id.get(node_id)
         if n is None:
-            proj_cache[node_id] = None
             return None
-        res = matcher.match(np.array([n["lat"]]), np.array([n["lon"]]))
+        res = matcher.match(
+            np.array([n["lat"]]), np.array([n["lon"]]), exact_far=False
+        )
         result = (float(res.dist_along_m[0]), float(res.perp_dist_m[0]))
         proj_cache[node_id] = result
         return result

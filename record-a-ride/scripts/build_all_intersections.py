@@ -191,6 +191,14 @@ def fetch_osm_chunked(way_ids: list[int], args) -> dict:
     return {"elements": elements}
 
 
+def _enrich_one(sid: str, gtfs, way_cache: dict, osm: dict) -> tuple[str, list, int]:
+    polyline, dist = load_gtfs_shape_with_dist(gtfs, sid)
+    cps = find_intersections_for_shape(way_cache[sid], polyline, dist, osm)
+    n_sig = sum(c.control_type in ("traffic_signals", "ped_crossing_signal")
+                for c in cps)
+    return sid, [asdict(c) for c in cps], n_sig
+
+
 def stage2_intersections(args, targets: list[str], way_cache: dict) -> None:
     out_path = Path(args.out)
     existing: dict[str, list] = (
@@ -203,7 +211,12 @@ def stage2_intersections(args, targets: list[str], way_cache: dict) -> None:
         return
 
     all_way_ids = sorted({seg.way_id for sid in pending for seg in way_cache[sid]})
-    osm = fetch_osm_chunked(all_way_ids, args)
+    if args.pbf:
+        from dataio.pbf_ways import extract_overpass_payload
+
+        osm = extract_overpass_payload(args.pbf, all_way_ids)
+    else:
+        osm = fetch_osm_chunked(all_way_ids, args)
 
     def checkpoint():
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -211,12 +224,9 @@ def stage2_intersections(args, targets: list[str], way_cache: dict) -> None:
 
     for i, sid in enumerate(pending, start=1):
         try:
-            polyline, dist = load_gtfs_shape_with_dist(args.gtfs, sid)
-            cps = find_intersections_for_shape(way_cache[sid], polyline, dist, osm)
-            existing[sid] = [asdict(c) for c in cps]
-            n_sig = sum(c.control_type in ("traffic_signals", "ped_crossing_signal")
-                        for c in cps)
-            print(f"[stage2]   [{i}/{len(pending)}] {sid}: {len(cps)} control "
+            _, rec, n_sig = _enrich_one(sid, args.gtfs, way_cache, osm)
+            existing[sid] = rec
+            print(f"[stage2]   [{i}/{len(pending)}] {sid}: {len(rec)} control "
                   f"points ({n_sig} signalized)")
         except Exception as e:  # noqa: BLE001
             print(f"[stage2]   [{i}/{len(pending)}] {sid}: ERROR {e}")
@@ -240,6 +250,10 @@ def main() -> int:
                     help="Valhalla service base URL")
     ap.add_argument("--overpass", default=DEFAULT_OVERPASS_ENDPOINT,
                     help="Overpass API endpoint")
+    ap.add_argument("--pbf", default=None,
+                    help="local OSM .pbf extract; replaces Overpass entirely "
+                         "(use the SAME file the Valhalla tiles were built "
+                         "from so both stages see one OSM vintage)")
     ap.add_argument("--way-cache", default=DEFAULT_WAY_CACHE,
                     help=f"stage-1 checkpoint JSON (default {DEFAULT_WAY_CACHE})")
     ap.add_argument("--out", default=DEFAULT_OUT,

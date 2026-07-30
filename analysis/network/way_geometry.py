@@ -51,7 +51,11 @@ def fetch_chunk(way_ids: list[int], endpoint: str, timeout_s: float = 120.0) -> 
     return out
 
 
-def build(city_id: str, endpoint: str = DEFAULT_OVERPASS_ENDPOINT) -> Path:
+def build(
+    city_id: str,
+    endpoint: str = DEFAULT_OVERPASS_ENDPOINT,
+    pbf: str | None = None,
+) -> Path:
     city = get_city(city_id)
     way_cache = json.loads(city.resolve(city.way_cache_file).read_text())
     out_path = city.resolve(city.way_cache_file).parent / "way_geoms.json"
@@ -62,6 +66,17 @@ def build(city_id: str, endpoint: str = DEFAULT_OVERPASS_ENDPOINT) -> Path:
     )
     todo = [w for w in wanted if str(w) not in geoms]
     print(f"{len(wanted):,} ways referenced; {len(todo):,} to fetch")
+
+    if pbf:  # local extract: no chunking/backoff needed
+        from dataio.pbf_ways import extract_way_geoms
+
+        for wid, g in extract_way_geoms(pbf, todo).items():
+            geoms[str(wid)] = g
+        out_path.write_text(json.dumps(geoms))
+        n_empty = sum(1 for g in geoms.values() if not g)
+        print(f"done: {len(geoms):,} ways cached ({n_empty} missing in extract) "
+              f"→ {out_path}")
+        return out_path
 
     backoff = 5.0
     i = 0
@@ -94,8 +109,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--city", default="cta")
     ap.add_argument("--endpoint", default=DEFAULT_OVERPASS_ENDPOINT)
+    ap.add_argument("--pbf", default=None,
+                    help="local OSM .pbf extract; replaces Overpass")
     args = ap.parse_args()
-    build(args.city, args.endpoint)
+    build(args.city, args.endpoint, pbf=args.pbf)
 
 
 if __name__ == "__main__":
