@@ -98,7 +98,10 @@ def _aggregate(
     con.execute(f"SET temp_directory='{spill}'")
     con.execute("SET memory_limit='12GB'")
     con.execute("SET preserve_insertion_order=false")
-    con.execute("SET threads=4")
+    # 2 threads: the event_sums hash join's per-thread build buffers OOM'd
+    # the 12 GB cap at 4 threads (MBTA writes sums for every trip in
+    # no-door mode — larger join than CTA's door-covered subset).
+    con.execute("SET threads=2")
     sidecar = str(
         REPO / "outputs" / "network" / city.city_id / "door_sidecar" / "service_date=*.parquet"
     )

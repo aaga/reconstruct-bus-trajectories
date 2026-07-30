@@ -634,13 +634,29 @@ def build_registry(city: CityConfig) -> dict:
         # crossing positions as meters upstream of the DOWNSTREAM signal, from
         # the representative instance. Includes demoted mid-block ped signals
         # (excluded from segmentation but physically present).
-        stops_off = []
-        for st in stops_map.get(rep["shape_id"], []):
-            if rep["x_start_m"] < st["dist_along_m"] <= rep["x_end_m"]:
-                stops_off.append({
-                    "id": st["stop_id"], "name": st["name"],
-                    "off_m": round(rep["x_end_m"] - st["dist_along_m"], 1),
-                })
+        # Stops are unioned across ALL instances (offsets from each
+        # instance's own downstream boundary, median across instances):
+        # the rep alone can be an express variant that skips local stops
+        # (2026-07-30: X4 rep hid Michigan/14th from the 14th→16th strip).
+        stop_offs: dict[str, list] = defaultdict(list)
+        stop_names: dict[str, str] = {}
+        for inst in insts:
+            for st in stops_map.get(inst["shape_id"], []):
+                if inst["x_start_m"] < st["dist_along_m"] <= inst["x_end_m"]:
+                    stop_offs[st["stop_id"]].append(
+                        inst["x_end_m"] - st["dist_along_m"])
+                    stop_names.setdefault(st["stop_id"], st["name"])
+        stops_off = sorted(
+            (
+                {
+                    "id": sid_,
+                    "name": stop_names[sid_],
+                    "off_m": round(float(np.median(offs)), 1),
+                }
+                for sid_, offs in stop_offs.items()
+            ),
+            key=lambda s: -s["off_m"],
+        )
         crossings_off = []
         stop_signs_off = []
         for cp in intersections[rep["shape_id"]]:
