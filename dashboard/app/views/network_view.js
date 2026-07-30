@@ -68,8 +68,19 @@ export class NetworkView {
 
   // ---- lifecycle ---------------------------------------------------------
 
+  // Door/APC coverage exists for this city's payloads (drives which
+  // metrics/views are available; MBTA has none).
+  get hasDoor() {
+    return (this.data?.meta?.n_door_dates ?? 0) > 0;
+  }
+
   async render() {
     if (!this.data) return;
+    // A door-only metric can arrive via URL or linger from another city.
+    if (!this.hasDoor &&
+        ["pax", "nondwell", "dwell", "boardings_per_hr"].includes(this.N.metric)) {
+      this.N.metric = "overall";
+    }
     // Restore a deep-linked selected segment (opens its detail panel).
     if (this.N.pendingSeg != null) {
       const sid = this.N.pendingSeg;
@@ -135,14 +146,14 @@ export class NetworkView {
         <select id="nw-metric">
           <optgroup label="Delays">
             <option value="overall">Overall delay (t_obs − t_ff)</option>
-            <option value="pax">Passenger-weighted delay</option>
-            <option value="nondwell">Non-dwell delay</option>
-            <option value="dwell">Dwell delay</option>
+            <option value="pax" ${this.hasDoor ? "" : "disabled"}>Passenger-weighted delay${this.hasDoor ? "" : " (needs door data)"}</option>
+            <option value="nondwell" ${this.hasDoor ? "" : "disabled"}>Non-dwell delay${this.hasDoor ? "" : " (needs door data)"}</option>
+            <option value="dwell" ${this.hasDoor ? "" : "disabled"}>Dwell delay${this.hasDoor ? "" : " (needs door data)"}</option>
           </optgroup>
           <optgroup label="Other">
             <option value="freeflow_speed">Free flow speed</option>
             <option value="buses_per_hr">Bus / hour</option>
-            <option value="boardings_per_hr">Boardings / hour</option>
+            <option value="boardings_per_hr" ${this.hasDoor ? "" : "disabled"}>Boardings / hour${this.hasDoor ? "" : " (needs door data)"}</option>
           </optgroup>
         </select>
         <span class="nw-radios" id="nw-stats">
@@ -628,7 +639,7 @@ export class NetworkView {
   async _renderDistribution(host, props, coords) {
     let d;
     try {
-      const r = await fetch(`../data/network/dist/${props.sid}.json`);
+      const r = await fetch(`${this.data.base}/dist/${props.sid}.json`);
       if (!r.ok) throw new Error();
       d = await r.json();
     } catch {
@@ -742,20 +753,22 @@ export class NetworkView {
 
     host.innerHTML = `
       <hr class="dist-rule">
-      <div class="dist-head">Distribution of non-boarding delays
+      <div class="dist-head">${this.hasDoor
+          ? "Distribution of non-boarding delays"
+          : "Distribution of delay locations"}
         <span class="dist-toggle">
           <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
           <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
-          ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">queue markers</button>` : ""}
+          ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
         </span>
         <span class="nw-note">(${d.n_events} events · ${d.n_trips ?? "?"} trips)</span>
       </div>
       <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
-      <div class="dist-legend">
+      ${this.hasDoor ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding dwell</span>
         <span><i style="background:#8a4fc8"></i>post-boarding dwell</span>
-      </div>`;
+      </div>` : ""}`;
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
       b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props, coords); };
     });
@@ -894,6 +907,10 @@ export class NetworkView {
       el.querySelector("#nw-apc").textContent =
         `≈${(accAll.sumOns / dd).toFixed(0)} ons · ${(accAll.sumOffs / dd).toFixed(0)} offs per day here ` +
         `(door data on ${accAll.nDoor} of ${accAll.n} traversals)`;
+    } else if (!this.hasDoor) {
+      el.querySelector("#nw-apc").textContent =
+        "no door/APC data available for this city — dwell, non-dwell, " +
+        "passenger-weighted, and boardings metrics are unavailable";
     }
     el.querySelector(".nw-close").onclick = () => {
       el.remove();

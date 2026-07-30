@@ -360,3 +360,12 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
 .dist-toggle button { border: 1px solid #ccc; background: #fff; border-radius: 4px;
   font-size: 10px; padding: 0 7px; cursor: pointer; color: #555; }
 .dist-toggle button.on { background: #2d4a75; border-color: #2d4a75; color: #fff; }
+
+/* Network city switcher (Chicago | Boston) — right of the sub-tab pills */
+#ntabs .ntab-city {
+  margin-left: 18px;
+  padding-left: 16px;
+  border-left: 1px solid #c9ced6;
+  display: inline-flex;
+  gap: 6px;
+}

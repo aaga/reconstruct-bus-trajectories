@@ -7,6 +7,14 @@
 
 const N_BUCKETS = 16;
 
+// Cities served by the Network tab. Payloads for the first city live at the
+// legacy flat path; later cities nest under their id (build_payloads --out /
+// build_distributions mirror this layout).
+export const NETWORK_CITIES = {
+  cta: { label: "Chicago", base: "../data/network" },
+  mbta: { label: "Boston", base: "../data/network/mbta" },
+};
+
 // Strip raw OSM node ids from human-facing labels ("node 4332637067" adds
 // clutter and means nothing to a rider). "A → node N" reads as mid-block.
 export function cleanLabel(label) {
