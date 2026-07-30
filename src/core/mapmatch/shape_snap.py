@@ -30,6 +30,23 @@ DEFAULT_MAX_PERP_M = 50.0  # paper uses Valhalla's internal threshold; 50m is a
 DEFAULT_GRID_CELL_M = 200.0
 
 
+def equirect_cumulative_m(polyline_latlon: np.ndarray) -> np.ndarray:
+    """Cumulative along-polyline meters, equirectangular about the centroid.
+
+    THE canonical route ruler for feeds without ``shape_dist_traveled``
+    (MBTA omits it): identical to SnapToShapeMatcher's internal fallback,
+    so distances computed anywhere in the pipeline line up exactly.
+    """
+    lat0 = float(polyline_latlon[:, 0].mean())
+    mlat = 111320.0
+    mlon = 111320.0 * math.cos(math.radians(lat0))
+    dx = np.diff(polyline_latlon[:, 1]) * mlon
+    dy = np.diff(polyline_latlon[:, 0]) * mlat
+    cum = np.zeros(polyline_latlon.shape[0])
+    cum[1:] = np.cumsum(np.hypot(dx, dy))
+    return cum
+
+
 class SnapToShapeMatcher:
     """Snap pings to a GTFS shape polyline.
 

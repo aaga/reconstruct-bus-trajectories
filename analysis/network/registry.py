@@ -45,7 +45,6 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
 from analysis.prep.geometry import (  # noqa: E402
-    cumulative_route_dist_m,
     simplify_polyline,
     slice_polyline,
 )
@@ -602,7 +601,11 @@ def build_registry(city: CityConfig) -> dict:
         rep = insts[int(np.argmin(np.abs(lens - med_len)))]
         polyline, dist_m = load_gtfs_shape_with_dist(gtfs_zip, rep["shape_id"])
         if dist_m is None:
-            dist_m = cumulative_route_dist_m(polyline)
+            # Same equirect ruler as every SnapToShapeMatcher fallback — the
+            # x_start/x_end being sliced against were measured in that space.
+            from core.mapmatch.shape_snap import equirect_cumulative_m
+
+            dist_m = equirect_cumulative_m(polyline)
         gtfs_slice = slice_polyline(polyline, dist_m, rep["x_start_m"], rep["x_end_m"])
 
         # Preferred: OSM way-chain geometry trimmed at canonical node positions.
