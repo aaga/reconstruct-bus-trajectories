@@ -62,13 +62,23 @@ def monotone_frac(d_on: np.ndarray, min_move_m: float = MONOTONE_MIN_MOVE_M) -> 
 
 
 def score_shape(match, shape_len_m: float) -> tuple[float, float, float]:
-    """(score, frac_on, frac_monotone) for one candidate's MatchResult."""
+    """(score, frac_on, frac_monotone) for one candidate's MatchResult.
+
+    Scored on the TRIMMED window (first → last on-route ping): leading and
+    trailing off-route runs are forgiven — AVL feeds often assign the next
+    trip's id during pull-out/dead-head (MBTA: median ~11 min of head), and
+    that must not sink a clean revenue trip. Interior off-route excursions
+    still count against ``frac_on``, so a trip that merely crosses the
+    shape (or detours mid-route) is penalized exactly as before.
+    """
     on = match.on_route
     n = len(on)
     if n == 0 or on.sum() < 2:
         return 0.0, 0.0, 0.0
-    frac_on = float(on.mean())
-    fm = monotone_frac(match.dist_along_m[on])
+    idx = np.flatnonzero(on)
+    ion = on[idx[0] : idx[-1] + 1]
+    frac_on = float(ion.mean())
+    fm = monotone_frac(match.dist_along_m[idx[0] : idx[-1] + 1][ion])
     return frac_on * fm, frac_on, fm
 
 
@@ -237,18 +247,25 @@ def _choose_shape_exact(
         best_on = max(int(s[4].on_route.sum()) for s in scored)
         return "few_on_route" if best_on < min_on_route else "low_score"
 
-    # Near-ties: shortest shape containing the observed on-route span wins
-    # (short-turn trips must not inherit the full-length shape's tail).
-    contenders = [s for s in scored if s[1] >= best_score - tie_margin]
-    def key(s):
-        shape_id, _, _, _, match = s
-        d_on = match.dist_along_m[match.on_route]
-        d_max = float(d_on.max()) if len(d_on) else 0.0
-        length = shape_len_m[shape_id]
-        contains = length + 1.0 >= d_max  # always true by construction, kept for clarity
-        return (not contains, length)
-
-    shape_id, score, frac_on, fm, match = min(contenders, key=key)
+    # Selection among gate-passers. Trimmed scores saturate: a variant that
+    # trims MORE of the trip away can look cleaner (a full-route trip is
+    # "perfect" on a short sub-shape once its overhang is trimmed), so
+    # cleanliness must not outrank coverage. Order of precedence:
+    #   1. most of the trip kept on-route (2% tolerance) — a full trip
+    #      matches-and-trims to the longer shape, never truncates to the
+    #      sub-shape; pre-trim behavior's coverage-first spirit preserved
+    #   2. trimmed score (within tie_margin)
+    #   3. shortest shape — a genuine short-turn trip (equal keep on both
+    #      variants) lands on the short-turn shape, not the full one's tail
+    passers = [s for s in scored if s[1] >= min_score]
+    max_kept = max(int(s[4].on_route.sum()) for s in passers)
+    tol = max(2, int(0.02 * max_kept))
+    keepers = [s for s in passers if int(s[4].on_route.sum()) >= max_kept - tol]
+    top = max(s[1] for s in keepers)
+    finalists = [s for s in keepers if s[1] >= top - tie_margin]
+    shape_id, score, frac_on, fm, match = min(
+        finalists, key=lambda s: shape_len_m[s[0]]
+    )
     if int(match.on_route.sum()) < min_on_route:
         return "few_on_route"
     return Assignment(shape_id, score, frac_on, fm, match)

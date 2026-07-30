@@ -83,3 +83,73 @@ def test_off_route_trip_rejected():
 
 def test_no_candidates():
     assert choose_shape(np.array([41.8]), np.array([-87.65]), {}, {}) == "no_candidates"
+
+
+def test_deadhead_head_trimmed_and_accepted():
+    """A clean revenue trip preceded by a long off-route pull-out (next
+    trip's id assigned during dead-head) must be accepted: scoring trims
+    to the first..last on-route ping."""
+    full = _straight_shape()
+    shapes = {"full": full}
+    m, lens = _matchers(shapes)
+    # 60 revenue pings along the route + 40-ping dead-head ~2 km east
+    lat_r, lon_r = _pings_along(full, np.linspace(0, 99, 60).astype(int))
+    lat_d = np.full(40, 41.79)
+    lon_d = np.linspace(-87.625, -87.648, 40)  # approaching from off-route
+    lats = np.concatenate([lat_d, lat_r])
+    lons = np.concatenate([lon_d, lon_r])
+    got = choose_shape(lats, lons, m, lens)
+    assert isinstance(got, Assignment)
+    assert got.shape_id == "full"
+    assert got.score > 0.9  # trimmed window is clean
+    # off-route head still excluded from the on-route mask downstream
+    assert got.match.on_route[:40].sum() == 0
+
+
+def test_full_trip_not_overtrimmed_to_subshape():
+    """A trip covering the FULL route must match the full shape, not get
+    trimmed down to a perfect-looking sub-shape (explicit 2026-07-30 spec)."""
+    full = _straight_shape()
+    short = full[:50]  # first half
+    shapes = {"full": full, "short": short}
+    m, lens = _matchers(shapes)
+    lats, lons = _pings_along(full, np.linspace(0, 99, 80).astype(int))
+    got = choose_shape(lats, lons, m, lens)
+    assert isinstance(got, Assignment)
+    assert got.shape_id == "full"
+    # and with a dead-head head too
+    lats2 = np.concatenate([np.full(30, 41.79), lats])
+    lons2 = np.concatenate([np.linspace(-87.62, -87.649, 30), lons])
+    got2 = choose_shape(lats2, lons2, m, lens)
+    assert isinstance(got2, Assignment)
+    assert got2.shape_id == "full"
+
+
+def test_short_turn_still_prefers_short_shape_with_trimming():
+    """A genuine short-turn trip (covers only the sub-shape's extent) still
+    lands on the short variant — trimming must not break the tie-break."""
+    full = _straight_shape()
+    short = full[:50]
+    shapes = {"full": full, "short": short}
+    m, lens = _matchers(shapes)
+    lats, lons = _pings_along(full, np.linspace(0, 48, 40).astype(int))
+    got = choose_shape(lats, lons, m, lens)
+    assert isinstance(got, Assignment)
+    assert got.shape_id == "short"
+
+
+def test_wandering_trip_still_rejected_with_trimming():
+    """Off-route wandering BETWEEN two on-route touches is interior — the
+    trim window keeps it, so the trip still fails the gate."""
+    full = _straight_shape()
+    shapes = {"full": full}
+    m, lens = _matchers(shapes)
+    # touch the route at both ends, wander 2 km east in between
+    lat_a, lon_a = _pings_along(full, np.arange(0, 8))
+    lat_b, lon_b = _pings_along(full, np.arange(92, 100))
+    lat_w = np.linspace(41.81, 41.89, 60)
+    lon_w = np.full(60, -87.62)
+    lats = np.concatenate([lat_a, lat_w, lat_b])
+    lons = np.concatenate([lon_a, lon_w, lon_b])
+    got = choose_shape(lats, lons, m, lens)
+    assert got == "low_score"
