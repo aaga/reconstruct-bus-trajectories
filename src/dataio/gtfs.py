@@ -58,10 +58,51 @@ def _read_shapes(gtfs_zip_path: str) -> dict[str, dict]:
         if all(s != "" for s in sdt_strs):
             # CTA stores shape_dist_traveled in feet.
             dist_m = np.array([float(s) / 3.28084 for s in sdt_strs], dtype=float)
+            dist_m = _repair_dist(polyline, dist_m)
         else:
             dist_m = None
         out[sid] = {"polyline": polyline, "dist_along_m": dist_m}
     return out
+
+
+# CTA's shapes.txt is riddled with ruler glitches (2026-07 survey: 761/816
+# shapes, 55k vertices): duplicated vertices carrying shape_dist_traveled=0
+# and neighbors with inflated deltas. Points projecting into a glitched
+# stretch collapse onto one ruler value — a far-side stop 33 m past a signal
+# reported the signal's own distance, landing it in the wrong segment.
+_REPAIR_DISCARD_FRAC = 0.20  # column too broken to trust at all
+
+
+def _repair_dist(polyline: np.ndarray, dist_m: np.ndarray) -> np.ndarray | None:
+    """Enforce a strictly usable ruler: non-monotone entries (drops and
+    zero-resets) are treated as missing and re-interpolated between the
+    surrounding valid anchors, weighted by physical arc length. Returns
+    None (→ callers fall back to the equirect ruler) when more than
+    _REPAIR_DISCARD_FRAC of vertices are invalid."""
+    n = len(dist_m)
+    if n < 2:
+        return dist_m
+    valid = np.ones(n, dtype=bool)
+    last = dist_m[0]
+    for i in range(1, n):
+        if dist_m[i] <= last:  # includes the zero-reset pattern
+            valid[i] = False
+        else:
+            last = dist_m[i]
+    if valid.all():
+        return dist_m
+    if (~valid).sum() > _REPAIR_DISCARD_FRAC * n:
+        return None
+    # arc-length position of every vertex (equirectangular, local)
+    lat0 = float(polyline[:, 0].mean())
+    dx = np.diff(polyline[:, 1]) * 111320.0 * np.cos(np.radians(lat0))
+    dy = np.diff(polyline[:, 0]) * 111320.0
+    arc = np.concatenate([[0.0], np.cumsum(np.hypot(dx, dy))])
+    fixed = dist_m.astype(float).copy()
+    iv = np.flatnonzero(valid)
+    fixed[~valid] = np.interp(arc[~valid], arc[iv], dist_m[iv])
+    # exact monotonicity even where interp plateaus (zero-length arcs)
+    return np.maximum.accumulate(fixed)
 
 
 def load_gtfs_shape(gtfs_zip_path: str | Path, shape_id: str) -> np.ndarray:

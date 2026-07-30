@@ -195,10 +195,13 @@ def shape_route_direction(gtfs_zip: Path) -> dict[str, dict]:
 def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[str, list[dict]]:
     """One pass over stop_times.txt + stops.txt: shape_id -> ordered stops.
 
-    Stop distance-along comes from ``stop_times.shape_dist_traveled`` where
-    the feed provides it (CTA, in feet). Feeds without the column (MBTA
-    omits it entirely) fall back to projecting each stop's lat/lon onto the
-    shape polyline with the standard snap matcher.
+    Stop distance-along is ALWAYS the stop pole's lat/lon projected onto the
+    shape polyline (2026-07-30 decision). stop_times.shape_dist_traveled is
+    deliberately ignored even where present: CTA generates it on the same
+    glitched ruler as shapes.txt (761/816 shapes affected), which collapsed
+    far-side stops onto their signal's position and attributed them to the
+    wrong segment. Pole coordinates are physical ground truth, and on clean
+    stops the two methods agree to ~0.1 m.
     """
     trip_to_shape = {v: k for k, v in rep_trip_by_shape.items()}
     rows_by_trip: dict[str, list[dict]] = defaultdict(list)
@@ -213,61 +216,40 @@ def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[st
                 for r in csv.DictReader(_io.TextIOWrapper(f, encoding="utf-8-sig"))
             }
 
+    from core.mapmatch.shape_snap import SnapToShapeMatcher
+
     out: dict[str, list[dict]] = {}
-    project_shapes: list[tuple[str, list[dict]]] = []
+    n_dropped = 0
     for trip_id, rows in rows_by_trip.items():
         rows.sort(key=lambda r: int(r["stop_sequence"]))
         shape_id = trip_to_shape[trip_id]
-        if any(r.get("shape_dist_traveled") for r in rows):
-            stops = []
-            for r in rows:
-                if not r.get("shape_dist_traveled"):
-                    continue
-                sid = r["stop_id"]
-                stops.append(
-                    {
-                        "stop_id": sid,
-                        "name": stops_meta.get(sid, {}).get("stop_name", sid),
-                        "dist_along_m": float(r["shape_dist_traveled"]) / 3.28084,
-                    }
-                )
-            out[shape_id] = stops
-        else:
-            project_shapes.append((shape_id, rows))
-
-    if project_shapes:
-        from core.mapmatch.shape_snap import SnapToShapeMatcher
-
-        n_dropped = 0
-        for shape_id, rows in project_shapes:
-            polyline, dist_m = load_gtfs_shape_with_dist(gtfs_zip, shape_id)
-            matcher = SnapToShapeMatcher(
-                polyline, max_perp_m=100.0, dist_along_m_per_vertex=dist_m
+        polyline, dist_m = load_gtfs_shape_with_dist(gtfs_zip, shape_id)
+        matcher = SnapToShapeMatcher(
+            polyline, max_perp_m=100.0, dist_along_m_per_vertex=dist_m
+        )
+        metas = [stops_meta.get(r["stop_id"], {}) for r in rows]
+        lats = np.array([float(m.get("stop_lat") or "nan") for m in metas])
+        lons = np.array([float(m.get("stop_lon") or "nan") for m in metas])
+        ok = ~(np.isnan(lats) | np.isnan(lons))
+        res = matcher.match(np.where(ok, lats, 0.0), np.where(ok, lons, 0.0))
+        stops = []
+        for i, r in enumerate(rows):
+            # A stop >100 m off its own shape is a feed inconsistency;
+            # drop rather than pin a bogus distance to it.
+            if not ok[i] or not res.on_route[i]:
+                n_dropped += 1
+                continue
+            sid = r["stop_id"]
+            stops.append(
+                {
+                    "stop_id": sid,
+                    "name": stops_meta.get(sid, {}).get("stop_name", sid),
+                    "dist_along_m": float(res.dist_along_m[i]),
+                }
             )
-            metas = [stops_meta.get(r["stop_id"], {}) for r in rows]
-            lats = np.array([float(m.get("stop_lat") or "nan") for m in metas])
-            lons = np.array([float(m.get("stop_lon") or "nan") for m in metas])
-            ok = ~(np.isnan(lats) | np.isnan(lons))
-            res = matcher.match(np.where(ok, lats, 0.0), np.where(ok, lons, 0.0))
-            stops = []
-            for i, r in enumerate(rows):
-                # A stop >100 m off its own shape is a feed inconsistency;
-                # drop rather than pin a bogus distance to it.
-                if not ok[i] or not res.on_route[i]:
-                    n_dropped += 1
-                    continue
-                sid = r["stop_id"]
-                stops.append(
-                    {
-                        "stop_id": sid,
-                        "name": stops_meta.get(sid, {}).get("stop_name", sid),
-                        "dist_along_m": float(res.dist_along_m[i]),
-                    }
-                )
-            out[shape_id] = stops
-        if n_dropped:
-            print(f"stops_by_shape: projected {len(project_shapes)} shapes "
-                  f"(no shape_dist_traveled); dropped {n_dropped} off-shape stops")
+        out[shape_id] = stops
+    if n_dropped:
+        print(f"stops_by_shape: dropped {n_dropped} stops >100 m off their shape")
     return out
 
 
