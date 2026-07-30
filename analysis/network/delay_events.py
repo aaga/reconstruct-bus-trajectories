@@ -242,11 +242,17 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     vehicle = str(trip["vehicle_id"].iloc[0])
     door = doors.get(vehicle)
     if door is None or len(door) == 0:
-        # 2026-07-29 decision: vehicle-days without a bus-state extract are
-        # DROPPED — without door intervals every stop dwell would be
-        # misclassified as non-dwell (red-at-stops artifact).
-        rejects["no_door_data"] += 1
-        return None
+        if city.has_door_data:
+            # 2026-07-29 decision: vehicle-days without a bus-state extract
+            # are DROPPED — without door intervals every stop dwell would be
+            # misclassified as non-dwell (red-at-stops artifact).
+            rejects["no_door_data"] += 1
+            return None
+        # No-door city (MBTA): every event flows through unclassified — the
+        # zero-overlap path labels them all 'nd', the dwell-blob pass sees
+        # no door cycles, and is_last marks the last event per segment. The
+        # dashboard renders these as undifferentiated "delay locations".
+        door = np.zeros((0, 3))
     trip_key = f"{trip['trip_id'].iloc[0]}_{vehicle}_{date_iso}"
     tz = city.tz
 
@@ -382,7 +388,7 @@ def process_date(args):
         df = _service_date_pings(city, date_iso)
         if df.empty:
             return [{"date": date_iso, "route": None, "note": "no_pings"}]
-        doors = _door_intervals(city, date_iso)
+        doors = _door_intervals(city, date_iso) if city.has_door_data else {}
         assigned = _stored_assignments(city, date_iso)
 
         for route_id, route_df in df.groupby("route_id", sort=True):

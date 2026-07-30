@@ -81,12 +81,14 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
         ]),
     ]
     if city.has_door_data:
-        stages += [
+        stages.append(
             ("door_join", ["uv", "run", "python", f"{NET}/door_join.py",
-                           "--city", c, "--force"]),
-            ("delay_events", ["uv", "run", "python", f"{NET}/delay_events.py",
-                              "--city", c, "--workers", str(workers)]),
-        ]
+                           "--city", c, "--force"]))
+    # delay_events runs for ALL cities: no-door cities get unclassified
+    # events (all 'nd') powering the "delay locations" distribution view.
+    stages.append(
+        ("delay_events", ["uv", "run", "python", f"{NET}/delay_events.py",
+                          "--city", c, "--workers", str(workers)]))
     stages += [
         ("freeflow", ["uv", "run", "python", f"{NET}/freeflow.py", "--city", c]),
         ("date_attrs", ["uv", "run", "python", f"{NET}/date_attrs.py", "--city", c]),
@@ -96,10 +98,9 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
                           if c == "cta" else
                           REPO / "dashboard" / "data" / "network" / c)]),
     ]
-    if city.has_door_data:
-        stages.append(
-            ("distributions", ["uv", "run", "python",
-                               f"{NET}/build_distributions.py", "--city", c]))
+    stages.append(
+        ("distributions", ["uv", "run", "python",
+                           f"{NET}/build_distributions.py", "--city", c]))
     stages.append(
         ("areas", ["uv", "run", "python", f"{NET}/areas_of_interest.py",
                    "--city", c]))

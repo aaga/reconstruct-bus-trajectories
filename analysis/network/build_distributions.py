@@ -46,7 +46,13 @@ def build(city_id: str) -> None:
     registry = json.loads((base / "segment_registry.json").read_text())
     seg_index = {s: i for i, s in enumerate(sorted(registry["segments"]))}
 
-    out_dir = REPO / "dashboard" / "data" / "network" / "dist"
+    # CTA keeps the original flat location; other cities nest under their id
+    # (mirrors the payload layout dashboard/data/network/<city>/).
+    out_dir = (
+        REPO / "dashboard" / "data" / "network" / "dist"
+        if city.city_id == "cta"
+        else REPO / "dashboard" / "data" / "network" / city.city_id / "dist"
+    )
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
