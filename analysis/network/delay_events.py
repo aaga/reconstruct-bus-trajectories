@@ -84,11 +84,17 @@ EVENTS_SCHEMA = pa.schema(
         ("route_id", pa.dictionary(pa.int32(), pa.string())),
         ("service_date", pa.date32()),
         ("trip_key", pa.string()),
-        ("cls", pa.dictionary(pa.int32(), pa.string())),  # nd | pre | post
+        # nd | pre | post (single door cycle) | post2 (>=1 swallowed extra
+        # cycle) | dw (dwell blob — metric/annotation row, hidden from bars)
+        ("cls", pa.dictionary(pa.int32(), pa.string())),
         ("off_down_m", pa.float32()),  # midpoint, meters upstream of downstream signal
         ("dur_s", pa.float32()),
         ("hour_local", pa.uint8()),
         ("is_last", pa.bool_()),  # queue marker: traversal's last piece in seg
+        # Piece time bounds (epoch s): build_distributions uses these for
+        # trip-sequencing (yellow reclassification, first-piece stats).
+        ("t_start_s", pa.float64()),
+        ("t_end_s", pa.float64()),
     ]
 )
 
@@ -118,6 +124,11 @@ def _door_intervals(city: CityConfig, date_iso: str) -> dict[str, np.ndarray]:
                dwell_s, passenger_load
         FROM read_parquet('{ev_glob}')
         WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{date_iso}'
+          -- 2026-07-31 decision: zero-activity door cycles (nobody on or
+          -- off) are ignored EVERYWHERE — treated as if the doors never
+          -- opened. ~10% of CTA cycles.
+          AND coalesce(ron,0) + coalesce(roff,0)
+              + coalesce(fon,0) + coalesce(foff,0) > 0
         ORDER BY bus_id, t_open
         """
     ).fetchall()
@@ -284,7 +295,8 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 "trip_key": trip_key, "cls": cls,
                 "off_down_m": float(off), "dur_s": float(tb - ta),
                 "hour_local": int(hour),
-                "is_last": False, "_t_end": tb,  # stripped before write
+                "is_last": False,
+                "t_start_s": float(ta), "t_end_s": float(tb),
             }
         )
 
@@ -311,18 +323,23 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 pax_by_seg[seg_id] += ev.duration_s * load_asof(a_abs)
         else:
             open_min = float(overl[:, 0].min())
-            close_max = float(overl[:, 1].max())
-            # >10 s shoulders: viz rows AND the only dwell-side pax pieces
+            close_first = float(overl[:, 1].min())
+            # >10 s shoulders: viz rows AND the only dwell-side pax pieces.
             if open_min - a_abs > PORTION_MIN_S:
                 emit("pre", a_abs, open_min)
                 seg_id, _ = seg_of(x_at((a_abs + open_min) / 2 - t0_epoch))
                 if seg_id:
                     pax_by_seg[seg_id] += (open_min - a_abs) * load_asof(a_abs)
-            if b_abs - close_max > PORTION_MIN_S:
-                emit("post", close_max, b_abs)
-                seg_id, _ = seg_of(x_at((close_max + b_abs) / 2 - t0_epoch))
+            # Post-boarding runs from the FIRST close to the event end
+            # (2026-07-31): any further door cycles inside the event are
+            # "swallowed" into the piece, which is then classed post2
+            # (slashed purple) instead of post.
+            if b_abs - close_first > PORTION_MIN_S:
+                cls = "post2" if len(overl) > 1 else "post"
+                emit(cls, close_first, b_abs)
+                seg_id, _ = seg_of(x_at((close_first + b_abs) / 2 - t0_epoch))
                 if seg_id:
-                    pax_by_seg[seg_id] += (b_abs - close_max) * load_asof(close_max)
+                    pax_by_seg[seg_id] += (b_abs - close_first) * load_asof(close_first)
 
     # ---- dwell: EVERY door cycle, unioned with overlapping events --------
     # Merge doors + events-overlapping-doors into connected time blobs so
@@ -348,19 +365,24 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             seg_id, _ = seg_of(x_at((lo + hi) / 2 - t0_epoch))
             if seg_id:
                 dwell_by_seg[seg_id] += hi - lo
+                # dw annotation row: powers the dwell-cluster median lines
+                # and the yellow "queued for the stop" reclassification in
+                # build_distributions. Hidden from the stacked bars.
+                emit("dw", lo, hi)
 
     # Queue markers: per segment, the LAST non-boarding piece before the bus
     # exited (by piece end time). Many sit at the light; a bus released from
     # a queue that clears the rest of the segment leaves its marker upstream.
+    # dw rows are boarding by definition and never compete.
     last_by_seg: dict[str, dict] = {}
     for row in event_rows:
+        if row["cls"] == "dw":
+            continue
         cur = last_by_seg.get(row["seg_id"])
-        if cur is None or row["_t_end"] > cur["_t_end"]:
+        if cur is None or row["t_end_s"] > cur["t_end_s"]:
             last_by_seg[row["seg_id"]] = row
     for row in last_by_seg.values():
         row["is_last"] = True
-    for row in event_rows:
-        row.pop("_t_end", None)
 
     sum_rows = [
         {

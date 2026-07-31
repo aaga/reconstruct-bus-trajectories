@@ -649,16 +649,15 @@ export class NetworkView {
     this._distMode ??= "events"; // "events" | "seconds" | "queue"
     const secondsMode = this._distMode === "seconds";
     const queueMode = this._distMode === "queue";
-    const KEY = secondsMode
-      ? { nd: "nd_s", pre: "pre_s", post: "post_s" }
-      : queueMode
-        ? { nd: "nd_q", pre: "pre_q", post: "post_q" }
-        : { nd: "nd", pre: "pre", post: "post" };
+    const suffix = secondsMode ? "_s" : queueMode ? "_q" : "";
+    // v2 classes; v1 files simply lack y/post2 (empty fallbacks keep them working)
+    const CLASSES = ["nd", "y", "pre", "post", "post2"];
     // Seconds mode: divide by the segment's traversal count so the y-axis
     // reads as AVERAGE delay seconds per trip (dumb rescale, per user).
     const denom = secondsMode ? Math.max(1, d.n_trips ?? 1) : 1;
-    const pick = (k, fb) => (d[k] ?? fb).map((v) => v / denom);
-    const src = { nd: pick(KEY.nd, d.nd), pre: pick(KEY.pre, d.pre), post: pick(KEY.post, d.post) };
+    const zeros = d.nd.map(() => 0);
+    const pick = (c) => (d[c + suffix] ?? d[c] ?? zeros).map((v) => v / denom);
+    const src = Object.fromEntries(CLASSES.map((c) => [c, pick(c)]));
     const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 12;
     const H = chartH + roadH + axisH + 12;
     const lenFt = d.len_ft;
@@ -667,15 +666,21 @@ export class NetworkView {
     const xOf = (ft) => padL + (ft / lenFt) * innerW;   // 0 ft (light) at left
     const bw = Math.max(1, (BUCKET => (BUCKET / lenFt) * innerW)(d.bucket_ft));
 
-    const totals = src.nd.map((v, i) => v + src.pre[i] + src.post[i]);
+    const totals = src.nd.map((_, i) =>
+      CLASSES.reduce((a, c) => a + src[c][i], 0));
     const yMax = Math.max(1, ...totals);
     const yOf = (n) => chartH - (n / yMax) * (chartH - 6);
 
-    const COLORS = { nd: "#d63a2f", pre: "#1fb8b0", post: "#8a4fc8" };
-    let bars = "";
+    const COLORS = { nd: "#d63a2f", y: "#b8860b", pre: "#1fb8b0",
+                     post: "#8a4fc8", post2: "url(#post2hatch)" };
+    let bars = `<defs><pattern id="post2hatch" width="6" height="6"
+        patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="6" height="6" fill="#8a4fc8"/>
+        <line x1="0" y1="0" x2="0" y2="6" stroke="#fff" stroke-width="2.2"/>
+      </pattern></defs>`;
     for (let i = 0; i < nB; i++) {
       let y = chartH;
-      for (const cls of ["nd", "pre", "post"]) {
+      for (const cls of CLASSES) {
         const v = src[cls][i];
         if (!v) continue;
         const h = ((v / yMax) * (chartH - 6));
@@ -740,6 +745,41 @@ export class NetworkView {
       road += `<rect data-tip="${st.name} bus stop" x="${(x - 6).toFixed(1)}" y="${roadY - 6}"
                width="12" height="${roadBodyH + 12}" rx="4" fill="#2f6fd6"/>`;
     }
+    // dwell-cluster medians: where buses ACTUALLY stop. Solid blue with a
+    // black outline when the cluster sits at a real stop (drawn over the
+    // stop bar), dotted blue when it doesn't (a recurring stopping spot
+    // away from any stop — interesting in itself).
+    for (const cl of d.dwell_clusters ?? []) {
+      const x = xOf(cl.off_ft);
+      if (x < padL || x > W - padR) continue;
+      const tip = `median dwell position (${cl.n} dwells${cl.near_stop ? ", at stop" : ", NOT at a stop"})`;
+      if (cl.near_stop) {
+        road += `<g data-tip="${tip}">
+          <line x1="${x.toFixed(1)}" y1="${roadY - 8}" x2="${x.toFixed(1)}"
+                y2="${roadY + roadBodyH + 8}" stroke="#000" stroke-width="5"/>
+          <line x1="${x.toFixed(1)}" y1="${roadY - 8}" x2="${x.toFixed(1)}"
+                y2="${roadY + roadBodyH + 8}" stroke="#39c0ff" stroke-width="2.5"/></g>`;
+      } else {
+        road += `<line data-tip="${tip}" x1="${x.toFixed(1)}" y1="${roadY - 8}"
+                 x2="${x.toFixed(1)}" y2="${roadY + roadBodyH + 8}"
+                 stroke="#39c0ff" stroke-width="2.5" stroke-dasharray="4 4"/>`;
+      }
+    }
+    // naive stop-bar / back-of-queue estimates: white labeled verticals
+    const estLine = (ft, label, tip) => {
+      if (ft == null) return "";
+      const x = xOf(ft);
+      if (x < padL || x > W - padR) return "";
+      return `<g data-tip="${tip}">
+        <line x1="${x.toFixed(1)}" y1="${roadY - 4}" x2="${x.toFixed(1)}"
+              y2="${roadY + roadBodyH + 4}" stroke="#fff" stroke-width="2"/>
+        <text x="${x.toFixed(1)}" y="${roadY - 8}" text-anchor="middle"
+              style="font-size:9px;fill:#fff;font-weight:700;paint-order:stroke;stroke:#333;stroke-width:2.5px">${label}</text></g>`;
+    };
+    road += estLine(d.stopbar_ft, "stop bar",
+      `estimated stop bar: p15 of front-of-queue positions (${Math.round(d.stopbar_ft ?? 0)} ft)`);
+    road += estLine(d.queueback_ft, "queue p85",
+      `estimated back of queue: p85 of first-delay positions (${Math.round(d.queueback_ft ?? 0)} ft)`);
 
     // feet scale
     const step = lenFt > 2000 ? 500 : lenFt > 800 ? 200 : 100;
@@ -766,7 +806,7 @@ export class NetworkView {
           ? "Distribution of non-boarding delays"
           : "Distribution of delay locations"}
         <span class="dist-toggle">
-          <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
+          <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">delay events</button>
           <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
           ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
         </span>
@@ -775,8 +815,10 @@ export class NetworkView {
       <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
       ${this.hasDoor ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
-        <span><i style="background:#1fb8b0"></i>pre-boarding dwell</span>
-        <span><i style="background:#8a4fc8"></i>post-boarding dwell</span>
+        <span><i style="background:#b8860b"></i>queued for stop</span>
+        <span><i style="background:#1fb8b0"></i>pre-boarding</span>
+        <span><i style="background:#8a4fc8"></i>post-boarding</span>
+        <span><i style="background:repeating-linear-gradient(45deg,#8a4fc8,#8a4fc8 3px,#fff 3px,#fff 5px)"></i>post-boarding, extra door cycles</span>
       </div>` : ""}`;
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
       b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props, coords); };
