@@ -18,9 +18,17 @@ stops that never trigger a 15 s event still count. Pax-weighted delay =
 nd events + ONLY the >10 s pre/post shoulders (the viz pieces), each piece
 weighted by the load as-of the most recent door close before it.
 
-Each classified row gets a LOCATION: the along-road midpoint of the relevant
-portion, expressed as meters upstream of the segment's DOWNSTREAM signal
-(queues at the light cluster near 0).
+Each classified row gets a LOCATION expressed as meters upstream of the
+segment's DOWNSTREAM signal (queues at the light cluster near 0):
+  * dw rows (2026-08-05): the door cycle's RAW reported lat/lon snapped to
+    the assigned shape (trajectory-at-close fallback when it won't snap) —
+    immune to the union-midpoint smearing that mislocated far-side stops.
+    Blobs are cut at segment-boundary crossings; each door-bearing slice
+    is a dw row in its door's raw segment. Door-less slices aren't dwell.
+  * pre/post/post2: trajectory midpoint of the portion, but only keep the
+    boarding class when that segment matches the door's raw segment —
+    otherwise the piece is a plain nd event, detached from the dwell.
+  * nd: trajectory midpoint of the event.
 
 Outputs per (service_date, route), both keyed by CANONICAL seg_id:
   events/…/route=R.parquet     one row per classified event/portion
@@ -105,6 +113,9 @@ EVENTS_SCHEMA = pa.schema(
         # Like is_last but door events (dw) compete too: the traversal's
         # final piece in the segment including dwells.
         ("is_last_all", pa.bool_()),
+        # System stop attribution of the associated door cycle (dw/pre/
+        # post/post2 rows; null for nd). Powers per-stop performance stats.
+        ("stop_id", pa.string()),
         # Piece time bounds (epoch s), for trip-sequencing analyses.
         ("t_start_s", pa.float64()),
         ("t_end_s", pa.float64()),
@@ -123,8 +134,14 @@ SUMS_SCHEMA = pa.schema(
 )
 
 
-def _door_intervals(city: CityConfig, date_iso: str) -> dict[str, np.ndarray]:
-    """vehicle -> array[[t_open_utc_s, t_close_utc_s, load], ...] sorted."""
+def _door_intervals(
+    city: CityConfig, date_iso: str
+) -> tuple[dict[str, np.ndarray], dict[str, list]]:
+    """(vehicle -> array[[t_open, t_close, load, lat, lon], ...],
+        vehicle -> [stop_id, ...] in the same order).
+
+    lat/lon are the RAW reported door coordinates (2026-08-05: verified to
+    be genuine finely-gridded measurements, not stop lookups)."""
     import duckdb
 
     ev_glob = str(city.resolve("caches/door_events") / city.city_id / "*.parquet")
@@ -134,7 +151,7 @@ def _door_intervals(city: CityConfig, date_iso: str) -> dict[str, np.ndarray]:
         f"""
         SELECT bus_id,
                epoch((event_time AT TIME ZONE '{city.tz}')) AS t_open,
-               dwell_s, passenger_load
+               dwell_s, passenger_load, latitude, longitude, stop_id
         FROM read_parquet('{ev_glob}')
         WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{date_iso}'
           -- 2026-07-31 decision: zero-activity door cycles (nobody on or
@@ -146,10 +163,13 @@ def _door_intervals(city: CityConfig, date_iso: str) -> dict[str, np.ndarray]:
         """
     ).fetchall()
     out: dict[str, list] = defaultdict(list)
-    for bus, t_open, dwell, load in rows:
+    stops: dict[str, list] = defaultdict(list)
+    for bus, t_open, dwell, load, lat, lon, stop_id in rows:
         out[str(bus)].append((float(t_open), float(t_open) + float(dwell or 0.0),
-                              min(int(load or 0), MAX_LOAD)))
-    return {k: np.asarray(v) for k, v in out.items()}
+                              min(int(load or 0), MAX_LOAD),
+                              float(lat or 0.0), float(lon or 0.0)))
+        stops[str(bus)].append(stop_id)
+    return ({k: np.asarray(v) for k, v in out.items()}, dict(stops))
 
 
 def _stored_assignments(city: CityConfig, date_iso: str) -> dict[str, str]:
@@ -179,7 +199,8 @@ def _stored_assignments(city: CityConfig, date_iso: str) -> dict[str, str]:
 
 
 def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Counter,
-                  assigned: dict[str, str] | None = None):
+                  assigned: dict[str, str] | None = None,
+                  door_stops: dict[str, list] | None = None):
     """Returns (event_rows, sum_rows) or None."""
     city: CityConfig = _G["city"]
     trip = trip.sort_values("ts_utc").drop_duplicates(subset="ts_utc")
@@ -276,7 +297,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         # zero-overlap path labels them all 'nd', the dwell-blob pass sees
         # no door cycles, and is_last marks the last event per segment. The
         # dashboard renders these as undifferentiated "delay locations".
-        door = np.zeros((0, 3))
+        door = np.zeros((0, 5))
     trip_key = f"{trip['trip_id'].iloc[0]}_{vehicle}_{date_iso}"
     tz = city.tz
 
@@ -295,14 +316,21 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         prior = door[door[:, 1] <= t_abs]
         return float(prior[-1, 2]) if len(prior) else 0.0
 
-    def emit(cls: str, ta: float, tb: float):
-        xm = (x_at(ta - t0_epoch) + x_at(tb - t0_epoch)) / 2
-        seg_id, off = seg_of(xm)
+    bnd = {b[0]: (b[1], b[2]) for b in bounds}
+
+    def emit(cls: str, ta: float, tb: float, seg_off=None, stop_id=None):
+        # seg_off: explicit (seg_id, off_m) anchor — used by dw rows, which
+        # are located at the RAW door coordinates snapped to the shape
+        # (2026-08-05 decision) instead of the trajectory midpoint.
+        if seg_off is None:
+            xm = (x_at(ta - t0_epoch) + x_at(tb - t0_epoch)) / 2
+            seg_id, off = seg_of(xm)
+        else:
+            seg_id, off = seg_off
         if seg_id is None:
             return
-        # off = x_hi - xm, so the start position lands at off + (xm - x_start)
-        # on the same downstream-signal axis.
-        off_start = off + (xm - x_at(ta - t0_epoch))
+        # piece-START position on the same downstream-signal axis
+        off_start = bnd[seg_id][1] - x_at(ta - t0_epoch)
         hour = pd.Timestamp(ta, unit="s", tz="UTC").tz_convert(tz).hour
         event_rows.append(
             {
@@ -313,38 +341,77 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 "dur_s": float(tb - ta),
                 "hour_local": int(hour),
                 "is_last": False, "trip_seq": 0, "is_last_all": False,
+                "stop_id": str(stop_id) if stop_id is not None else None,
                 "t_start_s": float(ta), "t_end_s": float(tb),
             }
         )
 
-    # Trip-window door cycles (absolute seconds).
-    trip_doors = np.empty((0, 3))
-    if door is not None:
+    # Trip-window door cycles (absolute seconds) + aligned stop ids.
+    trip_doors = np.empty((0, 5))
+    trip_stops: list = []
+    if door is not None and len(door):
         t_lo = t0_epoch + float(f.x[0])
         t_hi = t0_epoch + float(f.x[-1])
-        trip_doors = door[(door[:, 0] >= t_lo) & (door[:, 0] <= t_hi)]
+        mask = (door[:, 0] >= t_lo) & (door[:, 0] <= t_hi)
+        trip_doors = door[mask]
+        veh_stops = (door_stops or {}).get(vehicle, [])
+        trip_stops = ([s for s, m in zip(veh_stops, mask) if m]
+                      if len(veh_stops) == len(door)
+                      else [None] * len(trip_doors))
+
+    # Door-cycle anchor (2026-08-05): per city.door_anchor —
+    #   "raw":      reported door lat/lon snapped onto the assigned shape
+    #               (trajectory-at-close fallback for the ~1% off-shape)
+    #   "door_mid": trajectory position at the door-interval time-midpoint
+    #               (cta-hf high-frequency investigation)
+    door_snap: list[tuple] = []
+    if len(trip_doors):
+        clamp_t = lambda t: min(max(t - t0_epoch, float(f.x[0])), float(f.x[-1]))
+        if city.door_anchor == "door_mid":
+            for k in range(len(trip_doors)):
+                tm = (float(trip_doors[k, 0]) + float(trip_doors[k, 1])) / 2
+                door_snap.append(seg_of(x_at(clamp_t(tm))))
+        else:
+            mtc = _matcher(asg.shape_id)[0]
+            snp = mtc.match(trip_doors[:, 3], trip_doors[:, 4], exact_far=False)
+            for k in range(len(trip_doors)):
+                if snp.on_route[k]:
+                    door_snap.append(seg_of(float(snp.dist_along_m[k])))
+                else:
+                    door_snap.append(seg_of(x_at(clamp_t(float(trip_doors[k, 1])))))
 
     # ---- non-dwell events + viz shoulders + pax --------------------------
     for ev in events:
         a_abs = t0_epoch + ev.t_start
         b_abs = t0_epoch + ev.t_end
-        overl = trip_doors[
-            (trip_doors[:, 1] > a_abs) & (trip_doors[:, 0] < b_abs)
-        ] if len(trip_doors) else trip_doors
+        oidx = (np.where((trip_doors[:, 1] > a_abs)
+                         & (trip_doors[:, 0] < b_abs))[0]
+                if len(trip_doors) else np.empty(0, int))
 
-        if len(overl) == 0:
+        if len(oidx) == 0:
             emit("nd", a_abs, b_abs)
             seg_id, _ = seg_of((ev.x_start + ev.x_end) / 2)
             if seg_id:
                 nd_by_seg[seg_id] += ev.duration_s
                 pax_by_seg[seg_id] += ev.duration_s * load_asof(a_abs)
         else:
+            overl = trip_doors[oidx]
             open_min = float(overl[:, 0].min())
+            k_open = int(oidx[int(np.argmin(overl[:, 0]))])
             close_first = float(overl[:, 1].min())
+            k_close = int(oidx[int(np.argmin(overl[:, 1]))])
             # >10 s shoulders: viz rows AND the only dwell-side pax pieces.
+            # 2026-08-05 rule: a shoulder keeps its pre/post class ONLY when
+            # its (trajectory) segment matches its door's RAW segment;
+            # otherwise it is a plain nd event, detached from the dwell.
             if open_min - a_abs > PORTION_MIN_S:
-                emit("pre", a_abs, open_min)
                 seg_id, _ = seg_of(x_at((a_abs + open_min) / 2 - t0_epoch))
+                dseg = door_snap[k_open][0] if door_snap else None
+                if seg_id and dseg and seg_id != dseg:
+                    emit("nd", a_abs, open_min)
+                    nd_by_seg[seg_id] += (open_min - a_abs)
+                else:
+                    emit("pre", a_abs, open_min, stop_id=trip_stops[k_open])
                 if seg_id:
                     pax_by_seg[seg_id] += (open_min - a_abs) * load_asof(a_abs)
             # Post-boarding runs from the FIRST close to the event end
@@ -352,9 +419,14 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             # "swallowed" into the piece, which is then classed post2
             # (slashed purple) instead of post.
             if b_abs - close_first > PORTION_MIN_S:
-                cls = "post2" if len(overl) > 1 else "post"
-                emit(cls, close_first, b_abs)
+                cls = "post2" if len(oidx) > 1 else "post"
                 seg_id, _ = seg_of(x_at((close_first + b_abs) / 2 - t0_epoch))
+                dseg = door_snap[k_close][0] if door_snap else None
+                if seg_id and dseg and seg_id != dseg:
+                    emit("nd", close_first, b_abs)
+                    nd_by_seg[seg_id] += (b_abs - close_first)
+                else:
+                    emit(cls, close_first, b_abs, stop_id=trip_stops[k_close])
                 if seg_id:
                     pax_by_seg[seg_id] += (b_abs - close_first) * load_asof(close_first)
 
@@ -378,13 +450,35 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 blobs[-1] = (blobs[-1][0], max(blobs[-1][1], hi))
             else:
                 blobs.append((lo, hi))
+        # 2026-08-05: blobs are CUT at segment-boundary crossings (per the
+        # trajectory); each door-bearing slice becomes a dw row located at
+        # its first door's raw-snapped position and attributed to that raw
+        # segment. Door-less slices (queue tails across a boundary) are NOT
+        # dwell — their time is carried by the pre/post/nd pieces.
         for lo, hi in blobs:
-            seg_id, _ = seg_of(x_at((lo + hi) / 2 - t0_epoch))
-            if seg_id:
-                dwell_by_seg[seg_id] += hi - lo
+            kidx = [k for k in range(len(trip_doors))
+                    if trip_doors[k, 0] <= hi and trip_doors[k, 1] >= lo]
+            if not kidx:
+                continue
+            x_a, x_b = x_at(lo - t0_epoch), x_at(hi - t0_epoch)
+            cuts = sorted(
+                t0_epoch + float(np.interp(xh, xg, tg))
+                for _sb, _xl, xh in bounds if x_a < xh < x_b)
+            edges = [lo] + [c for c in cuts if lo < c < hi] + [hi]
+            for pl, ph in zip(edges, edges[1:]):
+                pk = [k for k in kidx
+                      if pl <= trip_doors[k, 0] < ph
+                      or (trip_doors[k, 0] < pl and trip_doors[k, 1] > pl)]
+                if not pk or ph <= pl:
+                    continue
+                seg_id, off = door_snap[pk[0]]
+                if seg_id is None:
+                    continue
+                dwell_by_seg[seg_id] += ph - pl
                 # dw annotation row: powers the dwell-cluster median lines
                 # in build_distributions. Hidden from the stacked bars.
-                emit("dw", lo, hi)
+                emit("dw", pl, ph, seg_off=(seg_id, off),
+                     stop_id=trip_stops[pk[0]])
 
     # Queue markers: per segment, the LAST non-boarding piece before the bus
     # exited (by piece end time). Many sit at the light; a bus released from
@@ -438,7 +532,8 @@ def process_date(args):
         df = _service_date_pings(city, date_iso)
         if df.empty:
             return [{"date": date_iso, "route": None, "note": "no_pings"}]
-        doors = _door_intervals(city, date_iso) if city.has_door_data else {}
+        doors, door_stops = (_door_intervals(city, date_iso)
+                             if city.has_door_data else ({}, {}))
         assigned = _stored_assignments(city, date_iso)
 
         for route_id, route_df in df.groupby("route_id", sort=True):
@@ -452,7 +547,8 @@ def process_date(args):
             su_rows: list[dict] = []
             n_kept = 0
             for _, trip in route_df.groupby(["trip_id", "vehicle_id"], sort=False):
-                got = _process_trip(trip, date_iso, doors, rejects, assigned)
+                got = _process_trip(trip, date_iso, doors, rejects, assigned,
+                                    door_stops)
                 if got is None:
                     continue
                 ev_rows.extend(got[0])

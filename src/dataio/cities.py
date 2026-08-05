@@ -13,7 +13,7 @@ so entry points can run from any CWD (including git worktrees where
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from pathlib import Path
 
 # Repo root = parent of src/. Mirrors how realtime.py resolves its cache dir.
@@ -68,6 +68,12 @@ class CityConfig:
     # consumed by build_all_intersections --pbf and way_geometry --pbf.
     pbf_file: str | None = None
     valhalla_url: str = "http://localhost:8002"
+    # dw-row location anchor in delay_events: "raw" = door lat/lon snapped
+    # to the shape (2026-08-05 default); "door_mid" = trajectory position at
+    # the door-interval time-midpoint (cta-hf investigation).
+    door_anchor: str = "raw"
+    # Hidden from the dashboard city tabs (investigation-only cities).
+    show_in_ui: bool = True
 
     def resolve(self, rel: str | Path) -> Path:
         """Resolve a repo-root-relative path (absolute paths pass through)."""
@@ -168,7 +174,19 @@ _MBTA = CityConfig(
     valhalla_url="http://localhost:8003",
 )
 
-CITIES: dict[str, CityConfig] = {c.city_id: c for c in (_CTA, _MBTA)}
+# CTA-highfreq investigation (2026-08-05): 3 VTRAK vehicles at ~2 s cadence,
+# ingested via analysis/network/highfreq_ingest.py into the shared archive
+# cache under agency=cta-hf. Shares CTA's GTFS/registry/door data; dw rows
+# anchor at the door-interval midpoint (per user decision for this stream).
+_CTA_HF = _dc_replace(
+    _CTA,
+    city_id="cta-hf",
+    r2_agency="cta-hf",
+    door_anchor="door_mid",
+    show_in_ui=False,
+)
+
+CITIES: dict[str, CityConfig] = {c.city_id: c for c in (_CTA, _MBTA, _CTA_HF)}
 
 
 def get_city(city_id: str) -> CityConfig:
