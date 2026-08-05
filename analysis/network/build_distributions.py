@@ -141,6 +141,24 @@ def build(city_id: str) -> None:
             [(s, sh, m) for s, d_ in movements.items() for sh, m in d_.items()],
         )
 
+    # ---- segment adjacency along each shape (ghost zones) ----------------
+    # For neighbor N of target S on shape sh, an N-event at off_N sits at
+    # off_N + (x_hi_S − x_hi_N) in S's downstream-signal frame: negative =
+    # past S's light, > len = upstream of S's start.
+    adj_rows = []
+    for sh, rec in registry["shapes"].items():
+        sb = sorted(rec["seg_bounds"], key=lambda r: r[1])
+        for a, b in zip(sb, sb[1:]):
+            adj_rows.append((sh, b[0], a[0], a[2] - b[2]))  # b is a's next
+            adj_rows.append((sh, a[0], b[0], b[2] - a[2]))  # a is b's prev
+    con.execute("CREATE TABLE adj(shape_id TEXT, nb_seg TEXT, tgt_seg TEXT, "
+                "shift DOUBLE)")
+    if adj_rows:
+        con.executemany("INSERT INTO adj VALUES (?, ?, ?, ?)", adj_rows)
+    con.execute("CREATE TABLE seglen(seg_id TEXT, len_m DOUBLE)")
+    con.executemany("INSERT INTO seglen VALUES (?, ?)",
+                    [(s, r["len_m"]) for s, r in registry["segments"].items()])
+
     # ---- bucket aggregation (split by movement; '?' = unknown shape) -----
     # Shape per (seg, trip) via event_sums; min() collapses the handful of
     # cross-route trip_key collisions (~6/day) to one shape.
@@ -161,6 +179,32 @@ def build(city_id: str) -> None:
         LEFT JOIN shp USING (seg_id, trip_key)
         LEFT JOIN mv ON mv.seg_id = e.seg_id AND mv.shape_id = shp.shape_id
         WHERE e.cls IN ('nd', 'pre', 'post', 'post2', 'dw')
+        GROUP BY 1, 2, 3, 4
+        """
+    ).fetchall()
+
+    # ---- ghost aggregation: neighbors' events in the ±10%-length zones ---
+    ghost_rows = con.execute(
+        f"""
+        WITH shp AS (
+          SELECT seg_id, trip_key, min(shape_id) AS shape_id
+          FROM read_parquet('{sums_glob}') GROUP BY 1, 2
+        )
+        SELECT adj.tgt_seg, e.cls AS fcls,
+               floor((e.off_down_m + adj.shift) * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
+               coalesce(mv.m, '?') AS mvm,
+               count(*) AS n,
+               sum(e.dur_s) AS secs,
+               count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
+                                THEN e.is_last_all ELSE e.is_last END) AS n_last
+        FROM read_parquet('{glob}') e
+        JOIN shp USING (seg_id, trip_key)
+        JOIN adj ON adj.shape_id = shp.shape_id AND adj.nb_seg = e.seg_id
+        JOIN seglen sl ON sl.seg_id = adj.tgt_seg
+        LEFT JOIN mv ON mv.seg_id = adj.tgt_seg AND mv.shape_id = shp.shape_id
+        WHERE e.cls IN ('nd', 'pre', 'post', 'post2', 'dw')
+          AND ((e.off_down_m + adj.shift) BETWEEN -0.1 * sl.len_m AND -0.001
+               OR (e.off_down_m + adj.shift) BETWEEN sl.len_m AND 1.1 * sl.len_m)
         GROUP BY 1, 2, 3, 4
         """
     ).fetchall()
@@ -195,6 +239,23 @@ def build(city_id: str) -> None:
             md.setdefault(fcls + "_s", {})[b] = round(float(secs), 1)
             if n_last:
                 md.setdefault(fcls + "_q", {})[b] = int(n_last)
+
+    per_seg_gh: dict[str, dict] = {}
+    per_seg_mv_gh: dict[str, dict[str, dict]] = {}
+    for seg_id, fcls, bucket, mvm, n, secs, n_last in ghost_rows:
+        b = int(bucket)
+        targets = [per_seg_gh.setdefault(seg_id, {})]
+        if mvm != "?":
+            targets.append(
+                per_seg_mv_gh.setdefault(seg_id, {}).setdefault(mvm, {}))
+        for t in targets:
+            cd = t.setdefault(fcls, {})
+            cd[b] = cd.get(b, 0) + int(n)
+            sd = t.setdefault(fcls + "_s", {})
+            sd[b] = round(sd.get(b, 0.0) + float(secs), 1)
+            if n_last:
+                qd = t.setdefault(fcls + "_q", {})
+                qd[b] = qd.get(b, 0) + int(n_last)
 
     clus_by_seg: dict[str, list] = {}
     for seg_id, lo, hi, med, n, near in clusters:
@@ -256,6 +317,29 @@ def build(city_id: str) -> None:
         payload["n_events"] = total
         payload["n_trips"] = int(n_trips.get(seg_id, 0))
         payload["dwell_clusters"] = clus_by_seg.get(seg_id, [])
+        # Ghost zones: neighbors' events remapped into this segment's frame,
+        # ±10% of length past each end (rendered at 50% opacity).
+        G = max(1, int(np.ceil(len_ft * 0.1 / BUCKET_FT)))
+
+        def _ghost_arrays(src_dict):
+            lo, hi = {}, {}
+            for cls in [c + s for c in CLASSES for s in ("", "_s", "_q")]:
+                alo = [0] * G
+                ahi = [0] * G
+                for b, v in src_dict.get(cls, {}).items():
+                    if -G <= b < 0:
+                        alo[b + G] = v
+                    elif n_buckets <= b < n_buckets + G:
+                        ahi[b - n_buckets] = v
+                lo[cls] = alo
+                hi[cls] = ahi
+            return lo, hi
+
+        gh = per_seg_gh.get(seg_id)
+        if gh:
+            payload["ghost_buckets"] = G
+            payload["gh_lo"], payload["gh_hi"] = _ghost_arrays(gh)
+
         # Turn movements: label always (when known); per-movement array split
         # only for mixed segments — that's when the UI shows the filter.
         seg_mvs = sorted(set(movements.get(seg_id, {}).values()))
@@ -272,6 +356,9 @@ def build(city_id: str) -> None:
                             if 0 <= b < n_buckets:
                                 arr[b] = n
                         arrs[cls] = arr
+                    mgh = per_seg_mv_gh.get(seg_id, {}).get(m)
+                    if mgh:
+                        arrs["gh_lo"], arrs["gh_hi"] = _ghost_arrays(mgh)
                     by[m] = arrs
                 payload["by_mvmt"] = by
         bar_m = est.get(seg_id)

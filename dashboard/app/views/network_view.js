@@ -689,8 +689,14 @@ export class NetworkView {
     const lenFt = d.len_ft;
     const nB = d.nd.length;
     const innerW = W - padL - padR;
-    const xOf = (ft) => padL + (ft / lenFt) * innerW;   // 0 ft (light) at left
-    const bw = Math.max(1, (BUCKET => (BUCKET / lenFt) * innerW)(d.bucket_ft));
+    // Ghost zones: 10% of segment length beyond each end, from the adjacent
+    // segments' events (build_distributions gh_lo/gh_hi). Extends the x
+    // domain; 0 ft (the light) stays the segment's left edge.
+    const ghB = (d.ghost_buckets && (d.gh_lo || d.gh_hi)) ? d.ghost_buckets : 0;
+    const ghFt = ghB * d.bucket_ft;
+    const domFt = lenFt + 2 * ghFt;
+    const xOf = (ft) => padL + ((ft + ghFt) / domFt) * innerW;
+    const bw = Math.max(1, (d.bucket_ft / domFt) * innerW);
 
     const totals = src.nd.map((_, i) =>
       CLASSES.reduce((a, c) => a + src[c][i], 0));
@@ -716,6 +722,42 @@ export class NetworkView {
                  width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[cls]}"/>`;
       }
     }
+    // Ghost bars: adjacent segments' events at 50% opacity, clipped to the
+    // main chart's y-scale (they're context, not part of it).
+    if (ghB) {
+      const pickGh = (side, c) => {
+        const key = c + suffix;
+        const out = new Array(ghB).fill(0);
+        if (mvmtFiltered) {
+          for (const m of this._mvmtSel) {
+            const a = d.by_mvmt[m]?.[side]?.[key] ?? d.by_mvmt[m]?.[side]?.[c];
+            if (a) a.forEach((v, i) => { out[i] += v; });
+          }
+        } else {
+          const a = d[side]?.[key] ?? d[side]?.[c];
+          if (a) a.forEach((v, i) => { out[i] += v; });
+        }
+        return out.map((v) => v / denom);
+      };
+      let ghost = "";
+      for (const [side, base] of [["gh_lo", -ghFt], ["gh_hi", lenFt]]) {
+        const srcG = Object.fromEntries(CLASSES.map((c) => [c, pickGh(side, c)]));
+        for (let i = 0; i < ghB; i++) {
+          let y = chartH;
+          for (const cls of CLASSES) {
+            const v = srcG[cls][i];
+            if (!v) continue;
+            let h = ((v / yMax) * (chartH - 6));
+            if (y - h < 8) h = y - 8;          // clip the stack at the top
+            if (h <= 0) break;
+            y -= h;
+            ghost += `<rect x="${xOf(base + i * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
+                     width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[cls]}"/>`;
+          }
+        }
+      }
+      if (ghost) bars += `<g opacity="0.5">${ghost}</g>`;
+    }
 
     // y axis: 0, mid, max
     const fmtY = (v) => secondsMode
@@ -730,14 +772,14 @@ export class NetworkView {
     // road strip
     const roadY = chartH + 8;
     const roadBodyH = roadH - 18;
-    let road = `<rect x="${padL}" y="${roadY}" width="${innerW}" height="${roadBodyH}"
+    let road = `<rect x="${xOf(0).toFixed(1)}" y="${roadY}" width="${(xOf(lenFt) - xOf(0)).toFixed(1)}" height="${roadBodyH}"
                  rx="6" fill="#4a4a52"/>
-      <line x1="${padL}" y1="${roadY + roadBodyH / 2}" x2="${W - padR}"
+      <line x1="${xOf(0).toFixed(1)}" y1="${roadY + roadBodyH / 2}" x2="${xOf(lenFt).toFixed(1)}"
             y2="${roadY + roadBodyH / 2}" stroke="#fff" stroke-width="2.5"
             stroke-dasharray="16 13" opacity=".7"/>`;
-    // traffic light pictogram at the left edge
+    // traffic light pictogram at the segment's left edge (0 ft)
     const ly = roadY + roadBodyH / 2;
-    road += `<g transform="translate(${padL - 34}, ${ly - 22})">
+    road += `<g transform="translate(${(xOf(0) - 34).toFixed(1)}, ${ly - 22})">
         <rect x="0" y="0" width="19" height="44" rx="4" fill="#222"/>
         <circle cx="9.5" cy="9" r="5" fill="#e33"/>
         <circle cx="9.5" cy="22" r="5" fill="#fb3"/>
@@ -895,7 +937,7 @@ export class NetworkView {
         const rect = svg.getBoundingClientRect();
         // CSS may scale the svg; convert client px -> viewBox units.
         const px = (e.clientX - rect.left) * (W / rect.width);
-        const ft = ((px - padL) / innerW) * lenFt;
+        const ft = ((px - padL) / innerW) * domFt - ghFt;
         if (ft < 0 || ft > lenFt) { cur.style.display = "none"; return; }
         cur.style.display = "";
         curLine.setAttribute("x1", px.toFixed(1));
