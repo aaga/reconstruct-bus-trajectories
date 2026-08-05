@@ -814,26 +814,6 @@ export class NetworkView {
       road += `<rect data-tip="${st.name} bus stop" x="${(x - 6).toFixed(1)}" y="${roadY - 6}"
                width="12" height="${roadBodyH + 12}" rx="4" fill="#2f6fd6"/>`;
     }
-    // dwell-cluster medians: where buses ACTUALLY stop. Solid blue with a
-    // black outline when the cluster sits at a real stop (drawn over the
-    // stop bar), dotted blue when it doesn't (a recurring stopping spot
-    // away from any stop — interesting in itself).
-    for (const cl of d.dwell_clusters ?? []) {
-      const x = xOf(cl.off_ft);
-      if (x < padL || x > W - padR) continue;
-      const tip = `median dwell position (${cl.n} dwells${cl.near_stop ? ", at stop" : ", NOT at a stop"})`;
-      if (cl.near_stop) {
-        road += `<g data-tip="${tip}">
-          <line x1="${x.toFixed(1)}" y1="${roadY - 8}" x2="${x.toFixed(1)}"
-                y2="${roadY + roadBodyH + 8}" stroke="#000" stroke-width="5"/>
-          <line x1="${x.toFixed(1)}" y1="${roadY - 8}" x2="${x.toFixed(1)}"
-                y2="${roadY + roadBodyH + 8}" stroke="#39c0ff" stroke-width="2.5"/></g>`;
-      } else {
-        road += `<line data-tip="${tip}" x1="${x.toFixed(1)}" y1="${roadY - 8}"
-                 x2="${x.toFixed(1)}" y2="${roadY + roadBodyH + 8}"
-                 stroke="#39c0ff" stroke-width="2.5" stroke-dasharray="4 4"/>`;
-      }
-    }
     // naive stop-bar estimate: white labeled vertical
     const estLine = (ft, label, tip) => {
       if (ft == null) return "";

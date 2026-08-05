@@ -475,8 +475,9 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 if seg_id is None:
                     continue
                 dwell_by_seg[seg_id] += ph - pl
-                # dw annotation row: powers the dwell-cluster median lines
-                # in build_distributions. Hidden from the stacked bars.
+                # dw annotation row: powers the door-events distribution
+                # layer in build_distributions. Hidden from the stacked
+                # bars unless the checkbox is on.
                 emit("dw", pl, ph, seg_off=(seg_id, off),
                      stop_id=trip_stops[pk[0]])
 

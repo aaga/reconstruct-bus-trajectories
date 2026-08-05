@@ -13,10 +13,6 @@ bins of distance-upstream-from-the-downstream-signal, per class:
 
 Derived annotations (2026-07-31):
 
-  * dwell clusters — dw rows (door∪event blobs) gap-clustered per segment
-    (split at >50 ft gaps); each cluster's median off marks where buses
-    ACTUALLY stop, flagged near_stop when within 75 ft of a pole-projected
-    stop. Rendered as blue vertical lines (solid near a stop, else dotted).
   * stop bar estimate — p15 of last-piece ('last stop') nd offsets,
     n ≥ 30. Naive v1.
 
@@ -54,56 +50,9 @@ from dataio.cities import get_city  # noqa: E402
 BUCKET_FT = 10.0
 FT_PER_M = 3.28084
 
-CLUSTER_GAP_M = 50.0 / FT_PER_M     # dw gap that splits clusters
-NEAR_STOP_M = 75.0 / FT_PER_M       # cluster median → pole-projected stop
 MIN_N_ESTIMATES = 30                # support for stop-bar
 
 CLASSES = ["nd", "pre", "post", "post2", "dw"]
-
-
-def dwell_clusters_for_bins(
-    bins: list[tuple[int, int]], stop_offs: list[float]
-) -> list[tuple[int, int, float, int, bool]]:
-    """Gap-cluster 1 m-binned dw offsets → (lo, hi, median, n, near_stop).
-
-    Pure helper (unit-tested): ``bins`` are ascending (meter, count).
-    """
-    out = []
-    cluster: list[tuple[int, int]] = []
-    for m, n in bins + [(None, None)]:
-        if m is not None and (not cluster or m - cluster[-1][0] <= CLUSTER_GAP_M):
-            cluster.append((m, n))
-            continue
-        if cluster:
-            tot = sum(c for _, c in cluster)
-            cum, med = 0, cluster[0][0]
-            for mm, nn in cluster:
-                cum += nn
-                if cum >= tot / 2:
-                    med = mm
-                    break
-            near = any(abs(med - so) <= NEAR_STOP_M for so in stop_offs)
-            out.append((cluster[0][0], cluster[-1][0], float(med), int(tot), near))
-        cluster = [(m, n)] if m is not None else []
-    return out
-
-
-def _dwell_clusters(con, glob: str, registry: dict) -> list[tuple]:
-    rows = con.execute(
-        f"""SELECT seg_id, round(off_down_m)::INT AS m, count(*) AS n
-            FROM read_parquet('{glob}') WHERE cls = 'dw'
-            GROUP BY 1, 2 ORDER BY 1, 2"""
-    ).fetchall()
-    segs = registry["segments"]
-    by_seg: dict[str, list] = {}
-    for seg_id, m, n in rows:
-        by_seg.setdefault(seg_id, []).append((m, n))
-    out: list[tuple] = []
-    for seg_id, bins in by_seg.items():
-        stop_offs = [s["off_m"] for s in segs.get(seg_id, {}).get("stops_off", [])]
-        for lo, hi, med, n, near in dwell_clusters_for_bins(bins, stop_offs):
-            out.append((seg_id, lo, hi, med, n, near))
-    return out
 
 
 def build(city_id: str) -> None:
@@ -127,9 +76,6 @@ def build(city_id: str) -> None:
     con.execute("SET threads=4")
     glob = str(base / "events" / "service_date=*" / "route=*.parquet")
     sums_glob = str(base / "event_sums" / "service_date=*" / "route=*.parquet")
-
-    # ---- dwell clusters (blue-line annotation) ---------------------------
-    clusters = _dwell_clusters(con, glob, registry)
 
     # ---- turn movements (turn_movements.py; annotation only) -------------
     mv_path = base / "movements.json"
@@ -257,12 +203,6 @@ def build(city_id: str) -> None:
                 qd = t.setdefault(fcls + "_q", {})
                 qd[b] = qd.get(b, 0) + int(n_last)
 
-    clus_by_seg: dict[str, list] = {}
-    for seg_id, lo, hi, med, n, near in clusters:
-        clus_by_seg.setdefault(seg_id, []).append(
-            {"off_ft": round(med * FT_PER_M, 1), "n": n, "near_stop": near}
-        )
-
     dates = con.execute(
         f"SELECT count(DISTINCT service_date) FROM read_parquet('{glob}')"
     ).fetchone()
@@ -316,7 +256,6 @@ def build(city_id: str) -> None:
             payload[cls] = arr
         payload["n_events"] = total
         payload["n_trips"] = int(n_trips.get(seg_id, 0))
-        payload["dwell_clusters"] = clus_by_seg.get(seg_id, [])
         # Ghost zones: neighbors' events remapped into this segment's frame,
         # ±10% of length past each end (rendered at 50% opacity).
         G = max(1, int(np.ceil(len_ft * 0.1 / BUCKET_FT)))
@@ -372,8 +311,7 @@ def build(city_id: str) -> None:
     n_bar = sum(1 for v in est.values() if v is not None)
     print(f"wrote {n_files} segment distribution files "
           f"({n_events_total:,} classified events over {dates[0]} dates; "
-          f"{len(clusters):,} dwell clusters; stop-bar est on {n_bar:,} segs) "
-          f"→ {out_dir}")
+          f"stop-bar est on {n_bar:,} segs) → {out_dir}")
 
 
 def main() -> None:
