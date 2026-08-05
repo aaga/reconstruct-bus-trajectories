@@ -650,8 +650,8 @@ export class NetworkView {
     const secondsMode = this._distMode === "seconds";
     const queueMode = this._distMode === "queue";
     const suffix = secondsMode ? "_s" : queueMode ? "_q" : "";
-    // v2 classes; v1 files simply lack y/post2 (empty fallbacks keep them working)
-    const CLASSES = ["nd", "y", "pre", "post", "post2"];
+    // v2 classes; v1 files simply lack post2 (empty fallbacks keep them working)
+    const CLASSES = ["nd", "pre", "post", "post2"];
     // Seconds mode: divide by the segment's traversal count so the y-axis
     // reads as AVERAGE delay seconds per trip (dumb rescale, per user).
     const denom = secondsMode ? Math.max(1, d.n_trips ?? 1) : 1;
@@ -671,7 +671,7 @@ export class NetworkView {
     const yMax = Math.max(1, ...totals);
     const yOf = (n) => chartH - (n / yMax) * (chartH - 6);
 
-    const COLORS = { nd: "#d63a2f", y: "#b8860b", pre: "#1fb8b0",
+    const COLORS = { nd: "#d63a2f", pre: "#1fb8b0",
                      post: "#8a4fc8", post2: "url(#post2hatch)" };
     let bars = `<defs><pattern id="post2hatch" width="6" height="6"
         patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -765,7 +765,7 @@ export class NetworkView {
                  stroke="#39c0ff" stroke-width="2.5" stroke-dasharray="4 4"/>`;
       }
     }
-    // naive stop-bar / back-of-queue estimates: white labeled verticals
+    // naive stop-bar estimate: white labeled vertical
     const estLine = (ft, label, tip) => {
       if (ft == null) return "";
       const x = xOf(ft);
@@ -778,8 +778,6 @@ export class NetworkView {
     };
     road += estLine(d.stopbar_ft, "stop bar",
       `estimated stop bar: p15 of front-of-queue positions (${Math.round(d.stopbar_ft ?? 0)} ft)`);
-    road += estLine(d.queueback_ft, "queue p85",
-      `estimated back of queue: p85 of first-delay positions (${Math.round(d.queueback_ft ?? 0)} ft)`);
 
     // feet scale
     const step = lenFt > 2000 ? 500 : lenFt > 800 ? 200 : 100;
@@ -815,7 +813,6 @@ export class NetworkView {
       <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
       ${this.hasDoor ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
-        <span><i style="background:#b8860b"></i>queued for stop</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
         <span><i style="background:#8a4fc8"></i>post-boarding</span>
         <span><i style="background:repeating-linear-gradient(45deg,#8a4fc8,#8a4fc8 3px,#fff 3px,#fff 5px)"></i>post-boarding, extra door cycles</span>

@@ -4,7 +4,6 @@ Buckets classified delay-event locations (see delay_events.py) into 10 ft
 bins of distance-upstream-from-the-downstream-signal, per class:
 
     nd    non-dwell events                       (red)
-    y     non-dwell events queued for a bus stop (dark yellow; see below)
     pre   pre-boarding portion                   (turquoise)
     post  post-boarding, single door cycle       (purple)
     post2 post-boarding with swallowed cycles    (slashed purple)
@@ -15,14 +14,12 @@ Derived annotations (2026-07-31):
     (split at >50 ft gaps); each cluster's median off marks where buses
     ACTUALLY stop, flagged near_stop when within 75 ft of a pole-projected
     stop. Rendered as blue vertical lines (solid near a stop, else dotted).
-  * yellow reclassification — an nd piece turns 'y' when its midpoint sits
-    within 50 ft of a near-stop cluster median AND the trip's next stopped
-    piece (among nd/dw, ≤60 s later) is a dw blob inside that cluster:
-    the bus was queued for the stop, not the signal.
-  * stop bar estimate — p15 of last-piece ('last stop') nd offsets
-    (yellow excluded), n ≥ 30. Naive v1.
-  * back of queue estimate — p85 of each traversal's FIRST nd piece offset
-    (yellow excluded), n ≥ 30. Naive v1.
+  * stop bar estimate — p15 of last-piece ('last stop') nd offsets,
+    n ≥ 30. Naive v1.
+
+(2026-08-04: the yellow "queued for stop" reclassification was removed —
+under the event definitions almost no queued-for-stop delay survives as a
+separate nd piece, so it never worked as intended.)
 
 One small JSON per segment (fetched on click):
     dashboard/data/network/[<city>/]dist/<sid>.json
@@ -56,31 +53,9 @@ FT_PER_M = 3.28084
 
 CLUSTER_GAP_M = 50.0 / FT_PER_M     # dw gap that splits clusters
 NEAR_STOP_M = 75.0 / FT_PER_M       # cluster median → pole-projected stop
-YELLOW_NEAR_M = 50.0 / FT_PER_M     # nd midpoint → near-stop cluster median
-YELLOW_MAX_GAP_S = 60.0             # nd end → dw start ("immediately")
-MIN_N_ESTIMATES = 30                # support for stop-bar / queue-back
+MIN_N_ESTIMATES = 30                # support for stop-bar
 
-CLASSES = ["nd", "y", "pre", "post", "post2"]
-
-# The yellow condition, shared by the reclassification pass (positive) and
-# the estimator pass (negated) — one definition, no drift.
-_YELLOW_COND = f"""EXISTS (
-      SELECT 1 FROM clus c
-      WHERE c.seg_id = s.seg_id AND c.near_stop
-        AND abs(s.off_down_m - c.med_m) <= {YELLOW_NEAR_M}
-        AND s.nxt_cls = 'dw'
-        AND s.nxt_ts - s.t_end_s <= {YELLOW_MAX_GAP_S}
-        AND s.nxt_off BETWEEN c.lo_m - 7.62 AND c.hi_m + 7.62
-    )"""
-
-_SEQD = """SELECT seg_id, trip_key, cls, off_down_m, dur_s, is_last,
-             t_start_s, t_end_s,
-             LEAD(cls)        OVER w AS nxt_cls,
-             LEAD(t_start_s)  OVER w AS nxt_ts,
-             LEAD(off_down_m) OVER w AS nxt_off
-      FROM read_parquet('{glob}')
-      WHERE cls IN ('nd', 'dw')
-      WINDOW w AS (PARTITION BY trip_key, seg_id ORDER BY t_start_s)"""
+CLASSES = ["nd", "pre", "post", "post2"]
 
 
 def dwell_clusters_for_bins(
@@ -148,70 +123,33 @@ def build(city_id: str) -> None:
     con = duckdb.connect()
     con.execute("SET threads=4")
     glob = str(base / "events" / "service_date=*" / "route=*.parquet")
-    seqd = _SEQD.format(glob=glob)
 
-    # ---- dwell clusters --------------------------------------------------
+    # ---- dwell clusters (blue-line annotation) ---------------------------
     clusters = _dwell_clusters(con, glob, registry)
-    con.execute(
-        "CREATE TABLE clus(seg_id TEXT, lo_m DOUBLE, hi_m DOUBLE, "
-        "med_m DOUBLE, n INT, near_stop BOOLEAN)"
-    )
-    if clusters:
-        con.executemany("INSERT INTO clus VALUES (?, ?, ?, ?, ?, ?)", clusters)
 
-    # ---- yellow reclassification + bucket aggregation --------------------
+    # ---- bucket aggregation ----------------------------------------------
     rows = con.execute(
         f"""
-        WITH seqd AS ({seqd}),
-        ndf AS (
-          SELECT s.*, {_YELLOW_COND} AS is_yellow
-          FROM seqd s WHERE s.cls = 'nd'
-        ),
-        pieces AS (
-          SELECT seg_id,
-                 CASE WHEN is_yellow THEN 'y' ELSE 'nd' END AS fcls,
-                 off_down_m, dur_s, is_last
-          FROM ndf
-          UNION ALL
-          SELECT seg_id, cls AS fcls, off_down_m, dur_s, is_last
-          FROM read_parquet('{glob}') WHERE cls IN ('pre', 'post', 'post2')
-        )
-        SELECT seg_id, fcls,
+        SELECT seg_id, cls AS fcls,
                floor(off_down_m * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
                count(*) AS n,
                sum(dur_s) AS secs,
                count(*) FILTER (WHERE is_last) AS n_last
-        FROM pieces GROUP BY 1, 2, 3
+        FROM read_parquet('{glob}')
+        WHERE cls IN ('nd', 'pre', 'post', 'post2')
+        GROUP BY 1, 2, 3
         """
     ).fetchall()
 
-    # ---- stop bar / back of queue (naive v1) -----------------------------
+    # ---- stop bar (naive v1) ---------------------------------------------
     est = {
-        r[0]: (r[1], r[2])
+        r[0]: r[1]
         for r in con.execute(
             f"""
-            WITH seqd AS ({seqd}),
-            ndpure AS (
-              SELECT s.* FROM seqd s
-              WHERE s.cls = 'nd' AND NOT {_YELLOW_COND}
-            ),
-            firsts AS (
-              SELECT seg_id, trip_key,
-                     arg_min(off_down_m, t_start_s) AS first_off
-              FROM ndpure GROUP BY 1, 2
-            ),
-            bar AS (
-              SELECT seg_id, quantile_cont(off_down_m, 0.15) AS bar_m
-              FROM ndpure WHERE is_last GROUP BY 1
-              HAVING count(*) >= {MIN_N_ESTIMATES}
-            ),
-            qb AS (
-              SELECT seg_id, quantile_cont(first_off, 0.85) AS qb_m
-              FROM firsts GROUP BY 1
-              HAVING count(*) >= {MIN_N_ESTIMATES}
-            )
-            SELECT coalesce(bar.seg_id, qb.seg_id), bar.bar_m, qb.qb_m
-            FROM bar FULL OUTER JOIN qb ON bar.seg_id = qb.seg_id
+            SELECT seg_id, quantile_cont(off_down_m, 0.15) AS bar_m
+            FROM read_parquet('{glob}')
+            WHERE cls = 'nd' AND is_last GROUP BY 1
+            HAVING count(*) >= {MIN_N_ESTIMATES}
             """
         ).fetchall()
     }
@@ -272,23 +210,19 @@ def build(city_id: str) -> None:
         payload["n_events"] = total
         payload["n_trips"] = int(n_trips.get(seg_id, 0))
         payload["dwell_clusters"] = clus_by_seg.get(seg_id, [])
-        bar_qb = est.get(seg_id, (None, None))
+        bar_m = est.get(seg_id)
         payload["stopbar_ft"] = (
-            round(bar_qb[0] * FT_PER_M, 1) if bar_qb[0] is not None else None
-        )
-        payload["queueback_ft"] = (
-            round(bar_qb[1] * FT_PER_M, 1) if bar_qb[1] is not None else None
+            round(bar_m * FT_PER_M, 1) if bar_m is not None else None
         )
         n_events_total += total
         (out_dir / f"{sid}.json").write_text(json.dumps(payload))
         n_files += 1
 
-    n_bar = sum(1 for v in est.values() if v[0] is not None)
-    n_qb = sum(1 for v in est.values() if v[1] is not None)
+    n_bar = sum(1 for v in est.values() if v is not None)
     print(f"wrote {n_files} segment distribution files "
           f"({n_events_total:,} classified events over {dates[0]} dates; "
-          f"{len(clusters):,} dwell clusters; stop-bar est on {n_bar:,} segs, "
-          f"queue-back on {n_qb:,}) → {out_dir}")
+          f"{len(clusters):,} dwell clusters; stop-bar est on {n_bar:,} segs) "
+          f"→ {out_dir}")
 
 
 def main() -> None:

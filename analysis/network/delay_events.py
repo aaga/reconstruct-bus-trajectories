@@ -88,11 +88,14 @@ EVENTS_SCHEMA = pa.schema(
         # cycle) | dw (dwell blob — metric/annotation row, hidden from bars)
         ("cls", pa.dictionary(pa.int32(), pa.string())),
         ("off_down_m", pa.float32()),  # midpoint, meters upstream of downstream signal
+        # Piece-START position on the same axis (may exceed the seg length
+        # when the piece began upstream of the boundary). Currently unused
+        # downstream; kept so partial regens stay schema-compatible.
+        ("off_start_m", pa.float32()),
         ("dur_s", pa.float32()),
         ("hour_local", pa.uint8()),
         ("is_last", pa.bool_()),  # queue marker: traversal's last piece in seg
-        # Piece time bounds (epoch s): build_distributions uses these for
-        # trip-sequencing (yellow reclassification, first-piece stats).
+        # Piece time bounds (epoch s), for trip-sequencing analyses.
         ("t_start_s", pa.float64()),
         ("t_end_s", pa.float64()),
     ]
@@ -287,13 +290,17 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         seg_id, off = seg_of(xm)
         if seg_id is None:
             return
+        # off = x_hi - xm, so the start position lands at off + (xm - x_start)
+        # on the same downstream-signal axis.
+        off_start = off + (xm - x_at(ta - t0_epoch))
         hour = pd.Timestamp(ta, unit="s", tz="UTC").tz_convert(tz).hour
         event_rows.append(
             {
                 "seg_id": seg_id, "route_id": route_id,
                 "service_date": pd.Timestamp(date_iso).date(),
                 "trip_key": trip_key, "cls": cls,
-                "off_down_m": float(off), "dur_s": float(tb - ta),
+                "off_down_m": float(off), "off_start_m": float(off_start),
+                "dur_s": float(tb - ta),
                 "hour_local": int(hour),
                 "is_last": False,
                 "t_start_s": float(ta), "t_end_s": float(tb),
@@ -366,8 +373,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             if seg_id:
                 dwell_by_seg[seg_id] += hi - lo
                 # dw annotation row: powers the dwell-cluster median lines
-                # and the yellow "queued for the stop" reclassification in
-                # build_distributions. Hidden from the stacked bars.
+                # in build_distributions. Hidden from the stacked bars.
                 emit("dw", lo, hi)
 
     # Queue markers: per segment, the LAST non-boarding piece before the bus
