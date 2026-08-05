@@ -650,13 +650,39 @@ export class NetworkView {
     const secondsMode = this._distMode === "seconds";
     const queueMode = this._distMode === "queue";
     const suffix = secondsMode ? "_s" : queueMode ? "_q" : "";
-    // v2 classes; v1 files simply lack post2 (empty fallbacks keep them working)
-    const CLASSES = ["nd", "pre", "post", "post2"];
-    // Seconds mode: divide by the segment's traversal count so the y-axis
-    // reads as AVERAGE delay seconds per trip (dumb rescale, per user).
-    const denom = secondsMode ? Math.max(1, d.n_trips ?? 1) : 1;
+    // v2 classes; v1 files simply lack post2/dw (empty fallbacks keep them
+    // working). dw (door events) is opt-in via the checkbox.
+    this._showDoors ??= false;
+    const CLASSES = ["nd", "pre", "post", "post2",
+                     ...(this._showDoors ? ["dw"] : [])];
+    // Turn-movement filter (T/L/R/E through the downstream signal).
+    // Selection resets when the popup moves to a different segment.
+    const mvmtAll = d.mvmt ? Object.keys(d.mvmt) : [];
+    if (this._mvmtSeg !== props.sid) {
+      this._mvmtSeg = props.sid;
+      this._mvmtSel = new Set(mvmtAll);
+    }
+    const mvmtFiltered = d.by_mvmt && this._mvmtSel.size < mvmtAll.length;
+    // Seconds mode: divide by the traversal count so the y-axis reads as
+    // AVERAGE delay seconds per trip (dumb rescale, per user). When the
+    // movement filter is active, both the arrays and the denominator come
+    // from the selected movements only.
+    const selTrips = mvmtFiltered
+      ? [...this._mvmtSel].reduce((a, m) => a + (d.mvmt[m] ?? 0), 0)
+      : (d.n_trips ?? 1);
+    const denom = secondsMode ? Math.max(1, selTrips) : 1;
     const zeros = d.nd.map(() => 0);
-    const pick = (c) => (d[c + suffix] ?? d[c] ?? zeros).map((v) => v / denom);
+    const pick = (c) => {
+      if (mvmtFiltered) {
+        const out = zeros.slice();
+        for (const m of this._mvmtSel) {
+          const arr = d.by_mvmt[m]?.[c + suffix] ?? d.by_mvmt[m]?.[c];
+          if (arr) arr.forEach((v, i) => { out[i] += v; });
+        }
+        return out.map((v) => v / denom);
+      }
+      return (d[c + suffix] ?? d[c] ?? zeros).map((v) => v / denom);
+    };
     const src = Object.fromEntries(CLASSES.map((c) => [c, pick(c)]));
     const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 12;
     const H = chartH + roadH + axisH + 12;
@@ -672,7 +698,8 @@ export class NetworkView {
     const yOf = (n) => chartH - (n / yMax) * (chartH - 6);
 
     const COLORS = { nd: "#d63a2f", pre: "#1fb8b0",
-                     post: "#8a4fc8", post2: "url(#post2hatch)" };
+                     post: "#8a4fc8", post2: "url(#post2hatch)",
+                     dw: "#2b6fd6" };
     let bars = `<defs><pattern id="post2hatch" width="6" height="6"
         patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
         <rect width="6" height="6" fill="#8a4fc8"/>
@@ -808,6 +835,25 @@ export class NetworkView {
           <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
           ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
         </span>
+        ${this.hasDoor && d.dw ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
+          <input type="checkbox" class="dist-doors-cb" ${this._showDoors ? "checked" : ""}> door events</label>` : ""}
+        ${mvmtAll.length ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
+          ${mvmtAll.map((m) => {
+            const ARROWS = {
+              T: "M12 19 V7 M7.5 10.5 L12 5.5 L16.5 10.5",
+              L: "M16 19 V13 Q16 10.5 13.5 10.5 H9 M11.5 6.5 L7 10.5 L11.5 14.5",
+              R: "M8 19 V13 Q8 10.5 10.5 10.5 H15 M12.5 6.5 L17 10.5 L12.5 14.5",
+              E: "M12 19 V9 M7 7 H17",
+            };
+            const TITLES = { T: "thru", L: "left turn", R: "right turn", E: "route ends" };
+            const on = mvmtAll.length === 1 || this._mvmtSel.has(m);
+            const interactive = mvmtAll.length > 1 && d.by_mvmt;
+            return `<svg class="mvmt-chip" data-m="${m}" width="22" height="22" viewBox="0 0 24 24"
+              style="background:${on ? "#2e3440" : "#c9c9c9"};border-radius:4px;${interactive ? "cursor:pointer" : ""}">
+              <title>${TITLES[m]} (${d.mvmt[m] ?? 0} trips)</title>
+              <path d="${ARROWS[m]}" fill="none" stroke="#fff" stroke-width="2.4"
+                    stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+          }).join("")}</span>` : ""}
         <span class="nw-note">(${d.n_events} events · ${d.n_trips ?? "?"} trips)</span>
       </div>
       <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
@@ -816,10 +862,29 @@ export class NetworkView {
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
         <span><i style="background:#8a4fc8"></i>post-boarding</span>
         <span><i style="background:repeating-linear-gradient(45deg,#8a4fc8,#8a4fc8 3px,#fff 3px,#fff 5px)"></i>post-boarding, extra door cycles</span>
+        ${this._showDoors ? `<span><i style="background:#2b6fd6"></i>door events</span>` : ""}
       </div>` : ""}`;
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
       b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props, coords); };
     });
+    const doorsCb = host.querySelector(".dist-doors-cb");
+    if (doorsCb) doorsCb.onchange = () => {
+      this._showDoors = doorsCb.checked;
+      this._renderDistribution(host, props, coords);
+    };
+    if (mvmtAll.length > 1 && d.by_mvmt) {
+      host.querySelectorAll(".mvmt-chip").forEach((chip) => {
+        chip.onclick = () => {
+          const m = chip.dataset.m;
+          if (this._mvmtSel.has(m)) {
+            if (this._mvmtSel.size > 1) this._mvmtSel.delete(m); // keep >=1
+          } else {
+            this._mvmtSel.add(m);
+          }
+          this._renderDistribution(host, props, coords);
+        };
+      });
+    }
     // Hover cursor: track mouse x, snap the dotted line + axis readout.
     const svg = host.querySelector(".dist-svg");
     {

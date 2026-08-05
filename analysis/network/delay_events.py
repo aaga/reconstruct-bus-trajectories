@@ -95,6 +95,16 @@ EVENTS_SCHEMA = pa.schema(
         ("dur_s", pa.float32()),
         ("hour_local", pa.uint8()),
         ("is_last", pa.bool_()),  # queue marker: traversal's last piece in seg
+        # (2026-08-05) generic trip-sequencing: position of this piece within
+        # its trip, ordered by t_start_s across ALL pieces (nd/pre/post/post2/
+        # dw, all segments). trip_seq±1 on the same trip = the piece before/
+        # after. NB: associate on (trip_key, route_id, trip_seq) — CTA
+        # trip_ids repeat across routes, so trip_key alone collides for a
+        # handful of trips per day (~6/14k on 2026-07-15).
+        ("trip_seq", pa.int16()),
+        # Like is_last but door events (dw) compete too: the traversal's
+        # final piece in the segment including dwells.
+        ("is_last_all", pa.bool_()),
         # Piece time bounds (epoch s), for trip-sequencing analyses.
         ("t_start_s", pa.float64()),
         ("t_end_s", pa.float64()),
@@ -302,7 +312,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 "off_down_m": float(off), "off_start_m": float(off_start),
                 "dur_s": float(tb - ta),
                 "hour_local": int(hour),
-                "is_last": False,
+                "is_last": False, "trip_seq": 0, "is_last_all": False,
                 "t_start_s": float(ta), "t_end_s": float(tb),
             }
         )
@@ -389,6 +399,18 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             last_by_seg[row["seg_id"]] = row
     for row in last_by_seg.values():
         row["is_last"] = True
+
+    # Generic sequencing + the dw-inclusive last-piece flag (2026-08-05).
+    event_rows.sort(key=lambda r: r["t_start_s"])
+    for i, row in enumerate(event_rows):
+        row["trip_seq"] = i
+    last_all: dict[str, dict] = {}
+    for row in event_rows:
+        cur = last_all.get(row["seg_id"])
+        if cur is None or row["t_end_s"] > cur["t_end_s"]:
+            last_all[row["seg_id"]] = row
+    for row in last_all.values():
+        row["is_last_all"] = True
 
     sum_rows = [
         {

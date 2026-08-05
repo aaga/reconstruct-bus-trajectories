@@ -7,6 +7,9 @@ bins of distance-upstream-from-the-downstream-signal, per class:
     pre   pre-boarding portion                   (turquoise)
     post  post-boarding, single door cycle       (purple)
     post2 post-boarding with swallowed cycles    (slashed purple)
+    dw    door-event blobs (2026-08-05)          (blue; hidden behind the
+          "door events" checkbox, excluded from n_events; dw_q counts use
+          is_last_all — the dw-inclusive last-piece flag)
 
 Derived annotations (2026-07-31):
 
@@ -55,7 +58,7 @@ CLUSTER_GAP_M = 50.0 / FT_PER_M     # dw gap that splits clusters
 NEAR_STOP_M = 75.0 / FT_PER_M       # cluster median → pole-projected stop
 MIN_N_ESTIMATES = 30                # support for stop-bar
 
-CLASSES = ["nd", "pre", "post", "post2"]
+CLASSES = ["nd", "pre", "post", "post2", "dw"]
 
 
 def dwell_clusters_for_bins(
@@ -123,21 +126,42 @@ def build(city_id: str) -> None:
     con = duckdb.connect()
     con.execute("SET threads=4")
     glob = str(base / "events" / "service_date=*" / "route=*.parquet")
+    sums_glob = str(base / "event_sums" / "service_date=*" / "route=*.parquet")
 
     # ---- dwell clusters (blue-line annotation) ---------------------------
     clusters = _dwell_clusters(con, glob, registry)
 
-    # ---- bucket aggregation ----------------------------------------------
+    # ---- turn movements (turn_movements.py; annotation only) -------------
+    mv_path = base / "movements.json"
+    movements = json.loads(mv_path.read_text()) if mv_path.exists() else {}
+    con.execute("CREATE TABLE mv(seg_id TEXT, shape_id TEXT, m TEXT)")
+    if movements:
+        con.executemany(
+            "INSERT INTO mv VALUES (?, ?, ?)",
+            [(s, sh, m) for s, d_ in movements.items() for sh, m in d_.items()],
+        )
+
+    # ---- bucket aggregation (split by movement; '?' = unknown shape) -----
+    # Shape per (seg, trip) via event_sums; min() collapses the handful of
+    # cross-route trip_key collisions (~6/day) to one shape.
     rows = con.execute(
         f"""
-        SELECT seg_id, cls AS fcls,
-               floor(off_down_m * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
+        WITH shp AS (
+          SELECT seg_id, trip_key, min(shape_id) AS shape_id
+          FROM read_parquet('{sums_glob}') GROUP BY 1, 2
+        )
+        SELECT e.seg_id, e.cls AS fcls,
+               floor(e.off_down_m * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
+               coalesce(mv.m, '?') AS mvm,
                count(*) AS n,
-               sum(dur_s) AS secs,
-               count(*) FILTER (WHERE is_last) AS n_last
-        FROM read_parquet('{glob}')
-        WHERE cls IN ('nd', 'pre', 'post', 'post2')
-        GROUP BY 1, 2, 3
+               sum(e.dur_s) AS secs,
+               count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
+                                THEN e.is_last_all ELSE e.is_last END) AS n_last
+        FROM read_parquet('{glob}') e
+        LEFT JOIN shp USING (seg_id, trip_key)
+        LEFT JOIN mv ON mv.seg_id = e.seg_id AND mv.shape_id = shp.shape_id
+        WHERE e.cls IN ('nd', 'pre', 'post', 'post2', 'dw')
+        GROUP BY 1, 2, 3, 4
         """
     ).fetchall()
 
@@ -155,12 +179,22 @@ def build(city_id: str) -> None:
     }
 
     per_seg: dict[str, dict] = {}
-    for seg_id, fcls, bucket, n, secs, n_last in rows:
+    per_seg_mv: dict[str, dict[str, dict]] = {}
+    for seg_id, fcls, bucket, mvm, n, secs, n_last in rows:
+        b = int(bucket)
         d = per_seg.setdefault(seg_id, {})
-        d.setdefault(fcls, {})[int(bucket)] = int(n)
-        d.setdefault(fcls + "_s", {})[int(bucket)] = round(float(secs), 1)
+        d.setdefault(fcls, {})[b] = d.get(fcls, {}).get(b, 0) + int(n)
+        sd = d.setdefault(fcls + "_s", {})
+        sd[b] = round(sd.get(b, 0.0) + float(secs), 1)
         if n_last:
-            d.setdefault(fcls + "_q", {})[int(bucket)] = int(n_last)
+            qd = d.setdefault(fcls + "_q", {})
+            qd[b] = qd.get(b, 0) + int(n_last)
+        if mvm != "?":
+            md = per_seg_mv.setdefault(seg_id, {}).setdefault(mvm, {})
+            md.setdefault(fcls, {})[b] = int(n)
+            md.setdefault(fcls + "_s", {})[b] = round(float(secs), 1)
+            if n_last:
+                md.setdefault(fcls + "_q", {})[b] = int(n_last)
 
     clus_by_seg: dict[str, list] = {}
     for seg_id, lo, hi, med, n, near in clusters:
@@ -182,6 +216,17 @@ def build(city_id: str) -> None:
           SELECT DISTINCT service_date FROM read_parquet('{glob}'))
         GROUP BY 1
     """).fetchall())
+    # traversal counts per (seg, movement) — the denominator for the
+    # movement-filtered avg-seconds view
+    mv_trips: dict[str, dict[str, int]] = {}
+    for seg_id, m, n in con.execute(f"""
+        SELECT t.seg_id, mv.m, count(*) FROM trav t
+        JOIN mv ON mv.seg_id = t.seg_id AND mv.shape_id = t.shape_id
+        WHERE t.service_date IN (
+          SELECT DISTINCT service_date FROM read_parquet('{glob}'))
+        GROUP BY 1, 2
+    """).fetchall():
+        mv_trips.setdefault(seg_id, {})[m] = int(n)
 
     n_files = 0
     n_events_total = 0
@@ -204,12 +249,31 @@ def build(city_id: str) -> None:
             for b, n in classes.get(cls, {}).items():
                 if 0 <= b < n_buckets:
                     arr[b] = n
-                    if not cls.endswith(("_s", "_q")):
+                    # dw is an annotation layer, not a delay event
+                    if not cls.endswith(("_s", "_q")) and cls != "dw":
                         total += n
             payload[cls] = arr
         payload["n_events"] = total
         payload["n_trips"] = int(n_trips.get(seg_id, 0))
         payload["dwell_clusters"] = clus_by_seg.get(seg_id, [])
+        # Turn movements: label always (when known); per-movement array split
+        # only for mixed segments — that's when the UI shows the filter.
+        seg_mvs = sorted(set(movements.get(seg_id, {}).values()))
+        if seg_mvs:
+            payload["mvmt"] = {
+                m: int(mv_trips.get(seg_id, {}).get(m, 0)) for m in seg_mvs}
+            if len(seg_mvs) > 1:
+                by = {}
+                for m, mcls in per_seg_mv.get(seg_id, {}).items():
+                    arrs = {}
+                    for cls in [c + s for c in CLASSES for s in ("", "_s", "_q")]:
+                        arr = [0] * n_buckets
+                        for b, n in mcls.get(cls, {}).items():
+                            if 0 <= b < n_buckets:
+                                arr[b] = n
+                        arrs[cls] = arr
+                    by[m] = arrs
+                payload["by_mvmt"] = by
         bar_m = est.get(seg_id)
         payload["stopbar_ft"] = (
             round(bar_m * FT_PER_M, 1) if bar_m is not None else None
