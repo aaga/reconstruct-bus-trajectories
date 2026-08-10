@@ -137,6 +137,17 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
   `intersections.json`; `build_payloads.py` refuses mismatched inputs. If the
   intersections cache is regenerated, rebuild EVERYTHING from step 1.
 
+## Hard-coded exceptions
+
+`exceptions.json` is the single committed home for hand-curated overrides —
+stop-coordinate fixes, door-peak rejects, junction-interior segment pins,
+boundary-representative overrides, terminal-bay markers. Every entry records
+what/why/evidence/date; the schema and per-type value contracts live in
+`exceptions.py` (which validates on load and standalone via
+`PYTHONPATH=src uv run python analysis/network/exceptions.py`). Consumers
+call `exceptions.load_exceptions(city_id)`; see the module docstring for the
+intended hook point of each type.
+
 ## Adding a city
 
 1. Add a `CityConfig` in `src/dataio/cities.py` (R2 agency name, tz, GTFS
