@@ -51,11 +51,18 @@ from analysis.prep.geometry import (  # noqa: E402
 from core.decompose.segments import Segment, build_segments_from_records  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 from dataio.gtfs import list_bus_shapes, load_gtfs_shape_with_dist  # noqa: E402
+from dataio.exceptions import load_exceptions  # noqa: E402
 from dataio.intersections import load_intersections  # noqa: E402
 
 LEN_OUTLIER_FRAC = 0.10  # instance length deviating >10% from median → flagged
 BOUNDARY_TYPES = ("traffic_signals",)  # network decision: ped signals demoted
 CLUSTER_RADIUS_M = 30.0  # matches intersections.DEFAULT_CLUSTER_GAP_M
+
+# Door-peak stop location (2026-08 decision): a stop's position is its modal
+# 10 ft bucket of door-event AVL fixes when trustworthy, else the GTFS pole.
+DOOR_PEAK_BUCKET_M = 3.048
+DOOR_PEAK_MIN_EVENTS = 5
+DOOR_PEAK_MAX_POLE_DIST_M = 100.0  # beyond this the attribution is suspect
 
 # GTFS `direction_id` fallback labels for trips whose human `direction`
 # column is unpopulated (CTA leaves it "0" on a few thousand trips).
@@ -80,6 +87,7 @@ def cluster_nodes(
     radius_m: float = CLUSTER_RADIUS_M,
     primary: set[int] | frozenset[int] = frozenset(),
     extra_edges: list[tuple[int, int]] | tuple = (),
+    split_sides: dict[int, tuple[int, int]] | None = None,
 ) -> dict[int, int]:
     """Union-find nodes within ``radius_m``; return node -> canonical node.
 
@@ -92,6 +100,10 @@ def cluster_nodes(
     used to fold per-approach stop-line signals (which can sit > radius
     apart across a big junction) into one cluster via their shared anchor
     junction vertex. Pairs with ids missing from ``positions`` are ignored.
+
+    ``split_sides`` (node -> (divide, side), from cluster_split exceptions)
+    forbids any union that would put nodes from both sides of a divide in
+    one component — including transitively through third-party nodes.
     """
     ids = sorted(positions)
     if not ids:
@@ -105,6 +117,13 @@ def cluster_nodes(
         cell[(int(p[0] // radius_m), int(p[1] // radius_m))].append(i)
 
     parent = list(range(len(ids)))
+    # component root -> {divide: side} constraint labels
+    comp_sides: dict[int, dict[int, int]] = {}
+    if split_sides:
+        for i, n in enumerate(ids):
+            s = split_sides.get(n)
+            if s is not None:
+                comp_sides[i] = {s[0]: s[1]}
 
     def find(i: int) -> int:
         while parent[i] != i:
@@ -114,8 +133,16 @@ def cluster_nodes(
 
     def union(i: int, j: int) -> None:
         ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[rj] = ri
+        if ri == rj:
+            return
+        a, b = comp_sides.get(ri, {}), comp_sides.get(rj, {})
+        for divide, side in b.items():
+            if divide in a and a[divide] != side:
+                return  # would bridge a cluster_split divide — refuse
+        parent[rj] = ri
+        if a or b:
+            comp_sides[ri] = {**a, **b}
+            comp_sides.pop(rj, None)
 
     for (cx, cy), members in cell.items():
         cand: list[int] = []
@@ -192,16 +219,71 @@ def shape_route_direction(gtfs_zip: Path) -> dict[str, dict]:
     }
 
 
-def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[str, list[dict]]:
+def _door_peaks(city) -> dict[str, tuple[float, float]]:
+    """stop_id -> modal-10ft-bucket door-event position, for cities with a
+    door cache. Empty dict when the cache is absent."""
+    door_dir = city.resolve("caches/door_events") / city.city_id
+    if not door_dir.exists() or not any(door_dir.glob("*.parquet")):
+        return {}
+    import math
+
+    import duckdb
+
+    mlon = 111320.0 * math.cos(math.radians(41.85 if city.city_id.startswith("cta")
+                                            else 42.36))
+    con = duckdb.connect()
+    rows = con.execute(f"""
+        WITH ev AS (
+          SELECT stop_id, latitude, longitude,
+                 floor(longitude * {mlon} / {DOOR_PEAK_BUCKET_M})::BIGINT AS bxx,
+                 floor(latitude * 111320.0 / {DOOR_PEAK_BUCKET_M})::BIGINT AS byy
+          FROM '{door_dir}/*.parquet'
+          WHERE latitude IS NOT NULL AND stop_id IS NOT NULL
+        ),
+        b AS (
+          SELECT stop_id, bxx, byy, count(*) AS n,
+                 avg(latitude) AS lat, avg(longitude) AS lon
+          FROM ev GROUP BY stop_id, bxx, byy
+        ),
+        rk AS (
+          SELECT *, row_number() OVER (PARTITION BY stop_id
+                                       ORDER BY n DESC, bxx, byy) AS rn,
+                 sum(n) OVER (PARTITION BY stop_id) AS tot
+          FROM b
+        )
+        SELECT stop_id, lat, lon FROM rk
+        WHERE rn = 1 AND tot >= {DOOR_PEAK_MIN_EVENTS}
+    """).fetchall()
+    return {str(r[0]): (float(r[1]), float(r[2])) for r in rows}
+
+
+def _dist_ll_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    import math
+
+    mlat = 111320.0 * math.cos(math.radians((lat1 + lat2) / 2))
+    return math.hypot((lon1 - lon2) * mlat, (lat1 - lat2) * 111320.0)
+
+
+def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str],
+                   city=None) -> dict[str, list[dict]]:
     """One pass over stop_times.txt + stops.txt: shape_id -> ordered stops.
 
-    Stop distance-along is ALWAYS the stop pole's lat/lon projected onto the
-    shape polyline (2026-07-30 decision). stop_times.shape_dist_traveled is
-    deliberately ignored even where present: CTA generates it on the same
-    glitched ruler as shapes.txt (761/816 shapes affected), which collapsed
-    far-side stops onto their signal's position and attributed them to the
-    wrong segment. Pole coordinates are physical ground truth, and on clean
-    stops the two methods agree to ~0.1 m.
+    Stop distance-along is ALWAYS a physical position projected onto the
+    shape polyline (2026-07-30 decision; stop_times.shape_dist_traveled is
+    deliberately ignored — CTA generates it on the same glitched ruler as
+    shapes.txt). The position, per stop (2026-08 decision, when ``city`` is
+    given):
+
+      1. ``stop_coord_override`` exception, if present;
+      2. the stop's modal-10ft-bucket door-event peak, when the city has a
+         door cache, the stop has >= DOOR_PEAK_MIN_EVENTS located events,
+         the peak lies within DOOR_PEAK_MAX_POLE_DIST_M of the GTFS pole,
+         and the stop is not door_peak_reject-ed — measured service
+         location beats the agency's geocode;
+      3. the GTFS pole (always, for cities without door data).
+
+    ``terminal_stop`` exceptions are excluded entirely — off-street bays
+    are outside the signal-to-signal segment model.
     """
     trip_to_shape = {v: k for k, v in rep_trip_by_shape.items()}
     rows_by_trip: dict[str, list[dict]] = defaultdict(list)
@@ -216,20 +298,51 @@ def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[st
                 for r in csv.DictReader(_io.TextIOWrapper(f, encoding="utf-8-sig"))
             }
 
+    exc = load_exceptions(city.city_id) if city is not None else None
+    peaks = _door_peaks(city) if city is not None else {}
+    loc: dict[str, tuple[float, float]] = {}
+    n_peak = n_override = 0
+    for sid_, m in stops_meta.items():
+        try:
+            pole = (float(m.get("stop_lat") or "nan"),
+                    float(m.get("stop_lon") or "nan"))
+        except ValueError:
+            continue
+        if exc and sid_ in exc.coord_overrides:
+            loc[sid_] = exc.coord_overrides[sid_]
+            n_override += 1
+            continue
+        pk = peaks.get(sid_)
+        if (pk is not None and not (exc and sid_ in exc.peak_rejects)
+                and pole == pole  # not NaN
+                and _dist_ll_m(*pk, *pole) <= DOOR_PEAK_MAX_POLE_DIST_M):
+            loc[sid_] = pk
+            n_peak += 1
+        else:
+            loc[sid_] = pole
+    if n_peak or n_override:
+        print(f"stops_by_shape: {n_peak} stops located by door peak, "
+              f"{n_override} by coord override")
+
     from core.mapmatch.shape_snap import SnapToShapeMatcher
 
     out: dict[str, list[dict]] = {}
-    n_dropped = 0
+    n_dropped = n_terminal = 0
     for trip_id, rows in rows_by_trip.items():
         rows.sort(key=lambda r: int(r["stop_sequence"]))
+        if exc is not None:
+            kept = [r for r in rows if r["stop_id"] not in exc.terminal_stops]
+            n_terminal += len(rows) - len(kept)
+            rows = kept
         shape_id = trip_to_shape[trip_id]
         polyline, dist_m = load_gtfs_shape_with_dist(gtfs_zip, shape_id)
         matcher = SnapToShapeMatcher(
             polyline, max_perp_m=100.0, dist_along_m_per_vertex=dist_m
         )
-        metas = [stops_meta.get(r["stop_id"], {}) for r in rows]
-        lats = np.array([float(m.get("stop_lat") or "nan") for m in metas])
-        lons = np.array([float(m.get("stop_lon") or "nan") for m in metas])
+        locs = [loc.get(r["stop_id"], (float("nan"), float("nan")))
+                for r in rows]
+        lats = np.array([p[0] for p in locs])
+        lons = np.array([p[1] for p in locs])
         ok = ~(np.isnan(lats) | np.isnan(lons))
         res = matcher.match(np.where(ok, lats, 0.0), np.where(ok, lons, 0.0))
         stops = []
@@ -250,6 +363,9 @@ def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[st
         out[shape_id] = stops
     if n_dropped:
         print(f"stops_by_shape: dropped {n_dropped} stops >100 m off their shape")
+    if n_terminal:
+        print(f"stops_by_shape: excluded {n_terminal} terminal-stop rows "
+              f"(exceptions)")
     return out
 
 
@@ -428,7 +544,8 @@ def build_registry(city: CityConfig) -> dict:
     skipped_no_cache = sorted(set(all_bus) - set(bus_shapes))
 
     stops_map = stops_by_shape(
-        gtfs_zip, {s: shape_meta[s]["rep_trip_id"] for s in bus_shapes}
+        gtfs_zip, {s: shape_meta[s]["rep_trip_id"] for s in bus_shapes},
+        city=city,
     )
 
     # ---- global clustering: true traffic-signal nodes --------------------
@@ -478,9 +595,11 @@ def build_registry(city: CityConfig) -> dict:
                         anchor_pos.setdefault(a, (cp.lat, cp.lon))
     for n, pos in anchor_pos.items():
         positions.setdefault(n, pos)
+    from dataio.exceptions import load_all_cluster_splits
     canon = cluster_nodes(
         positions, usage, CLUSTER_RADIUS_M, primary=primary,
         extra_edges=anchor_edges,
+        split_sides=load_all_cluster_splits(),
     )
 
     def is_boundary_cp(cp) -> bool:

@@ -60,6 +60,24 @@ class ControlPoint:
     markings: str = ""
     has_island: bool = False
 
+    # Cluster-location metadata (2026-08 boundary-location decision).
+    # For merged signal clusters, ``intersection_node_id`` stays the FIRST
+    # member in route order (stable identity), while lat/lon/dist_along
+    # carry the chosen LOCATION:
+    #   loc_source "hierarchy" — a unique cross-way-class winner among the
+    #     members; its node id is ``main_node_id`` and its position is used.
+    #   loc_source "midpoint"  — no unique winner; position is the midpoint
+    #     of the first and last members (lat/lon and dist_along alike);
+    #     ``main_node_id`` is None.
+    #   loc_source "single"    — unmerged CP; main_node_id == the node.
+    # ``cross_way_rank`` is the node's own best cross-way class rank
+    # (populated pre-merge for signal vertices; None when no named,
+    # non-service cross way exists at the node).
+    first_node_id: int | None = None
+    main_node_id: int | None = None
+    loc_source: str = "single"
+    cross_way_rank: float | None = None
+
 
 # Control types that act as signal-to-signal segment boundaries.
 SIGNALIZED_CONTROL_TYPES = frozenset({"traffic_signals", "ped_crossing_signal"})

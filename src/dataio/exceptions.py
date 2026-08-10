@@ -31,6 +31,15 @@ Entry types (the ``value`` schema each type expects):
                         segment assignment and near/far-side classification.
                         target: {"stop_id": str}
 
+  cluster_split         Force two node groups to remain SEPARATE
+                        intersections even though they sit within the
+                        clustering radius. Enforced as a dividing line in
+                        both clustering layers: no cluster/component may
+                        ever contain nodes from both sides (so third-party
+                        nodes cannot bridge the divide transitively).
+                        Unlisted nodes join whichever side they chain to.
+                        target: {"nodes_a": [int, ...], "nodes_b": [int, ...]}
+
 Common required fields per entry: ``id`` (unique slug), ``type``, ``city``,
 ``target``, ``why``, ``added`` (YYYY-MM-DD). Optional: ``value``,
 ``evidence``, ``review_after``.
@@ -76,6 +85,7 @@ _TYPES = {
     "stop_segment_pin",
     "boundary_rep_override",
     "terminal_stop",
+    "cluster_split",
 }
 _COMMON_REQUIRED = ("id", "type", "city", "target", "why", "added")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -95,6 +105,7 @@ class Exceptions:
     segment_pins: dict[str, str] = field(default_factory=dict)
     boundary_reps: dict[frozenset[int], int] = field(default_factory=dict)
     terminal_stops: frozenset[str] = frozenset()
+    cluster_splits: tuple[tuple[frozenset[int], frozenset[int]], ...] = ()
     entries: tuple[dict, ...] = ()
 
 
@@ -135,6 +146,14 @@ def _validate_entry(e: dict, seen_ids: set[str]) -> None:
             _fail(eid, "target.junction_nodes must be a list of >=2 node ids")
         if rep not in nodes:
             _fail(eid, "value.rep_node must be one of target.junction_nodes")
+    if t == "cluster_split":
+        a, b = target.get("nodes_a"), target.get("nodes_b")
+        for side, nm in ((a, "nodes_a"), (b, "nodes_b")):
+            if (not isinstance(side, list) or not side
+                    or not all(isinstance(n, int) for n in side)):
+                _fail(eid, f"target.{nm} must be a non-empty list of node ids")
+        if set(a) & set(b):
+            _fail(eid, "nodes_a and nodes_b must be disjoint")
 
 
 def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
@@ -144,6 +163,7 @@ def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
     seen: set[str] = set()
     coord, pins, reps = {}, {}, {}
     rejects, terminals = set(), set()
+    splits = []
     kept = []
     for e in doc.get("entries", []):
         _validate_entry(e, seen)
@@ -161,6 +181,9 @@ def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
             reps[frozenset(target["junction_nodes"])] = value["rep_node"]
         elif t == "terminal_stop":
             terminals.add(target["stop_id"])
+        elif t == "cluster_split":
+            splits.append((frozenset(target["nodes_a"]),
+                           frozenset(target["nodes_b"])))
     return Exceptions(
         city=city_id,
         coord_overrides=coord,
@@ -168,8 +191,32 @@ def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
         segment_pins=pins,
         boundary_reps=reps,
         terminal_stops=frozenset(terminals),
+        cluster_splits=tuple(splits),
         entries=tuple(kept),
     )
+
+
+def load_all_cluster_splits(path: Path = EXCEPTIONS_PATH) -> dict[int, tuple[int, int]]:
+    """node_id -> (divide_index, side) across ALL cities.
+
+    OSM node ids are globally unique, so cluster_split divides are safe to
+    apply city-agnostically — an entry for one city's nodes can never match
+    another city's geometry. Both clustering layers consume this map.
+    """
+    doc = json.loads(path.read_text())
+    seen: set[str] = set()
+    out: dict[int, tuple[int, int]] = {}
+    idx = 0
+    for e in doc.get("entries", []):
+        _validate_entry(e, seen)
+        if e["type"] != "cluster_split":
+            continue
+        for side, nodes in enumerate((e["target"]["nodes_a"],
+                                      e["target"]["nodes_b"])):
+            for n in nodes:
+                out[int(n)] = (idx, side)
+        idx += 1
+    return out
 
 
 def main() -> int:

@@ -139,14 +139,15 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
 
 ## Hard-coded exceptions
 
-`exceptions.json` is the single committed home for hand-curated overrides —
-stop-coordinate fixes, door-peak rejects, junction-interior segment pins,
-boundary-representative overrides, terminal-bay markers. Every entry records
+`src/dataio/exceptions.json` is the single committed home for hand-curated
+overrides — stop-coordinate fixes, door-peak rejects, cluster splits,
+segment pins, terminal-bay markers. Every entry records
 what/why/evidence/date; the schema and per-type value contracts live in
-`exceptions.py` (which validates on load and standalone via
-`PYTHONPATH=src uv run python analysis/network/exceptions.py`). Consumers
-call `exceptions.load_exceptions(city_id)`; see the module docstring for the
-intended hook point of each type.
+`src/dataio/exceptions.py` (validates on load and standalone via
+`PYTHONPATH=src uv run python src/dataio/exceptions.py`). Consumed by
+`dataio.intersections` (cluster_split at per-shape clustering),
+`analysis/network/registry.py` (cluster_split at global clustering;
+terminal_stop / door_peak_reject / stop_coord_override at stop location).
 
 ## Adding a city
 
