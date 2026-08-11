@@ -711,8 +711,8 @@ export class NetworkView {
       return (d[c + suffix] ?? d[c] ?? zeros).map((v) => v / denom);
     };
     const src = Object.fromEntries(CLASSES.map((c) => [c, pick(c)]));
-    const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 12;
-    const H = chartH + roadH + axisH + 12;
+    const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 28;
+    const H = chartH + roadH + axisH + 28;
     const lenFt = d.len_ft;
     const nB = d.nd.length;
     const innerW = W - padL - padR;
@@ -804,6 +804,22 @@ export class NetworkView {
       <line x1="${xOf(0).toFixed(1)}" y1="${roadY + roadBodyH / 2}" x2="${xOf(lenFt).toFixed(1)}"
             y2="${roadY + roadBodyH / 2}" stroke="#fff" stroke-width="2.5"
             stroke-dasharray="16 13" opacity=".7"/>`;
+    // travel direction: a few left-pointing chevrons on the centerline
+    {
+      const cy = roadY + roadBodyH / 2;
+      for (const frac of [0.22, 0.5, 0.78]) {
+        const ax = xOf(lenFt * frac);
+        road += `<path d="M ${(ax + 7).toFixed(1)} ${cy - 6} L ${(ax - 5).toFixed(1)} ${cy}
+                 L ${(ax + 7).toFixed(1)} ${cy + 6}" fill="none" stroke="#fff"
+                 stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>`;
+      }
+      // street name on the roadway (lower band, clear of the centerline)
+      if (props.name) {
+        road += `<text x="${((xOf(0) + xOf(lenFt)) / 2).toFixed(1)}" y="${roadY + roadBodyH - 6}"
+                 text-anchor="middle" style="font-size:10px;fill:#fff;opacity:.92;
+                 font-weight:600;letter-spacing:.06em">${props.name}</text>`;
+      }
+    }
     // traffic light pictogram at the segment's left edge (0 ft)
     const ly = roadY + roadBodyH / 2;
     road += `<g transform="translate(${(xOf(0) - 34).toFixed(1)}, ${ly - 22})">
@@ -813,6 +829,26 @@ export class NetworkView {
         <circle cx="9.5" cy="35" r="5" fill="#3c4"/>
       </g>`;
     const ownStreet = (props.name ?? "").replace(/^(North|South|East|West) /, "");
+    // "Street: A → B" — A = upstream boundary cross street, B = downstream
+    {
+      const ends = ((props.label ?? "").split(":")[1] ?? "").split("→")
+        .map((t) => t.trim());
+      const cname = (t) => (!t || /mid-block/i.test(t) || t === props.name)
+        ? null : t.replace(/^(North|South|East|West) /, "");
+      const downName = cname(ends[1]);
+      const upName = cname(ends[0]);
+      const cy = roadY + roadBodyH / 2;
+      if (downName) {
+        const tx = (xOf(0) - 42).toFixed(1);
+        road += `<text transform="rotate(-90 ${tx} ${cy})" x="${tx}" y="${cy}"
+                 text-anchor="middle" style="font-size:8px;fill:#555">${downName}</text>`;
+      }
+      if (upName) {
+        const tx = (xOf(lenFt) + 14).toFixed(1);
+        road += `<text transform="rotate(-90 ${tx} ${cy})" x="${tx}" y="${cy}"
+                 text-anchor="middle" style="font-size:8px;fill:#555">${upName}</text>`;
+      }
+    }
     // NB (2026-07-30): junction boxes removed from this view — the way-split
     // fallback produced nameless phantom boxes (alley splits, splits at
     // far-side crossing nodes) that misread as real intersections next to
@@ -835,15 +871,35 @@ export class NetworkView {
                <text x="${x}" y="${oy + 2.5}" text-anchor="middle"
                  style="font-size:6.5px;fill:#fff;font-weight:700">STOP</text></g>`;
     }
-    // stops (blue bars) — instant name tooltip via data-tip
-    for (const st of props.stops_off ?? []) {
-      const x = xOf(st.off_m * 3.28084);
-      road += `<rect data-tip="${st.name} bus stop" x="${(x - 6).toFixed(1)}" y="${roadY - 6}"
-               width="12" height="${roadBodyH + 12}" rx="4" fill="#2f6fd6"/>`;
+    // stops: CTA-style sign bars (bus glyph + BUS STOP) with id · name
+    // printed below the roadway, staggered on two rows to limit collisions
+    {
+      const sorted = [...(props.stops_off ?? [])].sort((a, b) => b.off_m - a.off_m);
+      sorted.forEach((st, si) => {
+        const x = xOf(st.off_m * 3.28084);
+        const top = roadY - 8, bh = roadBodyH + 16;
+        road += `<g>
+          <rect x="${(x - 11).toFixed(1)}" y="${top}" width="22" height="${bh}"
+                rx="4" fill="#2f6fd6" stroke="#fff" stroke-width="1.2"/>
+          <g transform="translate(${(x - 6).toFixed(1)}, ${top + 4})" fill="#fff">
+            <rect x="0.5" y="1.5" width="11" height="7" rx="1.6"/>
+            <rect x="1.8" y="2.8" width="3.2" height="2.4" rx="0.6" fill="#2f6fd6"/>
+            <rect x="6.4" y="2.8" width="3.2" height="2.4" rx="0.6" fill="#2f6fd6"/>
+            <circle cx="3" cy="9.4" r="1.3"/>
+            <circle cx="9" cy="9.4" r="1.3"/>
+          </g>
+          <text x="${x.toFixed(1)}" y="${top + 24}" text-anchor="middle"
+                style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">BUS</text>
+          <text x="${x.toFixed(1)}" y="${top + 31}" text-anchor="middle"
+                style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">STOP</text>
+          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 24 : 15)}"
+                text-anchor="middle" style="font-size:8px;fill:#333">${st.id} · ${st.name}</text>
+        </g>`;
+      });
     }
     // feet scale
     const step = lenFt > 2000 ? 500 : lenFt > 800 ? 200 : 100;
-    const axisY = roadY + roadBodyH + 12;
+    const axisY = roadY + roadBodyH + 28;
     let axis = `<line x1="${padL}" y1="${axisY}" x2="${W - padR}" y2="${axisY}" stroke="#999"/>`;
     for (let ft = 0; ft <= lenFt; ft += step) {
       const x = xOf(ft);
