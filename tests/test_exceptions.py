@@ -54,3 +54,10 @@ def test_example_entry_roundtrip(tmp_path):
 
 def test_file_exists():
     assert EXCEPTIONS_PATH.exists()
+
+
+def test_cta_hf_aliases_to_cta():
+    ex = load_exceptions("cta-hf")
+    assert "6515" in ex.peak_rejects
+    assert "14171" in ex.terminal_stops
+    assert len(ex.cluster_splits) == 1

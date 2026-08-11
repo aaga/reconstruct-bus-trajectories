@@ -156,7 +156,13 @@ def _validate_entry(e: dict, seen_ids: set[str]) -> None:
             _fail(eid, "nodes_a and nodes_b must be disjoint")
 
 
+# Derived cities consume their parent's exceptions: cta-hf shares CTA's
+# GTFS, caches, and door data, so CTA's stop/cluster facts apply verbatim.
+_CITY_ALIASES = {"cta-hf": "cta"}
+
+
 def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
+    city_id = _CITY_ALIASES.get(city_id, city_id)
     doc = json.loads(path.read_text())
     if doc.get("version") != 1:
         _fail(None, f"unsupported version {doc.get('version')!r}")
