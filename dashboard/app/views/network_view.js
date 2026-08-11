@@ -712,7 +712,7 @@ export class NetworkView {
     };
     const src = Object.fromEntries(CLASSES.map((c) => [c, pick(c)]));
     const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 28;
-    const H = chartH + roadH + axisH + 28;
+    const H = chartH + roadH + axisH + 52;
     const lenFt = d.len_ft;
     const nB = d.nd.length;
     const innerW = W - padL - padR;
@@ -799,11 +799,39 @@ export class NetworkView {
     // road strip
     const roadY = chartH + 8;
     const roadBodyH = roadH - 18;
-    let road = `<rect x="${xOf(0).toFixed(1)}" y="${roadY}" width="${(xOf(lenFt) - xOf(0)).toFixed(1)}" height="${roadBodyH}"
-                 rx="6" fill="#4a4a52"/>
-      <line x1="${xOf(0).toFixed(1)}" y1="${roadY + roadBodyH / 2}" x2="${xOf(lenFt).toFixed(1)}"
-            y2="${roadY + roadBodyH / 2}" stroke="#fff" stroke-width="2.5"
-            stroke-dasharray="16 13" opacity=".7"/>`;
+    const axisY = roadY + roadBodyH + 52;
+    const sideY = axisY - 2;   // sideways labels: leading edge at the x-axis
+    // Break the roadway (12 px gaps) at NAMED junctions — non-signalized
+    // by definition (signals are segment boundaries); label each gap.
+    const namedJcts = (props.junctions_off ?? [])
+      .filter((j) => j.cross)
+      .map((j) => ({ x: xOf(j.off_m * 3.28084), cross: j.cross }))
+      .filter((j) => j.x > xOf(0) + 18 && j.x < xOf(lenFt) - 18)
+      .sort((a, b) => a.x - b.x);
+    let road = "";
+    {
+      const cy = roadY + roadBodyH / 2;
+      let cursor = xOf(0);
+      const spans = [];
+      for (const j of namedJcts) {
+        spans.push([cursor, j.x - 6]);
+        cursor = j.x + 6;
+      }
+      spans.push([cursor, xOf(lenFt)]);
+      for (const [a, b] of spans) {
+        if (b - a < 2) continue;
+        road += `<rect x="${a.toFixed(1)}" y="${roadY}" width="${(b - a).toFixed(1)}"
+                 height="${roadBodyH}" rx="6" fill="#4a4a52"/>
+          <line x1="${(a + 4).toFixed(1)}" y1="${cy}" x2="${(b - 4).toFixed(1)}" y2="${cy}"
+                stroke="#fff" stroke-width="2.5" stroke-dasharray="16 13" opacity=".7"/>`;
+      }
+      for (const j of namedJcts) {
+        const nm = j.cross.replace(/^(North|South|East|West) /, "");
+        road += `<text transform="rotate(-90 ${j.x.toFixed(1)} ${sideY})" x="${j.x.toFixed(1)}"
+                 y="${sideY}" text-anchor="start"
+                 style="font-size:8px;fill:#555" dominant-baseline="middle">${nm}</text>`;
+      }
+    }
     // travel direction: a few left-pointing chevrons on the centerline
     {
       const cy = roadY + roadBodyH / 2;
@@ -813,9 +841,25 @@ export class NetworkView {
                  L ${(ax + 7).toFixed(1)} ${cy + 6}" fill="none" stroke="#fff"
                  stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>`;
       }
-      // street name on the roadway (lower band, clear of the centerline)
+      // street name on the roadway: pick the position that avoids bus-stop
+      // bars (hard) and junction gaps (soft), preferring the center
       if (props.name) {
-        road += `<text x="${((xOf(0) + xOf(lenFt)) / 2).toFixed(1)}" y="${roadY + roadBodyH - 6}"
+        const halfW = props.name.length * 3.1 + 6;
+        const stopsX = (props.stops_off ?? []).map((st) => xOf(st.off_m * 3.28084));
+        const lo = xOf(lenFt) + halfW + 4, hi = xOf(0) - halfW - 4;
+        let best = (xOf(0) + xOf(lenFt)) / 2, bestScore = Infinity;
+        for (let k = 0; k <= 60; k++) {
+          const cx2 = lo + ((hi - lo) * k) / 60;
+          let score = Math.abs(cx2 - (xOf(0) + xOf(lenFt)) / 2) / 1000;
+          for (const sx of stopsX) {
+            if (Math.abs(cx2 - sx) < halfW + 14) score += 100;
+          }
+          for (const j of namedJcts) {
+            if (Math.abs(cx2 - j.x) < halfW + 8) score += 10;
+          }
+          if (score < bestScore) { bestScore = score; best = cx2; }
+        }
+        road += `<text x="${best.toFixed(1)}" y="${roadY + roadBodyH - 6}"
                  text-anchor="middle" style="font-size:10px;fill:#fff;opacity:.92;
                  font-weight:600;letter-spacing:.06em">${props.name}</text>`;
       }
@@ -837,17 +881,11 @@ export class NetworkView {
         ? null : t.replace(/^(North|South|East|West) /, "");
       const downName = cname(ends[1]);
       const upName = cname(ends[0]);
-      const cy = roadY + roadBodyH / 2;
-      if (downName) {
-        const tx = (xOf(0) - 42).toFixed(1);
-        road += `<text transform="rotate(-90 ${tx} ${cy})" x="${tx}" y="${cy}"
-                 text-anchor="middle" style="font-size:8px;fill:#555">${downName}</text>`;
-      }
-      if (upName) {
-        const tx = (xOf(lenFt) + 14).toFixed(1);
-        road += `<text transform="rotate(-90 ${tx} ${cy})" x="${tx}" y="${cy}"
-                 text-anchor="middle" style="font-size:8px;fill:#555">${upName}</text>`;
-      }
+      const sideLabel = (tx, name, fill = "#555") =>
+        `<text transform="rotate(-90 ${tx} ${sideY})" x="${tx}" y="${sideY}"
+         text-anchor="start" style="font-size:8px;fill:${fill}">${name}</text>`;
+      if (downName) road += sideLabel((xOf(0) - 42).toFixed(1), downName);
+      if (upName) road += sideLabel((xOf(lenFt) + 14).toFixed(1), upName);
     }
     // NB (2026-07-30): junction boxes removed from this view — the way-split
     // fallback produced nameless phantom boxes (alley splits, splits at
@@ -892,14 +930,15 @@ export class NetworkView {
                 style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">BUS</text>
           <text x="${x.toFixed(1)}" y="${top + 31}" text-anchor="middle"
                 style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">STOP</text>
-          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 24 : 15)}"
-                text-anchor="middle" style="font-size:8px;fill:#333">${st.id} · ${st.name}</text>
+          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 37 : 14)}"
+                text-anchor="middle" style="font-size:9.5px;fill:#333;font-weight:600">${st.id}</text>
+          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 48 : 25)}"
+                text-anchor="middle" style="font-size:9.5px;fill:#333">${st.name}</text>
         </g>`;
       });
     }
     // feet scale
     const step = lenFt > 2000 ? 500 : lenFt > 800 ? 200 : 100;
-    const axisY = roadY + roadBodyH + 28;
     let axis = `<line x1="${padL}" y1="${axisY}" x2="${W - padR}" y2="${axisY}" stroke="#999"/>`;
     for (let ft = 0; ft <= lenFt; ft += step) {
       const x = xOf(ft);
@@ -1124,7 +1163,8 @@ export class NetworkView {
         free-flow ${ffMph} mph
         ${p.rev_sid != null ? ` · <a href="#" id="nw-rev">reverse direction →</a>` : ""}
       </div>
-      <table class="nw-ptable">
+      <button id="nw-ptable-toggle" class="nw-clear" style="margin:2px 0 4px">show delay / dwell table ▾</button>
+      <table class="nw-ptable" style="display:none">
         <tr><th></th><th>n</th><th>delay med</th><th>dwell</th><th>non-dwell</th><th>pax·s</th></tr>
         ${ALL_PERIODS.map((per, i) => {
           const acc = rows[i];
@@ -1151,6 +1191,16 @@ export class NetworkView {
       el.querySelector("#nw-apc").textContent =
         "no door/APC data available for this city — dwell, non-dwell, " +
         "passenger-weighted, and boardings metrics are unavailable";
+    }
+    {
+      const tbtn = el.querySelector("#nw-ptable-toggle");
+      const tbl = el.querySelector(".nw-ptable");
+      tbtn.onclick = () => {
+        const open = tbl.style.display !== "none";
+        tbl.style.display = open ? "none" : "";
+        tbtn.textContent = open ? "show delay / dwell table ▾"
+                                : "hide delay / dwell table ▴";
+      };
     }
     el.querySelector(".nw-close").onclick = () => {
       el.remove();
