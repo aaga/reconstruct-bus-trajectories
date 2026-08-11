@@ -115,6 +115,9 @@ export class NetworkMap {
           ],
         },
       });
+      // Direction arrows stay legible on top of the black hover/highlight
+      // strokes (they were added first and got painted over on selection).
+      this.map.moveLayer("seg-arrows");
       this._wireInteractions();
       this._ready = true;
       if (this._pendingColors) {
