@@ -20,6 +20,7 @@ Stages (door stages auto-skip when ``city.has_door_data`` is False):
     freeflow        late-night p5 per segment
     date_attrs      dow/season/pick/weather per date
     payloads        binned stats shards + segments GeoJSON
+    movements       THRU/LEFT/RIGHT per (segment, shape)
     distributions   per-segment delay-location files   [door cities only]
     areas           areas-of-interest rankings
 
@@ -98,6 +99,12 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
                           if c == "cta" else
                           REPO / "dashboard" / "data" / "network" / c)]),
     ]
+    # movements.json is consumed by build_distributions (per-movement split
+    # + the dashboard's turn filter); historically run by hand, which let a
+    # full rebuild silently drop the turn arrows (2026-08-10).
+    stages.append(
+        ("movements", ["uv", "run", "python",
+                       f"{NET}/turn_movements.py", "--city", c]))
     stages.append(
         ("distributions", ["uv", "run", "python",
                            f"{NET}/build_distributions.py", "--city", c]))
