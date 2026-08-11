@@ -670,15 +670,18 @@ export class NetworkView {
       host.innerHTML = `<div class="nw-note">data version mismatch — reload the page</div>`;
       return;
     }
-    this._distMode ??= "events"; // "events" | "seconds" | "queue"
+    this._distMode ??= "events"; // "events" | "seconds" | "queue" | "pings"
+    if (this._distMode === "pings" && !d.ping) this._distMode = "events";
+    const pingMode = this._distMode === "pings";
     const secondsMode = this._distMode === "seconds";
     const queueMode = this._distMode === "queue";
     const suffix = secondsMode ? "_s" : queueMode ? "_q" : "";
     // v2 classes; v1 files simply lack post2/dw (empty fallbacks keep them
     // working). dw (door events) is opt-in via the checkbox.
     this._showDoors ??= false;
-    const CLASSES = ["nd", "pre", "post", "post2",
-                     ...(this._showDoors ? ["dw"] : [])];
+    const CLASSES = pingMode ? ["ping"]
+                   : ["nd", "pre", "post", "post2",
+                      ...(this._showDoors ? ["dw"] : [])];
     // Turn-movement filter (T/L/R/E through the downstream signal).
     // Selection resets when the popup moves to a different segment.
     const mvmtAll = d.mvmt ? Object.keys(d.mvmt) : [];
@@ -686,7 +689,7 @@ export class NetworkView {
       this._mvmtSeg = props.sid;
       this._mvmtSel = new Set(mvmtAll);
     }
-    const mvmtFiltered = d.by_mvmt && this._mvmtSel.size < mvmtAll.length;
+    const mvmtFiltered = !pingMode && d.by_mvmt && this._mvmtSel.size < mvmtAll.length;
     // Seconds mode: divide by the traversal count so the y-axis reads as
     // AVERAGE delay seconds per trip (dumb rescale, per user). When the
     // movement filter is active, both the arrays and the denominator come
@@ -722,14 +725,14 @@ export class NetworkView {
     const xOf = (ft) => padL + ((ft + ghFt) / domFt) * innerW;
     const bw = Math.max(1, (d.bucket_ft / domFt) * innerW);
 
-    const totals = src.nd.map((_, i) =>
+    const totals = src[CLASSES[0]].map((_, i) =>
       CLASSES.reduce((a, c) => a + src[c][i], 0));
     const yMax = Math.max(1, ...totals);
     const yOf = (n) => chartH - (n / yMax) * (chartH - 6);
 
     const COLORS = { nd: "#d63a2f", pre: "#1fb8b0",
                      post: "#8a4fc8", post2: "url(#post2hatch)",
-                     dw: "#2b6fd6" };
+                     dw: "#2b6fd6", ping: "#3f3f3f" };
     let bars = `<defs><pattern id="post2hatch" width="6" height="6"
         patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
         <rect width="6" height="6" fill="#8a4fc8"/>
@@ -748,7 +751,7 @@ export class NetworkView {
     }
     // Ghost bars: adjacent segments' events at 50% opacity, clipped to the
     // main chart's y-scale (they're context, not part of it).
-    if (ghB) {
+    if (ghB && !pingMode) {
       const pickGh = (side, c) => {
         const key = c + suffix;
         const out = new Array(ghB).fill(0);
@@ -866,10 +869,11 @@ export class NetworkView {
           <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">delay events</button>
           <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
           ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
+          ${d.ping ? `<button data-m="pings" class="${pingMode ? "on" : ""}">raw pings</button>` : ""}
         </span>
-        ${this.hasDoor && d.dw ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
+        ${this.hasDoor && d.dw && !pingMode ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-doors-cb" ${this._showDoors ? "checked" : ""}> door events</label>` : ""}
-        ${mvmtAll.length ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
+        ${mvmtAll.length && !pingMode ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
           ${mvmtAll.map((m) => {
             const ARROWS = {
               T: "M12 19 V7 M7.5 10.5 L12 5.5 L16.5 10.5",
@@ -886,10 +890,12 @@ export class NetworkView {
               <path d="${ARROWS[m]}" fill="none" stroke="#fff" stroke-width="2.4"
                     stroke-linecap="round" stroke-linejoin="round"/></svg>`;
           }).join("")}</span>` : ""}
-        <span class="nw-note">(${d.n_events} events · ${d.n_trips ?? "?"} trips)</span>
+        <span class="nw-note">${pingMode
+          ? `(${totals.reduce((a, v) => a + v, 0).toLocaleString()} raw AVL pings, pre-reconstruction)`
+          : `(${d.n_events} events · ${d.n_trips ?? "?"} trips)`}</span>
       </div>
-      <svg width="${W}" height="${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
-      ${this.hasDoor ? `<div class="dist-legend">
+      <svg viewBox="0 0 ${W} ${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
+      ${this.hasDoor && !pingMode ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
         <span><i style="background:#8a4fc8"></i>post-boarding</span>
@@ -1027,6 +1033,19 @@ export class NetworkView {
     if (!f) return;
     const p = f.properties;
     this.map.highlight([sid], { zoom: false });
+    // Auto-frame: detail panel covers the left half, so fit the segment
+    // into ~80% of the RIGHT half of the map viewport.
+    {
+      const cs = f.geometry.coordinates;
+      const lons = cs.map((c) => c[0]), lats = cs.map((c) => c[1]);
+      const rect = $("map").getBoundingClientRect();
+      this.map.map.fitBounds(
+        [[Math.min(...lons), Math.min(...lats)],
+         [Math.max(...lons), Math.max(...lats)]],
+        { padding: { left: rect.width * 0.55, right: rect.width * 0.05,
+                     top: rect.height * 0.10, bottom: rect.height * 0.10 },
+          maxZoom: 17.5, duration: 700 });
+    }
 
     // Per-period table under the current non-period filters.
     const rows = [];

@@ -21,6 +21,7 @@ Stages (door stages auto-skip when ``city.has_door_data`` is False):
     date_attrs      dow/season/pick/weather per date
     payloads        binned stats shards + segments GeoJSON
     movements       THRU/LEFT/RIGHT per (segment, shape)
+    ping_density    raw archive pings per 10 ft bucket
     distributions   per-segment delay-location files   [door cities only]
     areas           areas-of-interest rankings
 
@@ -105,6 +106,9 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
     stages.append(
         ("movements", ["uv", "run", "python",
                        f"{NET}/turn_movements.py", "--city", c]))
+    stages.append(
+        ("ping_density", ["uv", "run", "python",
+                          f"{NET}/ping_density.py", "--city", c]))
     stages.append(
         ("distributions", ["uv", "run", "python",
                            f"{NET}/build_distributions.py", "--city", c]))

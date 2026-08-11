@@ -231,11 +231,15 @@ body.network-areas .nw-panel { left: calc(46% + 10px); }
 
 /* Detail panel */
 .nw-detail {
-  position: absolute; top: 10px; right: 10px; z-index: 5;
-  width: fit-content; min-width: 380px; max-width: 1060px;
-  background: rgba(255,255,255,.97); border: 1px solid #ddd; border-radius: 10px;
-  padding: 10px 12px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.14);
+  /* 2026-08-11: half-window, left-aligned, opaque — deliberately covers
+     the filters sidebar; the map auto-frames the segment on the right. */
+  position: absolute; top: 10px; left: 10px; z-index: 50;
+  width: calc(50vw - 20px); min-width: 0; max-width: none;
+  max-height: calc(100% - 20px); overflow-y: auto;
+  background: #fff; border: 1px solid #ddd; border-radius: 10px;
+  padding: 10px 12px; font-size: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.22);
 }
+.nw-detail .dist-svg { width: 100%; height: auto; }
 .nw-detail h3 { margin: 0 16px 8px 0; font-size: 16px; font-weight: 700; line-height: 1.35; }
 .nw-detail .nw-close { position: absolute; top: 4px; right: 6px; border: none;
   background: none; font-size: 15px; cursor: pointer; color: #666; }

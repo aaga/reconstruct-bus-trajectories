@@ -60,6 +60,15 @@ def build(city_id: str) -> None:
     base = REPO / "outputs" / "network" / city.city_id
     registry = json.loads((base / "segment_registry.json").read_text())
     sha12 = registry["meta"]["intersections_sha256"][:12]
+
+    # Raw ping density (ping_density.py; optional — "raw pings" dist tab)
+    ping_path = base / "ping_density.parquet"
+    ping_counts: dict[str, dict[int, int]] = {}
+    if ping_path.exists():
+        for seg_id_, b_, n_ in duckdb.connect().execute(
+                f"SELECT seg_id, bucket, n FROM read_parquet('{ping_path}')"
+        ).fetchall():
+            ping_counts.setdefault(seg_id_, {})[int(b_)] = int(n_)
     seg_index = {s: i for i, s in enumerate(sorted(registry["segments"]))}
 
     # CTA keeps the original flat location; other cities nest under their id
@@ -288,6 +297,13 @@ def build(city_id: str) -> None:
                         arrs["gh_lo"], arrs["gh_hi"] = _ghost_arrays(mgh)
                     by[m] = arrs
                 payload["by_mvmt"] = by
+        pc = ping_counts.get(seg_id)
+        if pc:
+            parr = [0] * n_buckets
+            for b, n in pc.items():
+                if 0 <= b < n_buckets:
+                    parr[b] = n
+            payload["ping"] = parr
         payload["sha"] = sha12
         n_events_total += total
         (out_dir / f"{sid}.json").write_text(json.dumps(payload))
