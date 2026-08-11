@@ -12,7 +12,7 @@
 // and Areas-of-interest are removed/hidden pending rework.
 
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
-import { $ } from "../chart_util.js";
+import { $, showBanner } from "../chart_util.js";
 import { NetworkMap } from "../network_map.js";
 import { StreetViewPopup } from "../street_view.js";
 import { State } from "../state.js";
@@ -82,16 +82,30 @@ export class NetworkView {
       this.N.metric = "overall";
     }
     // Restore a deep-linked selected segment (opens its detail panel).
-    if (this.N.pendingSeg != null) {
-      const sid = this.N.pendingSeg;
+    // seg= carries a stable seg_id (SIG_<up>__SIG_<down>); numeric values
+    // are legacy sid links from before 2026-08-10 and are refused — sids
+    // renumber on every registry rebuild.
+    if (this.N.pendingSegId != null || this.N.pendingSeg != null) {
+      const segId = this.N.pendingSegId;
+      const legacySid = this.N.pendingSeg;
+      this.N.pendingSegId = null;
       this.N.pendingSeg = null;
       setTimeout(() => {
-        const f = this.data.segments.features.find((x) => x.properties.sid === sid);
-        if (f) {
-          const mid = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)];
-          this.map?.map.jumpTo({ center: mid, zoom: 14.5 });
-          this._select(sid);
+        if (segId == null) {
+          showBanner(`This link uses a legacy numeric segment id (seg=${legacySid}), ` +
+                     `which is not stable across data rebuilds. Re-open the segment ` +
+                     `and copy a fresh link.`, "warn");
+          return;
         }
+        const f = this.data.segments.features.find((x) => x.properties.seg_id === segId);
+        if (!f) {
+          showBanner(`Segment ${segId} is not in the current network build ` +
+                     `(its junction cluster may have been re-keyed).`, "warn");
+          return;
+        }
+        const mid = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)];
+        this.map?.map.jumpTo({ center: mid, zoom: 14.5 });
+        this._select(f.properties.sid);
       }, 800);
     }
     // Restore route selection deep-linked in the URL (names -> indices).
@@ -646,6 +660,16 @@ export class NetworkView {
       host.innerHTML = `<div class="nw-note">no delay-event data for this segment yet</div>`;
       return;
     }
+    // Stale-tab guard: dist files are stamped with the intersections-cache
+    // sha they were built against; a mismatch with the meta loaded at page
+    // start means the network data was rebuilt under this tab.
+    const metaSha = this.data.meta?.intersections_sha256;
+    if (d.sha && metaSha && !metaSha.startsWith(d.sha)) {
+      showBanner("Network data was rebuilt since this page loaded — " +
+                 "reload the page to get consistent segments.", "warn");
+      host.innerHTML = `<div class="nw-note">data version mismatch — reload the page</div>`;
+      return;
+    }
     this._distMode ??= "events"; // "events" | "seconds" | "queue"
     const secondsMode = this._distMode === "seconds";
     const queueMode = this._distMode === "queue";
@@ -814,20 +838,6 @@ export class NetworkView {
       road += `<rect data-tip="${st.name} bus stop" x="${(x - 6).toFixed(1)}" y="${roadY - 6}"
                width="12" height="${roadBodyH + 12}" rx="4" fill="#2f6fd6"/>`;
     }
-    // naive stop-bar estimate: white labeled vertical
-    const estLine = (ft, label, tip) => {
-      if (ft == null) return "";
-      const x = xOf(ft);
-      if (x < padL || x > W - padR) return "";
-      return `<g data-tip="${tip}">
-        <line x1="${x.toFixed(1)}" y1="${roadY - 4}" x2="${x.toFixed(1)}"
-              y2="${roadY + roadBodyH + 4}" stroke="#fff" stroke-width="2"/>
-        <text x="${x.toFixed(1)}" y="${roadY - 8}" text-anchor="middle"
-              style="font-size:9px;fill:#fff;font-weight:700;paint-order:stroke;stroke:#333;stroke-width:2.5px">${label}</text></g>`;
-    };
-    road += estLine(d.stopbar_ft, "stop bar",
-      `estimated stop bar: p15 of front-of-queue positions (${Math.round(d.stopbar_ft ?? 0)} ft)`);
-
     // feet scale
     const step = lenFt > 2000 ? 500 : lenFt > 800 ? 200 : 100;
     const axisY = roadY + roadBodyH + 12;

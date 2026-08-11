@@ -11,10 +11,11 @@ bins of distance-upstream-from-the-downstream-signal, per class:
           "door events" checkbox, excluded from n_events; dw_q counts use
           is_last_all — the dw-inclusive last-piece flag)
 
-Derived annotations (2026-07-31):
+Derived annotations:
 
-  * stop bar estimate — p15 of last-piece ('last stop') nd offsets,
-    n ≥ 30. Naive v1.
+  * (2026-08-10) the naive v1 stop-bar estimate was removed entirely per
+    user decision; ``sha`` (intersections sha prefix) stamps every file so
+    the dashboard can detect stale-tab / fresh-data mismatches.
 
 (2026-08-04: the yellow "queued for stop" reclassification was removed —
 under the event definitions almost no queued-for-stop delay survives as a
@@ -50,7 +51,6 @@ from dataio.cities import get_city  # noqa: E402
 BUCKET_FT = 10.0
 FT_PER_M = 3.28084
 
-MIN_N_ESTIMATES = 30                # support for stop-bar
 
 CLASSES = ["nd", "pre", "post", "post2", "dw"]
 
@@ -59,6 +59,7 @@ def build(city_id: str) -> None:
     city = get_city(city_id)
     base = REPO / "outputs" / "network" / city.city_id
     registry = json.loads((base / "segment_registry.json").read_text())
+    sha12 = registry["meta"]["intersections_sha256"][:12]
     seg_index = {s: i for i, s in enumerate(sorted(registry["segments"]))}
 
     # CTA keeps the original flat location; other cities nest under their id
@@ -154,19 +155,6 @@ def build(city_id: str) -> None:
         GROUP BY 1, 2, 3, 4
         """
     ).fetchall()
-
-    # ---- stop bar (naive v1) ---------------------------------------------
-    est = {
-        r[0]: r[1]
-        for r in con.execute(
-            f"""
-            SELECT seg_id, quantile_cont(off_down_m, 0.15) AS bar_m
-            FROM read_parquet('{glob}')
-            WHERE cls = 'nd' AND is_last GROUP BY 1
-            HAVING count(*) >= {MIN_N_ESTIMATES}
-            """
-        ).fetchall()
-    }
 
     per_seg: dict[str, dict] = {}
     per_seg_mv: dict[str, dict[str, dict]] = {}
@@ -300,18 +288,14 @@ def build(city_id: str) -> None:
                         arrs["gh_lo"], arrs["gh_hi"] = _ghost_arrays(mgh)
                     by[m] = arrs
                 payload["by_mvmt"] = by
-        bar_m = est.get(seg_id)
-        payload["stopbar_ft"] = (
-            round(bar_m * FT_PER_M, 1) if bar_m is not None else None
-        )
+        payload["sha"] = sha12
         n_events_total += total
         (out_dir / f"{sid}.json").write_text(json.dumps(payload))
         n_files += 1
 
-    n_bar = sum(1 for v in est.values() if v is not None)
     print(f"wrote {n_files} segment distribution files "
-          f"({n_events_total:,} classified events over {dates[0]} dates; "
-          f"stop-bar est on {n_bar:,} segs) → {out_dir}")
+          f"({n_events_total:,} classified events over {dates[0]} dates) "
+          f"→ {out_dir}")
 
 
 def main() -> None:

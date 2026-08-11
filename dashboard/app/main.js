@@ -334,7 +334,13 @@ function currentHash() {
     }
     if (F.direction) q.set("dir", F.direction);
     if (N.minN !== 10) q.set("minn", N.minN);
-    if (N.selected != null) q.set("seg", N.selected);
+    if (N.selected != null) {
+      // Stable deep links: seg= carries the seg_id (SIG_<up>__SIG_<down>),
+      // which survives registry rebuilds; the numeric sid does not.
+      const f = N.data?.segments?.features?.find(
+        (x) => x.properties.sid === N.selected);
+      q.set("seg", f ? f.properties.seg_id : N.selected);
+    }
     h += `?${q.toString()}`;
   }
   return h;
@@ -399,7 +405,11 @@ function applyHash() {
     if (params.has("active")) N.pendingActive = params.get("active");
     if (params.has("dir")) F.direction = params.get("dir");
     if (params.has("minn")) N.minN = Math.max(1, Number(params.get("minn")) || 10);
-    if (params.has("seg")) N.pendingSeg = Number(params.get("seg"));
+    if (params.has("seg")) {
+      const v = params.get("seg");
+      if (/^SIG_/.test(v)) N.pendingSegId = v;
+      else N.pendingSeg = Number(v);   // legacy numeric link -> warned in view
+    }
   }
   // reflect sub-tab button states
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
