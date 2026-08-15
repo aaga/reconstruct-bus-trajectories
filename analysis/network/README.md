@@ -57,6 +57,11 @@ PYTHONPATH=src uv run python analysis/network/door_events.py --city cta "<csv>" 
 PYTHONPATH=src uv run python analysis/network/door_join.py --city cta --verify-tz
 PYTHONPATH=src uv run python analysis/network/door_join.py --city cta
 
+# 4c. Delay events (distribution viz + event-classified metrics; ~7 h @ 8
+#     workers for the full archive — fold into the overnight batch)
+PYTHONPATH=src uv run python analysis/network/delay_events.py --city cta --workers 8
+PYTHONPATH=src uv run python analysis/network/build_distributions.py --city cta
+
 # 5. Dashboard payloads + areas of interest
 PYTHONPATH=src uv run python analysis/network/build_payloads.py --city cta
 PYTHONPATH=src uv run python analysis/network/areas_of_interest.py --city cta
@@ -94,6 +99,15 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
   (trip, segment) with enter/exit times from full LOCREG-PCHIP reconstruction
   (Eq 3.3 "last time at x", vectorized in
   `travel_time.last_times_at_boundaries`).
+- **Delay events** (`delay_events.py`, 2026-07-29 decisions): discrete
+  slowdown events (<5 mph ≥15 s on a 2 s dense grid) classified against door
+  cycles (`[open, open+dwell]`, verified empirically). Non-dwell = events
+  with zero door overlap; dwell = union(door ∪ overlapping events) for EVERY
+  door cycle (quick stops count); pax-weighted = nd events + >10 s pre/post
+  shoulders × load as-of last door close. Neither bucket sums to overall
+  delay (labeled "t_obs − t_ff"). Distribution viz buckets event locations
+  into 10 ft bins upstream of the downstream signal (nd red / pre turquoise
+  / post purple), events-or-seconds weighted.
 - **Door/APC sidecar** (`door_events.py` + `door_join.py`, 2026-07): CTA
   bus-state-history door cycles (dwell seconds + rear/front ons/offs +
   passenger load; event types 3 and 5 are both real passenger service) joined
@@ -122,6 +136,18 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
 - **seg_id stability**: every artifact embeds the sha256 of
   `intersections.json`; `build_payloads.py` refuses mismatched inputs. If the
   intersections cache is regenerated, rebuild EVERYTHING from step 1.
+
+## Hard-coded exceptions
+
+`src/dataio/exceptions.json` is the single committed home for hand-curated
+overrides — stop-coordinate fixes, door-peak rejects, cluster splits,
+segment pins, terminal-bay markers. Every entry records
+what/why/evidence/date; the schema and per-type value contracts live in
+`src/dataio/exceptions.py` (validates on load and standalone via
+`PYTHONPATH=src uv run python src/dataio/exceptions.py`). Consumed by
+`dataio.intersections` (cluster_split at per-shape clustering),
+`analysis/network/registry.py` (cluster_split at global clustering;
+terminal_stop / door_peak_reject / stop_coord_override at stop location).
 
 ## Adding a city
 

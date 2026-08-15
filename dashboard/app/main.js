@@ -17,7 +17,7 @@ import { TrajectoryView } from "./views/trajectory_view.js";
 import { SpeedView } from "./views/speed_view.js";
 import { OverallDelayView } from "./views/overall_delay_view.js";
 import { DelayView } from "./views/delay_view.js";
-import { NetworkData } from "./network_data.js";
+import { NetworkData, NETWORK_CITIES } from "./network_data.js";
 import { NetworkView, METRICS } from "./views/network_view.js";
 import { AreasView } from "./views/areas_view.js";
 
@@ -45,6 +45,7 @@ const S = {
   // Network tab (see views/network_view.js)
   ntab: "map",                  // "map" | "areas"
   network: {
+    city: "cta",                // NETWORK_CITIES key (Chicago | Boston)
     data: null,                 // NetworkData (lazy, cached across tab switches)
     map: null,                  // NetworkMap (owned by NetworkView)
     filters: { routes: [], direction: null,
@@ -179,7 +180,10 @@ async function renderNetwork() {
     try {
       // Cache the init promise: startup can trigger two renders (hash apply +
       // init flow) and both must share one NetworkData (and one download set).
-      if (!S.network._dataPromise) S.network._dataPromise = new NetworkData().init();
+      if (!S.network._dataPromise) {
+        S.network._dataPromise =
+          new NetworkData(NETWORK_CITIES[S.network.city].base).init();
+      }
       S.network.data = await S.network._dataPromise;
     } catch (err) {
       $("chart").innerHTML = `<div class="nw-empty">Network payloads missing —
@@ -187,8 +191,28 @@ async function renderNetwork() {
       return;
     }
   }
+  document.querySelectorAll("#ntabs [data-ncity]").forEach((b) =>
+    b.classList.toggle("active", b.dataset.ncity === S.network.city));
   await networkView.render();
   $("chart").innerHTML = "";
+}
+
+// Full reset: per-city payloads, route indices, selections, and the map
+// (camera + source) are all city-specific.
+function switchNetworkCity(city) {
+  if (!NETWORK_CITIES[city] || city === S.network.city) return;
+  networkView.destroy();
+  const N = S.network;
+  N.city = city;
+  N.data = null;
+  N._dataPromise = null;
+  N.selected = null;
+  N.checkedRoutes = [];
+  N.activeRoute = null;
+  N.pendingSeg = null;
+  N.filters.routes = [];
+  N.filters.direction = null;
+  render();
 }
 
 function teardownNetwork() {
@@ -291,6 +315,7 @@ function currentHash() {
     const N = S.network;
     const F = N.filters;
     const q = new URLSearchParams();
+    if (N.city !== "cta") q.set("city", N.city);
     q.set("metric", N.metric);
     q.set("stat", N.stat);
     if (N.compare) q.set("cmp", N.compare);
@@ -309,6 +334,13 @@ function currentHash() {
     }
     if (F.direction) q.set("dir", F.direction);
     if (N.minN !== 10) q.set("minn", N.minN);
+    if (N.selected != null) {
+      // Stable deep links: seg= carries the seg_id (SIG_<up>__SIG_<down>),
+      // which survives registry rebuilds; the numeric sid does not.
+      const f = N.data?.segments?.features?.find(
+        (x) => x.properties.sid === N.selected);
+      q.set("seg", f ? f.properties.seg_id : N.selected);
+    }
     h += `?${q.toString()}`;
   }
   return h;
@@ -334,6 +366,19 @@ function applyHash() {
   if (main === "network") {
     const N = S.network;
     const F = N.filters;
+    const city = params.get("city") ?? "cta";
+    if (NETWORK_CITIES[city] && city !== N.city) {
+      // City change via URL: everything downstream is city-specific.
+      networkView.destroy();
+      N.city = city;
+      N.data = null;
+      N._dataPromise = null;
+      N.selected = null;
+      N.checkedRoutes = [];
+      N.activeRoute = null;
+      F.routes = [];
+      F.direction = null;
+    }
     const metric = params.get("metric");
     if (metric && METRICS[metric]) N.metric = metric;
     const stat = params.get("stat");
@@ -360,6 +405,11 @@ function applyHash() {
     if (params.has("active")) N.pendingActive = params.get("active");
     if (params.has("dir")) F.direction = params.get("dir");
     if (params.has("minn")) N.minN = Math.max(1, Number(params.get("minn")) || 10);
+    if (params.has("seg")) {
+      const v = params.get("seg");
+      if (/^SIG_/.test(v)) N.pendingSegId = v;
+      else N.pendingSeg = Number(v);   // legacy numeric link -> warned in view
+    }
   }
   // reflect sub-tab button states
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
@@ -438,13 +488,15 @@ async function init() {
       b.classList.add("active");
       S.atab = b.dataset.atab; render();
     }));
-  // Network sub-tabs
-  document.querySelectorAll("#ntabs button").forEach((b) =>
+  // Network sub-tabs (city buttons are separate — they carry data-ncity)
+  document.querySelectorAll("#ntabs button[data-ntab]").forEach((b) =>
     (b.onclick = () => {
-      document.querySelectorAll("#ntabs button").forEach((x) => x.classList.remove("active"));
+      document.querySelectorAll("#ntabs button[data-ntab]").forEach((x) => x.classList.remove("active"));
       b.classList.add("active");
       S.ntab = b.dataset.ntab; render();
     }));
+  document.querySelectorAll("#ntabs button[data-ncity]").forEach((b) =>
+    (b.onclick = () => switchNetworkCity(b.dataset.ncity)));
 
   const bind = (id, key) => { $(id).onchange = (e) => { S.toggles[key] = e.target.checked; render(); }; };
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");

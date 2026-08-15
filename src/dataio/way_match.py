@@ -58,8 +58,9 @@ _VALHALLA_FILTERS = (
     "edge.speed",
     "edge.begin_shape_index",
     "edge.end_shape_index",
-    "edge.source_percent_along",
-    "edge.target_percent_along",
+    # NB: edge.source_percent_along / target_percent_along were removed in
+    # Valhalla 3.7 (it logs "Invalid filter attribute" per request) and our
+    # code never read them — distances come from the shape indices above.
     "matched.type",
     "matched.edge_index",
     "matched.point",
@@ -333,10 +334,12 @@ def match_shape(
     """End-to-end map-match for one GTFS shape."""
     polyline, dist = load_gtfs_shape_with_dist(gtfs_zip_path, shape_id)
     if dist is None:
-        raise ValueError(
-            f"shape {shape_id!r} has no shape_dist_traveled in shapes.txt; "
-            "cannot anchor segments to a route ruler"
-        )
+        # Feed omits shape_dist_traveled (MBTA): use the pipeline-wide
+        # equirectangular ruler — the same fallback every SnapToShapeMatcher
+        # applies internally, so all distances stay in one space.
+        from core.mapmatch.shape_snap import equirect_cumulative_m
+
+        dist = equirect_cumulative_m(polyline)
     response = call_valhalla(polyline, endpoint=endpoint, costing=costing, timeout_s=timeout_s)
     return extract_segments(response, polyline, dist)
 

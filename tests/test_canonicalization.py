@@ -61,6 +61,37 @@ class _CP:
         self.dist_along_route_m = x
 
 
+
+
+def test_cluster_nodes_extra_edges_union_via_anchor():
+    """Per-approach signals ~65 m apart (beyond the 30 m radius) union into
+    one cluster through signal->anchor edges + anchor vertices as members
+    (the anchors of one junction sit within the radius of each other)."""
+    positions = {
+        # two approach signals straddling a junction, ~82 m apart, each
+        # ~36 m from its own anchor (outside the 30 m radius, inside the
+        # 40 m anchor rule) — distance alone must NOT merge anything here
+        101: (41.91013, -87.67755),
+        102: (41.91087, -87.67765),
+        # their (distinct) anchor junction vertices, ~14 m apart
+        901: (41.91045, -87.67755),
+        902: (41.91055, -87.67765),
+    }
+    usage = {101: 3, 102: 3}
+    primary = {101, 102}
+    canon = cluster_nodes(
+        positions, usage, radius_m=30.0, primary=primary,
+        extra_edges=[(101, 901), (102, 902)],
+    )
+    assert canon[101] == canon[102]          # one boundary cluster
+    assert canon[101] in primary             # rep is a real signal, not an anchor
+    # edges referencing unknown ids are ignored, not fatal
+    canon2 = cluster_nodes(positions, usage, radius_m=30.0, primary=primary,
+                           extra_edges=[(101, 999999)])
+    assert canon2[101] != canon2[102]
+
+
+
 def test_dedupe_keeps_first_of_each_run():
     canon = {1: 1, 2: 1, 3: 3, 4: 3, 5: 5}
     sigs = [_CP(1, 0), _CP(2, 15), _CP(3, 300), _CP(4, 318), _CP(5, 700)]
@@ -74,7 +105,12 @@ def test_dedupe_keeps_first_of_each_run():
 
 @pytest.fixture()
 def synthetic(tmp_path):
-    """Two old segs A->P, P->B on shape S1 mapping to canonical A->B."""
+    """Canonical-keyed traversals (post-2026-07 regen): identity view.
+
+    Shape S1 has one plain segment and one canonical segment it crosses
+    TWICE (loop shape, k=2) — the view must merge full loop coverage
+    exactly and exclude partial coverage.
+    """
     rows = []
     t0 = pd.Timestamp("2026-05-05 13:00:00", tz="UTC")
 
@@ -90,24 +126,28 @@ def synthetic(tmp_path):
             "hour_local": 8, "period": "am_peak", "flags": flags,
         }
 
-    # trip1: full coverage (both constituents, contiguous at t=+40)
-    rows += [row("trip1", "SIG_A__SIG_P", 0, 40), row("trip1", "SIG_P__SIG_B", 40, 95)]
-    # trip2: partial coverage (only first constituent) -> excluded
-    rows += [row("trip2", "SIG_A__SIG_P", 0, 38)]
-    # trip3: full, one part terminal-flagged -> merged flags carry the bit
-    rows += [row("trip3", "SIG_A__SIG_P", 0, 45), row("trip3", "SIG_P__SIG_B", 45, 90, flags=1)]
+    # trip1: plain single-crossing canonical segment
+    rows += [row("trip1", "SIG_A__SIG_B", 0, 95)]
+    # trip2: loop segment, only the FIRST of two crossings -> excluded (n_parts < k)
+    rows += [row("trip2", "SIG_L__SIG_M", 0, 38)]
+    # trip3: both loop crossings, second terminal-flagged -> merged, flag carried
+    rows += [row("trip3", "SIG_L__SIG_M", 0, 45),
+             row("trip3", "SIG_L__SIG_M", 300, 345, flags=1)]
 
     df = pd.DataFrame(rows)
     path = tmp_path / "service_date=2026-05-05"
     path.mkdir()
     pq.write_table(pa.Table.from_pandas(df), path / "route=22.parquet")
 
-    registry = {"traversal_map": {"S1": [["SIG_A__SIG_P", "SIG_A__SIG_B"],
-                                         ["SIG_P__SIG_B", "SIG_A__SIG_B"]]}}
+    registry = {"shapes": {"S1": {"seg_bounds": [
+        ["SIG_A__SIG_B", 0.0, 200.0],
+        ["SIG_L__SIG_M", 300.0, 500.0],
+        ["SIG_L__SIG_M", 900.0, 1100.0],
+    ]}}}
     return str(tmp_path / "service_date=*" / "route=*.parquet"), registry
 
 
-def test_view_merges_exactly_and_enforces_coverage(synthetic):
+def test_view_identity_merges_loops_and_enforces_coverage(synthetic):
     glob, registry = synthetic
     con = duckdb.connect()
     create_canonical_view(con, glob, registry, get_city("cta"))
@@ -115,29 +155,25 @@ def test_view_merges_exactly_and_enforces_coverage(synthetic):
         "SELECT trip_key, t_obs_s, flags, hour_local, period FROM trav ORDER BY trip_key"
     ).fetchall()
     by_trip = {r[0]: r for r in got}
-    assert set(by_trip) == {"trip1", "trip3"}  # trip2 lacked coverage
-    assert by_trip["trip1"][1] == pytest.approx(95.0)  # 40 + 55, exact
-    assert by_trip["trip3"][1] == pytest.approx(90.0)
+    assert set(by_trip) == {"trip1", "trip3"}  # trip2 covered 1 of 2 loop parts
+    assert by_trip["trip1"][1] == pytest.approx(95.0)
+    assert by_trip["trip3"][1] == pytest.approx(90.0)  # 45 + 45, exact
     assert by_trip["trip3"][2] & 1  # terminal flag propagated
     # 13:00 UTC == 08:00 Chicago -> am_peak (regression for the tz double-conversion bug)
     assert by_trip["trip1"][3] == 8
     assert by_trip["trip1"][4] == "am_peak"
 
 
-def test_view_door_sidecar_merge(synthetic, tmp_path):
-    """Door sidecar sums over constituents; uncovered trips report has_door=False."""
+def test_view_door_sidecar_join(synthetic, tmp_path):
+    """Door columns join per stored (trip_key, seg_id); uncovered trips
+    report has_door=False."""
     glob, registry = synthetic
     side = tmp_path / "door_sidecar"
     side.mkdir()
-    # trip1's vehicle covered: rows for BOTH constituents (12s + 20s dwell,
-    # 3+2 ons); trip3's vehicle NOT covered (no rows at all).
     df = pd.DataFrame([
-        {"trip_key": "trip1", "seg_id": "SIG_A__SIG_P", "shape_id": "S1",
-         "door_n": 1, "dwell_s": 12.0, "ons": 3, "offs": 1, "load_sum": 20,
+        {"trip_key": "trip1", "seg_id": "SIG_A__SIG_B", "shape_id": "S1",
+         "door_n": 3, "dwell_s": 32.0, "ons": 5, "offs": 1, "load_sum": 61,
          "load_in": 17},
-        {"trip_key": "trip1", "seg_id": "SIG_P__SIG_B", "shape_id": "S1",
-         "door_n": 2, "dwell_s": 20.0, "ons": 2, "offs": 0, "load_sum": 41,
-         "load_in": 20},
     ])
     pq.write_table(pa.Table.from_pandas(df), side / "service_date=2026-05-05.parquet")
 
@@ -150,11 +186,11 @@ def test_view_door_sidecar_merge(synthetic, tmp_path):
         "SELECT trip_key, has_door, door_n, dwell_s, ons, offs, load_sum, load_in FROM trav"
     ).fetchall()}
     assert got["trip1"][1] is True
-    assert got["trip1"][2] == 3          # 1 + 2 door cycles
+    assert got["trip1"][2] == 3
     assert got["trip1"][3] == pytest.approx(32.0)
     assert got["trip1"][4] == 5 and got["trip1"][5] == 1
     assert got["trip1"][6] == 61
-    assert got["trip1"][7] == 17         # load entering the merged span (as-of first constituent)
+    assert got["trip1"][7] == 17
     assert got["trip3"][1] is False      # vehicle-day not covered
     assert got["trip3"][3] == pytest.approx(0.0)
 

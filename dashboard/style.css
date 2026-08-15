@@ -231,11 +231,16 @@ body.network-areas .nw-panel { left: calc(46% + 10px); }
 
 /* Detail panel */
 .nw-detail {
-  position: absolute; top: 10px; right: 10px; z-index: 5; width: 356px;
-  background: rgba(255,255,255,.97); border: 1px solid #ddd; border-radius: 10px;
-  padding: 10px 12px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.14);
+  /* 2026-08-11: half-window, left-aligned, opaque — deliberately covers
+     the filters sidebar; the map auto-frames the segment on the right. */
+  position: absolute; top: 10px; left: 10px; z-index: 50;
+  width: calc(60vw - 20px); min-width: 0; max-width: none;
+  max-height: calc(100% - 20px); overflow-y: auto;
+  background: #fff; border: 1px solid #ddd; border-radius: 10px;
+  padding: 10px 12px; font-size: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.22);
 }
-.nw-detail h3 { margin: 0 14px 6px 0; font-size: 13px; line-height: 1.35; }
+.nw-detail .dist-svg { width: 100%; height: auto; }
+.nw-detail h3 { margin: 0 16px 8px 0; font-size: 16px; font-weight: 700; line-height: 1.35; }
 .nw-detail .nw-close { position: absolute; top: 4px; right: 6px; border: none;
   background: none; font-size: 15px; cursor: pointer; color: #666; }
 .nw-chips { margin: 4px 0; }
@@ -245,7 +250,7 @@ body.network-areas .nw-panel { left: calc(46% + 10px); }
 .chip-corridor { background: #f3eefa; border-color: #d9cdea; }
 .chip-route { background: #eefaf0; border-color: #cdeacd; }
 .nw-facts { color: #555; margin: 4px 0 8px; line-height: 1.5; }
-.nw-ptable { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.nw-ptable { border-collapse: collapse; width: 100%; max-width: 380px; font-variant-numeric: tabular-nums; }
 .nw-ptable th, .nw-ptable td { text-align: right; padding: 2px 6px; border-bottom: 1px solid #eee; }
 .nw-ptable td:first-child, .nw-ptable th:first-child { text-align: left; }
 
@@ -345,3 +350,26 @@ body.network-areas .nw-legend { left: calc(46% + 10px); }
   font-size: 10px; padding: 0 6px; color: #345; line-height: 16px;
 }
 .nw-dirbtns button.on { background: #2d4a75; border-color: #2d4a75; color: #fff; font-weight: 600; }
+
+/* delay-location distribution */
+.dist-rule { border: none; border-top: 1px solid #e2e2e2; margin: 12px 0 10px; }
+.dist-head { font-weight: 600; font-size: 14px; color: #223; margin: 0 0 6px; }
+.dist-svg { display: block; }
+.dist-tick { font-size: 12px; fill: #666; }
+.dist-legend { display: flex; gap: 16px; font-size: 12px; color: #444; margin-top: 4px; }
+.dist-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 4px; vertical-align: -1px; }
+
+.dist-toggle { display: inline-flex; gap: 2px; margin-left: 8px; vertical-align: 1px; }
+.dist-toggle button { border: 1px solid #ccc; background: #fff; border-radius: 4px;
+  font-size: 10px; padding: 0 7px; cursor: pointer; color: #555; }
+.dist-toggle button.on { background: #2d4a75; border-color: #2d4a75; color: #fff; }
+
+/* Network city switcher (Chicago | Boston) — right of the sub-tab pills */
+#ntabs .ntab-city {
+  margin-left: 18px;
+  padding-left: 16px;
+  border-left: 1px solid #c9ced6;
+  display: inline-flex;
+  gap: 6px;
+}

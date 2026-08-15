@@ -120,6 +120,10 @@ def build_sidecar(city: CityConfig, force: bool = False) -> None:
                        passenger_load
                 FROM read_parquet('{ev_glob}')
                 WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{d}'
+                  -- zero-activity cycles ignored (2026-07-31, kept
+                  -- consistent with delay_events._door_intervals)
+                  AND coalesce(ron,0) + coalesce(roff,0)
+                      + coalesce(fon,0) + coalesce(foff,0) > 0
               ),
               covered AS (SELECT DISTINCT bus_id FROM ev),
               tr AS (

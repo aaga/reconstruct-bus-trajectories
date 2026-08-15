@@ -91,10 +91,45 @@ def _aggregate(
 ) -> "duckdb.DuckDBPyRelation":
     """One duckdb query: filter, join attrs + freeflow, bin, histogram."""
     con = duckdb.connect()
+    # The event_sums join (20M+ rows) can blow past duckdb's default 80%-of-
+    # RAM ceiling on a loaded machine — cap it and let it spill to disk.
+    spill = REPO / "outputs" / "network" / "duckdb_spill"
+    spill.mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET temp_directory='{spill}'")
+    con.execute("SET memory_limit='12GB'")
+    con.execute("SET preserve_insertion_order=false")
+    # 2 threads: the event_sums hash join's per-thread build buffers OOM'd
+    # the 12 GB cap at 4 threads (MBTA writes sums for every trip in
+    # no-door mode — larger join than CTA's door-covered subset).
+    con.execute("SET threads=2")
     sidecar = str(
         REPO / "outputs" / "network" / city.city_id / "door_sidecar" / "service_date=*.parquet"
     )
     create_canonical_view(con, traversals_glob, registry, city, door_sidecar_glob=sidecar)
+
+    # Event-classified per-traversal sums (delay_events.py): nd_event_s,
+    # dwell_union_s, pax_event_s keyed by (trip_key, seg_id). A missing row on
+    # an event-covered date is a true zero (no events, no door cycles in the
+    # segment); dates the event batch never processed must NOT count as door-
+    # covered, so has_door is tightened to event-covered dates.
+    import glob as _globmod
+    su_dir = REPO / "outputs" / "network" / city.city_id / "event_sums"
+    su_files = _globmod.glob(str(su_dir / "service_date=*" / "route=*.parquet"))
+    es_dates = sorted({Path(f).parent.name.split("=")[1] for f in su_files})
+    con.execute("CREATE TABLE es_dates(date_iso TEXT)")
+    if es_dates:  # no-door cities have no event_sums at all
+        con.executemany("INSERT INTO es_dates VALUES (?)", [(d,) for d in es_dates])
+    if su_files:
+        con.execute(
+            f"""CREATE VIEW es AS
+            SELECT trip_key, seg_id, nd_event_s, dwell_union_s, pax_event_s
+            FROM read_parquet('{su_dir}/service_date=*/route=*.parquet')"""
+        )
+    else:
+        con.execute(
+            """CREATE VIEW es AS SELECT NULL::TEXT trip_key, NULL::TEXT seg_id,
+            0.0 nd_event_s, 0.0 dwell_union_s, 0.0 pax_event_s WHERE FALSE"""
+        )
 
     # Lookup tables.
     ff_rows = [(k, v["t_ff_s"]) for k, v in freeflow["freeflow"].items()]
@@ -134,9 +169,8 @@ def _aggregate(
     bucket_cols = hist_cols("ratio", HIST_EDGES, "h")
     door = "t.has_door"
     bucket_cols += hist_cols("(t.dwell_s / t.t_ff_s)", DWELL_EDGES, "hd", door)
-    bucket_cols += hist_cols(
-        "((t.t_obs_s - t.dwell_s) / t.t_ff_s)", HIST_EDGES, "hn", door
-    )
+    # nd_event_s is 0-centric absolute seconds → dwell-style edges on nd/t_ff.
+    bucket_cols += hist_cols("(t.nd_s / t.t_ff_s)", DWELL_EDGES, "hn", door)
     bucket_cols += hist_cols("t.pax_s", PAX_EDGES, "hp", door)
 
     seg_enc = {s: i for i, s in enumerate(dims["seg_ids"])}
@@ -154,12 +188,18 @@ def _aggregate(
         tr.t_obs_s, ff.t_ff_s,
         (tr.t_obs_s - ff.t_ff_s) AS delay_s,
         (tr.t_obs_s / ff.t_ff_s) AS ratio,
-        tr.has_door, tr.dwell_s, tr.ons, tr.offs, tr.load_sum,
-        -- passenger-weighted NON-DWELL delay (pax-seconds): the load carried
-        -- into the segment applies to all between-stop delay, per user spec
-        ((tr.t_obs_s - tr.dwell_s - ff.t_ff_s) * least(tr.load_in, 150)) AS pax_s
+        -- door metrics are EVENT-CLASSIFIED (delay_events.py): dwell = union
+        -- of every door cycle ∪ overlapping delay events; nd = events with
+        -- zero door overlap; pax = (nd + >10 s boarding shoulders) × load.
+        (tr.has_door AND strftime(tr.service_date, '%Y-%m-%d') IN
+           (SELECT date_iso FROM es_dates)) AS has_door,
+        COALESCE(es.dwell_union_s, 0.0) AS dwell_s,
+        COALESCE(es.nd_event_s, 0.0) AS nd_s,
+        COALESCE(es.pax_event_s, 0.0) AS pax_s,
+        tr.ons, tr.offs, tr.load_sum
       FROM trav tr
       JOIN ff ON ff.seg_id = tr.seg_id
+      LEFT JOIN es ON es.trip_key = tr.trip_key AND es.seg_id = tr.seg_id
       WHERE tr.t_obs_s > 0
         AND tr.max_gap_in_seg_s <= {MAX_GAP_S}
         AND (tr.flags & {FLAG_TOUCHED_TERMINAL}) = 0
@@ -178,12 +218,13 @@ def _aggregate(
       COUNT(*) FILTER (WHERE t.has_door)::BIGINT AS n_door,
       COALESCE(SUM(t.dwell_s)  FILTER (WHERE t.has_door), 0.0) AS sum_dwell,
       COALESCE(SUM(t.delay_s)  FILTER (WHERE t.has_door), 0.0) AS sum_delay_door,
+      COALESCE(SUM(t.nd_s)     FILTER (WHERE t.has_door), 0.0) AS sum_nd,
       COALESCE(SUM(t.ons)      FILTER (WHERE t.has_door), 0)   AS sum_ons,
       COALESCE(SUM(t.offs)     FILTER (WHERE t.has_door), 0)   AS sum_offs,
       COALESCE(SUM(t.load_sum) FILTER (WHERE t.has_door), 0)   AS sum_load,
       COALESCE(VAR_POP(t.dwell_s) FILTER (WHERE t.has_door)
                * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_dw,
-      COALESCE(VAR_POP(t.delay_s - t.dwell_s) FILTER (WHERE t.has_door)
+      COALESCE(VAR_POP(t.nd_s) FILTER (WHERE t.has_door)
                * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_nd,
       COALESCE(SUM(t.pax_s) FILTER (WHERE t.has_door), 0.0) AS sum_pax,
       COALESCE(VAR_POP(t.pax_s) FILTER (WHERE t.has_door)
@@ -205,6 +246,7 @@ SHARD_DTYPES = {
     # door/APC (zero when the bin's dates precede door coverage);
     # sum_load stays un-surfaced in the UI for now, by design.
     "n_door": "<u2", "sum_dwell": "<f4", "sum_delay_door": "<f4",
+    "sum_nd": "<f4",
     "sum_ons": "<f4", "sum_offs": "<f4", "sum_load": "<f4",
     "m2_dw": "<f4", "m2_nd": "<f4", "sum_pax": "<f4", "m2_pax": "<f4",
     **{f"h{b}": "<u2" for b in range(N_BUCKETS)},
@@ -285,6 +327,7 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
             "n_door": sub.n_door.to_numpy(),
             "sum_dwell": sub.sum_dwell.to_numpy(),
             "sum_delay_door": sub.sum_delay_door.to_numpy(),
+            "sum_nd": sub.sum_nd.to_numpy(),
             "sum_ons": sub.sum_ons.to_numpy(),
             "sum_offs": sub.sum_offs.to_numpy(),
             "sum_load": sub.sum_load.to_numpy(),
@@ -337,6 +380,10 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
                     ],
                     "rev_sid": seg_index.get(rec["rev_seg_id"]),
                     "n_stops": rec["n_stops"],
+                    "stops_off": rec.get("stops_off", []),
+                    "crossings_off": rec.get("crossings_off", []),
+                    "stop_signs_off": rec.get("stop_signs_off", []),
+                    "junctions_off": rec.get("junctions_off", []),
                 },
             }
         )

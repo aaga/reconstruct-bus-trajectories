@@ -58,10 +58,51 @@ def _read_shapes(gtfs_zip_path: str) -> dict[str, dict]:
         if all(s != "" for s in sdt_strs):
             # CTA stores shape_dist_traveled in feet.
             dist_m = np.array([float(s) / 3.28084 for s in sdt_strs], dtype=float)
+            dist_m = _repair_dist(polyline, dist_m)
         else:
             dist_m = None
         out[sid] = {"polyline": polyline, "dist_along_m": dist_m}
     return out
+
+
+# CTA's shapes.txt is riddled with ruler glitches (2026-07 survey: 761/816
+# shapes, 55k vertices): duplicated vertices carrying shape_dist_traveled=0
+# and neighbors with inflated deltas. Points projecting into a glitched
+# stretch collapse onto one ruler value — a far-side stop 33 m past a signal
+# reported the signal's own distance, landing it in the wrong segment.
+_REPAIR_DISCARD_FRAC = 0.20  # column too broken to trust at all
+
+
+def _repair_dist(polyline: np.ndarray, dist_m: np.ndarray) -> np.ndarray | None:
+    """Enforce a strictly usable ruler: non-monotone entries (drops and
+    zero-resets) are treated as missing and re-interpolated between the
+    surrounding valid anchors, weighted by physical arc length. Returns
+    None (→ callers fall back to the equirect ruler) when more than
+    _REPAIR_DISCARD_FRAC of vertices are invalid."""
+    n = len(dist_m)
+    if n < 2:
+        return dist_m
+    valid = np.ones(n, dtype=bool)
+    last = dist_m[0]
+    for i in range(1, n):
+        if dist_m[i] <= last:  # includes the zero-reset pattern
+            valid[i] = False
+        else:
+            last = dist_m[i]
+    if valid.all():
+        return dist_m
+    if (~valid).sum() > _REPAIR_DISCARD_FRAC * n:
+        return None
+    # arc-length position of every vertex (equirectangular, local)
+    lat0 = float(polyline[:, 0].mean())
+    dx = np.diff(polyline[:, 1]) * 111320.0 * np.cos(np.radians(lat0))
+    dy = np.diff(polyline[:, 0]) * 111320.0
+    arc = np.concatenate([[0.0], np.cumsum(np.hypot(dx, dy))])
+    fixed = dist_m.astype(float).copy()
+    iv = np.flatnonzero(valid)
+    fixed[~valid] = np.interp(arc[~valid], arc[iv], dist_m[iv])
+    # exact monotonicity even where interp plateaus (zero-length arcs)
+    return np.maximum.accumulate(fixed)
 
 
 def load_gtfs_shape(gtfs_zip_path: str | Path, shape_id: str) -> np.ndarray:
@@ -118,13 +159,21 @@ def _read_routes_and_trips(gtfs_zip_path: str) -> tuple[dict[str, str], list[dic
     return route_type, trips
 
 
-def list_shape_ids(gtfs_zip_path: str | Path, route_type: str | None = None) -> list[str]:
+def list_shape_ids(
+    gtfs_zip_path: str | Path,
+    route_type: str | None = None,
+    exclude_route_prefixes: tuple[str, ...] = (),
+) -> list[str]:
     """Distinct shape_ids referenced by trips on routes of ``route_type``.
 
     ``route_type`` follows GTFS conventions: ``"3"`` = bus, ``"0"`` = tram,
     ``"1"`` = subway/metro, ``"2"`` = rail, etc. ``None`` = no filter (all
     shape_ids referenced by any trip). The function ignores shape_ids that
     appear in ``shapes.txt`` but are not referenced by any trip.
+
+    ``exclude_route_prefixes`` drops routes by id prefix — e.g. MBTA files
+    its 200+ rail-replacement shuttles as route_type 3 with ids like
+    ``Shuttle-…``; they are not scheduled bus service.
     """
     route_type_map, trips = _read_routes_and_trips(str(Path(gtfs_zip_path).resolve()))
     out: set[str] = set()
@@ -135,13 +184,22 @@ def list_shape_ids(gtfs_zip_path: str | Path, route_type: str | None = None) -> 
             rt = route_type_map.get(t["route_id"])
             if rt != route_type:
                 continue
+        if exclude_route_prefixes and t["route_id"].startswith(exclude_route_prefixes):
+            continue
         out.add(t["shape_id"])
     return sorted(out)
 
 
-def list_bus_shapes(gtfs_zip_path: str | Path) -> list[str]:
+def list_bus_shapes(
+    gtfs_zip_path: str | Path,
+    exclude_route_prefixes: tuple[str, ...] = (),
+) -> list[str]:
     """Convenience wrapper: distinct shape_ids on bus routes (``route_type=3``)."""
-    return list_shape_ids(gtfs_zip_path, route_type=GTFS_ROUTE_TYPE_BUS)
+    return list_shape_ids(
+        gtfs_zip_path,
+        route_type=GTFS_ROUTE_TYPE_BUS,
+        exclude_route_prefixes=exclude_route_prefixes,
+    )
 
 
 _FT_PER_M = 3.28084

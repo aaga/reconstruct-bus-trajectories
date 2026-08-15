@@ -33,6 +33,7 @@ smoothed trajectory point at the same distance value.
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -72,6 +73,16 @@ DEFAULT_PERP_THRESHOLD_M = 30.0
 # as Y/X-junctions where two cross-streets converge on one signal cycle.
 DEFAULT_CLUSTER_GAP_M = 30.0
 
+# OSM highway-class ranking for the cluster-hierarchy location rule.
+# ``service`` is deliberately absent: driveway/parking-aisle crossings never
+# win a cluster. ``*_link`` ranks half a class below its parent.
+_HIGHWAY_RANK: dict[str, float] = {
+    "motorway": 9, "trunk": 8, "primary": 7, "secondary": 6, "tertiary": 5,
+    "unclassified": 4, "residential": 3, "living_street": 2, "busway": 2,
+}
+_HIGHWAY_RANK.update({f"{k}_link": v - 0.5 for k, v in list(_HIGHWAY_RANK.items())
+                      if k not in ("living_street", "busway")})
+
 # Default control types to keep in the output. give_way is dropped by
 # default since OSM tagging of yields on bus arterials is sparse and noisy.
 DEFAULT_KEEP_TYPES: tuple[str, ...] = (
@@ -79,6 +90,10 @@ DEFAULT_KEEP_TYPES: tuple[str, ...] = (
     "stop",
     "ped_crossing_signal",
     "ped_crossing_marked",
+    # Street-street vertices with no control (2026-07: kept for the network
+    # dashboard's road-strip junction markers; never a segment boundary and
+    # excluded from Segment.crossings).
+    "uncontrolled_junction",
 )
 
 # Pedestrian crossings within this along-route distance of an intersection
@@ -300,53 +315,137 @@ def _direction_applies(direction_tag: str | None, bus_direction: str) -> bool:
     return True
 
 
+_SPLIT_SIDES_CACHE: dict[int, tuple[int, int]] | None = None
+
+
+def _cluster_split_sides() -> dict[int, tuple[int, int]]:
+    """Cached node -> (divide, side) map from the exceptions registry."""
+    global _SPLIT_SIDES_CACHE
+    if _SPLIT_SIDES_CACHE is None:
+        from dataio.exceptions import load_all_cluster_splits
+        _SPLIT_SIDES_CACHE = load_all_cluster_splits()
+    return _SPLIT_SIDES_CACHE
+
+
+def _split_side(node_id: int, split_sides: dict[int, tuple[int, int]]):
+    return split_sides.get(node_id)
+
+
+def _split_allows(members: list[ControlPoint], cp: ControlPoint,
+                  split_sides: dict[int, tuple[int, int]]) -> bool:
+    """True unless adding ``cp`` would put nodes from both sides of a
+    cluster_split divide into one cluster."""
+    s = _split_side(cp.intersection_node_id, split_sides)
+    if s is None:
+        return True
+    divide, side = s
+    for m in members:
+        ms = _split_side(m.intersection_node_id, split_sides)
+        if ms is not None and ms[0] == divide and ms[1] != side:
+            return False
+    return True
+
+
+def _cluster_rep(members: list[ControlPoint]) -> ControlPoint:
+    """Representative of one cluster under the 2026-08 location rule.
+
+    Identity (``intersection_node_id``, ``first_node_id``) is the FIRST
+    member in route order — segment ids stay keyed to real, stable OSM
+    nodes. The LOCATION (lat/lon and dist_along_route_m alike) is:
+
+      1. the unique cross-way-class winner among members
+         (``loc_source="hierarchy"``, ``main_node_id`` = winner), else
+      2. the midpoint of the first and last members
+         (``loc_source="midpoint"``, ``main_node_id=None``).
+
+    Single-member clusters keep their own position
+    (``loc_source="single"``, ``main_node_id`` = themselves).
+    """
+    import dataclasses
+
+    first = members[0]
+    if len(members) == 1:
+        return dataclasses.replace(
+            first,
+            first_node_id=first.intersection_node_id,
+            main_node_id=first.intersection_node_id,
+            loc_source="single",
+        )
+    last = members[-1]
+    names: set[str] = set()
+    for m in members:
+        names |= set(m.cross_street_names)
+    ranks = [m.cross_way_rank for m in members]
+    valid = [r for r in ranks if r is not None]
+    winner = None
+    if valid:
+        top = max(valid)
+        winners = [m for m in members if m.cross_way_rank == top]
+        if len(winners) == 1:
+            winner = winners[0]
+    if winner is not None:
+        lat, lon = winner.lat, winner.lon
+        dist = winner.dist_along_route_m
+        main, src = winner.intersection_node_id, "hierarchy"
+    else:
+        lat = (first.lat + last.lat) / 2
+        lon = (first.lon + last.lon) / 2
+        dist = (first.dist_along_route_m + last.dist_along_route_m) / 2
+        main, src = None, "midpoint"
+    return ControlPoint(
+        intersection_node_id=first.intersection_node_id,
+        lat=lat,
+        lon=lon,
+        dist_along_route_m=dist,
+        on_way_id=first.on_way_id,
+        control_type=first.control_type,
+        cross_street_names=tuple(sorted(names)),
+        merged_node_ids=tuple(m.intersection_node_id for m in members[1:]),
+        signalized=first.signalized,
+        anchor_intersection_node_id=first.anchor_intersection_node_id,
+        first_node_id=first.intersection_node_id,
+        main_node_id=main,
+        loc_source=src,
+        cross_way_rank=(max(valid) if valid else None),
+    )
+
+
 def cluster_signals(
     cps: list[ControlPoint],
     *,
     max_gap_m: float = DEFAULT_CLUSTER_GAP_M,
+    split_sides: dict[int, tuple[int, int]] | None = None,
 ) -> list[ControlPoint]:
     """Merge clusters of same-type ControlPoints that are part of one physical
     intersection.
 
-    Two consecutive ControlPoints are merged when:
-      - they have the same ``control_type``, AND
-      - their route-distance gap is ≤ ``max_gap_m``.
+    A ControlPoint joins the current cluster when:
+      - it has the same ``control_type`` as the cluster, AND
+      - its route-distance gap from the cluster's FIRST member is
+        ≤ ``max_gap_m`` (bounded diameter — no unbounded chaining), AND
+      - joining would not put nodes from both sides of a ``cluster_split``
+        exception divide into one cluster (``split_sides``: node ->
+        (divide, side), from ``dataio.exceptions.load_all_cluster_splits``).
 
-    The cluster's representative is the FIRST ControlPoint in route order
-    (so its ``intersection_node_id`` and lat/lon stay stable). The merged
-    representative's ``cross_street_names`` is the union of cluster
-    members'; ``merged_node_ids`` records every node folded in.
+    Representative identity and location per ``_cluster_rep``.
     """
     if not cps:
         return []
-    cps_sorted = sorted(cps, key=lambda c: c.dist_along_route_m)
-    out: list[ControlPoint] = [cps_sorted[0]]
-    cluster_names: set[str] = set(out[0].cross_street_names)
-    cluster_merged: list[int] = []
-
-    for cp in cps_sorted[1:]:
-        prev = out[-1]
-        gap = cp.dist_along_route_m - prev.dist_along_route_m
-        same_type = cp.control_type == prev.control_type
-
-        if same_type and gap <= max_gap_m:
-            cluster_names |= set(cp.cross_street_names)
-            cluster_merged.append(cp.intersection_node_id)
-            out[-1] = ControlPoint(
-                intersection_node_id=prev.intersection_node_id,
-                lat=prev.lat,
-                lon=prev.lon,
-                dist_along_route_m=prev.dist_along_route_m,
-                on_way_id=prev.on_way_id,
-                control_type=prev.control_type,
-                cross_street_names=tuple(sorted(cluster_names)),
-                merged_node_ids=tuple(cluster_merged),
-            )
-        else:
-            out.append(cp)
-            cluster_names = set(cp.cross_street_names)
-            cluster_merged = []
-    return out
+    if split_sides is None:
+        split_sides = {}
+    clusters: list[list[ControlPoint]] = []
+    for cp in sorted(cps, key=lambda c: c.dist_along_route_m):
+        if clusters:
+            cur = clusters[-1]
+            first = cur[0]
+            if (cp.control_type == first.control_type
+                    and cp.dist_along_route_m - first.dist_along_route_m
+                    <= max_gap_m
+                    and _split_allows(cur, cp, split_sides)):
+                cur.append(cp)
+                continue
+        clusters.append([cp])
+    return [_cluster_rep(members) for members in clusters]
 
 
 def _filter_near(
@@ -426,16 +525,39 @@ def find_intersections_for_shape(
         dist_along_m_per_vertex=dist_along_m_per_vertex,
     )
 
+    # Project every node on the bus's ways in ONE batched match() call.
+    # (Per-node single-element match() calls dominated stage-2 wall time —
+    # same per-call-overhead disease the 2026-07 grid work cured for trips.)
+    # exact_far=False is safe: every consumer compares perp against
+    # thresholds ≤ anchor_radius_m, far below the matcher's max_perp, and
+    # on-route rows are bitwise-exact without the far rescan.
+    _bus_node_ids = [
+        nid
+        for seg in way_cache
+        for nid in (ways_by_id.get(seg.way_id) or {}).get("nodes", [])
+        if nid in nodes_by_id
+    ]
+    _bus_node_ids = list(dict.fromkeys(_bus_node_ids))  # dedupe, keep order
     proj_cache: dict[int, tuple[float, float] | None] = {}
+    if _bus_node_ids:
+        _lats = np.array([nodes_by_id[n]["lat"] for n in _bus_node_ids])
+        _lons = np.array([nodes_by_id[n]["lon"] for n in _bus_node_ids])
+        _res = matcher.match(_lats, _lons, exact_far=False)
+        proj_cache = {
+            nid: (float(_res.dist_along_m[i]), float(_res.perp_dist_m[i]))
+            for i, nid in enumerate(_bus_node_ids)
+        }
 
     def project(node_id: int) -> tuple[float, float] | None:
-        if node_id in proj_cache:
-            return proj_cache[node_id]
+        got = proj_cache.get(node_id)
+        if got is not None:
+            return got
         n = nodes_by_id.get(node_id)
         if n is None:
-            proj_cache[node_id] = None
             return None
-        res = matcher.match(np.array([n["lat"]]), np.array([n["lon"]]))
+        res = matcher.match(
+            np.array([n["lat"]]), np.array([n["lon"]]), exact_far=False
+        )
         result = (float(res.dist_along_m[0]), float(res.perp_dist_m[0]))
         proj_cache[node_id] = result
         return result
@@ -478,10 +600,20 @@ def find_intersections_for_shape(
             ):
                 pending_stop = (node_id, dist_route_m, highway_tag)
 
-            # Intersection vertices only: must share a node with at least
-            # one non-bus highway way.
+            # Intersection vertices: must share a node with at least one
+            # non-bus highway way — EXCEPT per-approach stop-line signals
+            # (``highway=traffic_signals`` mid-way on the bus's own way, the
+            # 2026 junction-remap tagging style at e.g. Milwaukee/Damen).
+            # Those sit on no cross way but are the only signal evidence at
+            # such junctions, so they are emitted and later anchored to the
+            # nearest street-street vertex.
             other_ways = node_to_ways.get(node_id, set()) - bus_way_ids
-            if not other_ways:
+            standalone_signal = (
+                highway_tag == "traffic_signals"
+                and "crossing" not in tags
+                and tags.get("traffic_signals") != "pedestrian_crossing"
+            )
+            if not other_ways and not standalone_signal:
                 continue
             if node_id in seen_intersection_nodes:
                 continue
@@ -499,13 +631,23 @@ def find_intersections_for_shape(
                 control_type = pending_stop[2]
 
             cross_names: list[str] = []
+            cross_rank: float | None = None
             for wid in sorted(other_ways):
                 w = ways_by_id.get(wid)
                 if w is None:
                     continue
-                name = (w["tags"] or {}).get("name")
+                wtags = w["tags"] or {}
+                name = wtags.get("name")
                 if name and name not in cross_names:
                     cross_names.append(name)
+                # Cluster-hierarchy rank: best class among NAMED cross ways.
+                # Unnamed ways and service driveways never rank — a cluster
+                # member whose only cross way is a driveway can't be the
+                # "main" intersection.
+                if name:
+                    r = _HIGHWAY_RANK.get(wtags.get("highway", ""))
+                    if r is not None and (cross_rank is None or r > cross_rank):
+                        cross_rank = r
 
             intersection_vertices.append({
                 "node_id": int(node_id),
@@ -517,12 +659,34 @@ def find_intersections_for_shape(
                 "cross_way_ids": frozenset(int(w) for w in other_ways),
                 "cross_street_names": tuple(cross_names),
                 "merged_node_ids": (),
+                "cross_way_rank": cross_rank,
             })
 
             if control_type in ("stop", "give_way"):
                 pending_stop = None
 
     intersection_vertices.sort(key=lambda v: v["dist_along_route_m"])
+
+    # Anchor per-approach signals (no cross way at the node) to the nearest
+    # true street-street vertex within anchor_radius_m — EUCLIDEAN distance,
+    # so every shape through the junction picks the same anchor and the
+    # network registry can union all approach signals into one boundary
+    # cluster. The signal also inherits the anchor's cross-street names.
+    junction_vs = [v for v in intersection_vertices if v["cross_way_ids"]]
+    for v in intersection_vertices:
+        if v["control_type"] != "traffic_signals" or v["cross_way_ids"]:
+            continue
+        mlat = 111320.0 * math.cos(math.radians(v["lat"]))
+        best, best_d = None, anchor_radius_m
+        for j in junction_vs:
+            d = math.hypot((j["lon"] - v["lon"]) * mlat,
+                           (j["lat"] - v["lat"]) * 111320.0)
+            if d < best_d:
+                best, best_d = j, d
+        if best is not None:
+            v["anchor_node_id"] = best["node_id"]
+            if not v["cross_street_names"]:
+                v["cross_street_names"] = best["cross_street_names"]
 
     # ── Pass 2: ped crossings, every one emitted, each anchored to the
     # nearest intersection vertex within anchor_radius_m (controlled or
@@ -603,9 +767,25 @@ def find_intersections_for_shape(
 
     # ── Emit: controlled intersection vertices + every ped crossing.
     out: list[ControlPoint] = []
+    _REAL_ROAD_TYPES = frozenset((
+        "motorway", "trunk", "primary", "secondary", "tertiary",
+        "unclassified", "residential", "motorway_link", "trunk_link",
+        "primary_link", "secondary_link", "tertiary_link", "busway",
+    ))
     for v in intersection_vertices:
         if v["control_type"] is None:
-            continue  # uncontrolled vertex — used for anchoring only
+            # Uncontrolled street-street vertex: emit as its own type (used
+            # for anchoring AND the dashboard's junction markers) — but only
+            # when a REAL road crosses. highway=service crossings (parking
+            # aisles, driveways, pull-outs) are not street intersections.
+            crosses_road = any(
+                ((ways_by_id.get(w) or {}).get("tags") or {})
+                .get("highway", "").lower() in _REAL_ROAD_TYPES
+                for w in v.get("cross_way_ids", ())
+            )
+            if not crosses_road:
+                continue
+            v = dict(v, control_type="uncontrolled_junction")
         out.append(ControlPoint(
             intersection_node_id=v["node_id"],
             lat=v["lat"],
@@ -616,6 +796,8 @@ def find_intersections_for_shape(
             cross_street_names=v["cross_street_names"],
             merged_node_ids=v["merged_node_ids"],
             signalized=v["control_type"] == "traffic_signals",
+            anchor_intersection_node_id=v.get("anchor_node_id"),
+            cross_way_rank=v.get("cross_way_rank"),
         ))
     out.extend(ped_controls)
 
@@ -631,7 +813,10 @@ def find_intersections_for_shape(
         to_cluster = [c for c in out if c.control_type in clusterable]
         peds = [c for c in out if c.control_type not in clusterable]
         if to_cluster:
-            to_cluster = cluster_signals(to_cluster, max_gap_m=cluster_gap_m)
+            to_cluster = cluster_signals(
+                to_cluster, max_gap_m=cluster_gap_m,
+                split_sides=_cluster_split_sides(),
+            )
         out = sorted(to_cluster + peds, key=lambda c: c.dist_along_route_m)
 
     # Single-threshold distance filter (40 m, matching the anchor radius).
@@ -758,6 +943,13 @@ def load_intersections(in_path: str | Path) -> dict[str, list[ControlPoint]]:
                 signalized=bool(d.get("signalized", False)),
                 markings=str(d.get("markings") or ""),
                 has_island=bool(d.get("has_island", False)),
+                first_node_id=(int(d["first_node_id"])
+                               if d.get("first_node_id") is not None else None),
+                main_node_id=(int(d["main_node_id"])
+                              if d.get("main_node_id") is not None else None),
+                loc_source=str(d.get("loc_source") or "single"),
+                cross_way_rank=(float(d["cross_way_rank"])
+                                if d.get("cross_way_rank") is not None else None),
             ))
         out[sid] = loaded
     return out

@@ -91,6 +91,7 @@ def build_segments_from_records(
             c for c in cps_sorted
             if x_lo < c.dist_along_route_m < x_hi
             and not _signalized(c)
+            and c.control_type != "uncontrolled_junction"  # viz-only type
         )
         seg_int_xs = tuple(
             c.dist_along_route_m for c in cps_sorted

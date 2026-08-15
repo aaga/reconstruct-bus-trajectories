@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "cta-6515-door-peak-reject",
+      "type": "door_peak_reject",
+      "city": "cta",
+      "target": {"stop_id": "6515"},
+      "why": "All 2,175 door events stamped 6515 occur ~210 m south of its pole, at the 47th Red Line station frontage on 47th St east of Wells - an unmodeled southbound station service point with no GTFS stop_id (rt24 SB has none at the station). Zero door events at the 46th St pole itself; state-machine attribution assigns the station dwell to the pending stop 6515. The peak location and 6515's per-stop dwell stats describe the station, not 46th/Wentworth.",
+      "evidence": "2026-08 stop-location investigation: join_dots_6515, ping-density check (raw AVL pings pass 46th at speed), event-bucket distributions",
+      "added": "2026-08-10"
+    },
+    {
+      "id": "cta-14171-terminal",
+      "type": "terminal_stop",
+      "city": "cta",
+      "target": {"stop_id": "14171"},
+      "why": "Off-street terminal bay north of North Ave at Narragansett; pole and door peak sit inside the loop, outside the signal-to-signal street model. Whether the bay attaches to the last segment or falls off-network flips with the boundary representative choice (edge ambiguity on all rt72 West variants) - neither answer is meaningful, so exclude from segment assignment.",
+      "evidence": "2026-08 stop-location investigation: firstlast_compare (edge flip on 3 rt72W shapes), deep_review_2stops",
+      "added": "2026-08-10"
+    },
+    {
+      "id": "cta-9087-pulaski-harrison-5th-split",
+      "type": "cluster_split",
+      "city": "cta",
+      "target": {"nodes_a": [261229577], "nodes_b": [261121489]},
+      "why": "Pulaski between 5th Ave (261229577) and Harrison (261121489): two real signalized intersections ~25 m apart that the 30 m radius merges into one boundary. Stop 9087 (Pulaski & Harrison Blue Line, 9,881 door events) physically sits between them; splitting the cluster creates the true short segment and the stop lands on it naturally.",
+      "evidence": "2026-08 stop-location investigation: ambiguous_zone (25.4 m decision zone on rt53 North), ambiguous5_review satellite panel",
+      "added": "2026-08-10"
+    }
+  ]
+}

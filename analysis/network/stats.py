@@ -50,7 +50,10 @@ PAX_OVER = 60000.0
 HIST_FAMILIES = {
     # name -> (edges, under, over)
     "ratio": (HIST_EDGES, UNDER_EDGE, OVER_EDGE),
-    "nd": (HIST_EDGES, UNDER_EDGE, OVER_EDGE),
+    # nd = event-classified non-dwell seconds / t_ff: 0-centric (a majority of
+    # traversals have zero nd events), so it uses the dwell-style edges where
+    # bucket 0 ≈ "none", not the ratio edges centred on 1.0.
+    "nd": (DWELL_EDGES, DWELL_UNDER, DWELL_OVER),
     "dw": (DWELL_EDGES, DWELL_UNDER, DWELL_OVER),
     "pax": (PAX_EDGES, PAX_UNDER, PAX_OVER),
 }
@@ -180,16 +183,17 @@ def derive_metrics(
 # Per-(family, stat) derivation — the UI contract (mirrored in JS)
 # --------------------------------------------------------------------------
 #
-# Families ("delay" selectors in the metric dropdown):
+# Families ("delay" selectors in the metric dropdown). The door-subset
+# families are EVENT-CLASSIFIED (see delay_events.py):
 #   overall  — delay = t_obs − t_ff, all traversals (n, sum_delay, m2, hist ratio)
-#   pax      — passenger-weighted non-dwell delay in pax-seconds (door subset)
-#   nondwell — delay − dwell, seconds (door subset)
-#   dwell    — door-open seconds (door subset)
+#   pax      — pax_event_s: (nd events + >10 s boarding shoulders) × load
+#   nondwell — nd_event_s: delay events with zero door overlap, seconds
+#   dwell    — dwell_union_s: union of every door cycle ∪ overlapping events
 # Stats: mean | median | std | p95 | buffer (p95 − mean)
 
 def derive_stat(family: str, stat: str, acc: dict, t_ff_s: float) -> float:
     """acc keys: n, sum, m2, hist (ratio) | n_door, sum_dwell, sum_delay_door,
-    m2_dw, m2_nd, hist_dw, hist_nd | sum_pax, m2_pax, hist_pax."""
+    sum_nd, m2_dw, m2_nd, hist_dw, hist_nd | sum_pax, m2_pax, hist_pax."""
 
     def block(n, total, m2, hist, edges, under, over, to_seconds):
         if not n:
@@ -216,10 +220,10 @@ def derive_stat(family: str, stat: str, acc: dict, t_ff_s: float) -> float:
                      acc.get("hist_dw"), DWELL_EDGES, DWELL_UNDER, DWELL_OVER,
                      lambda r: r * t_ff_s)
     if family == "nondwell":
-        return block(nd, acc.get("sum_delay_door", 0.0) - acc.get("sum_dwell", 0.0),
+        return block(nd, acc.get("sum_nd", 0.0),
                      acc.get("m2_nd", 0.0), acc.get("hist_nd"),
-                     HIST_EDGES, UNDER_EDGE, OVER_EDGE,
-                     lambda r: (r - 1.0) * t_ff_s)
+                     DWELL_EDGES, DWELL_UNDER, DWELL_OVER,
+                     lambda r: r * t_ff_s)
     if family == "pax":
         return block(nd, acc.get("sum_pax", 0.0), acc.get("m2_pax", 0.0),
                      acc.get("hist_pax"), PAX_EDGES, PAX_UNDER, PAX_OVER,
@@ -242,10 +246,15 @@ def emit_golden_vectors(out_path: Path, seed: int = 42) -> dict:
         cn, cs, cm2 = welford_from_samples(delays)
 
         n_door = int(n * 0.6)
+        # Event-classified semantics: dwell = door∪event union seconds;
+        # nd = zero-overlap event seconds (0 for most traversals);
+        # pax = (nd + boarding shoulders) × load, nonnegative.
         dwell = np.abs(rng.normal(8.0, 6.0, n_door))
-        nd_delay = delays[:n_door] - dwell
+        nd_ev = np.where(
+            rng.random(n_door) < 0.55, 0.0, rng.lognormal(2.5, 0.9, n_door)
+        )
         loads = rng.integers(0, 40, n_door).astype(float)
-        pax = nd_delay * loads
+        pax = nd_ev * loads
 
         acc = {
             "n": cn, "sum": cs, "m2": cm2,
@@ -253,10 +262,11 @@ def emit_golden_vectors(out_path: Path, seed: int = 42) -> dict:
             "n_door": n_door,
             "sum_dwell": float(dwell.sum()),
             "sum_delay_door": float(delays[:n_door].sum()),
+            "sum_nd": float(nd_ev.sum()),
             "m2_dw": welford_from_samples(dwell)[2],
-            "m2_nd": welford_from_samples(nd_delay)[2],
+            "m2_nd": welford_from_samples(nd_ev)[2],
             "hist_dw": hist_counts(dwell / t_ff, DWELL_EDGES).tolist(),
-            "hist_nd": hist_counts((nd_delay + t_ff) / t_ff, HIST_EDGES).tolist(),
+            "hist_nd": hist_counts(nd_ev / t_ff, DWELL_EDGES).tolist(),
             "sum_pax": float(pax.sum()),
             "m2_pax": welford_from_samples(pax)[2],
             "hist_pax": hist_counts(pax, PAX_EDGES).tolist(),

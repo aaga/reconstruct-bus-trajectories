@@ -1,11 +1,16 @@
-"""Shared duckdb view: legacy traversal parquet → canonical-segment traversals.
+"""Shared duckdb view over the traversal parquet, canonical-segment keyed.
 
-The 86-day batch produced traversals keyed by LEGACY seg_ids (ped-signal
-boundaries, unclustered nodes). The registry's ``traversal_map`` says which
-canonical segment each (shape, old seg) belongs to. Because Eq-3.3 boundary
-times are shared at constituents' joints (t_exit of one == t_enter of the
-next), summing a trip's constituent t_obs values reconstructs the canonical
-span's t_obs EXACTLY — no re-reconstruction needed.
+Since the 2026-07-29 regen, ``run_reconstruct`` emits traversals keyed
+DIRECTLY by canonical seg_ids (its per-shape ``seg_bounds`` come from the
+registry's canonical segmentation), so the view's segment map is the
+identity over each shape's ``seg_bounds``. The GROUP BY merge remains for
+the rare shape that crosses the same canonical segment twice (loop
+routes): boundary times are shared at joints (t_exit of one part ==
+t_enter of the next), so summing part t_obs values is exact.
+
+(The registry still emits ``traversal_map`` — legacy seg → canonical — for
+analyses over ARCHIVED pre-regen traversal outputs, which were keyed by
+legacy ped-signal-boundary segments. This view no longer uses it.)
 
 ``create_canonical_view(con, glob, registry, city)`` registers:
 
@@ -51,14 +56,17 @@ def create_canonical_view(
     exist), the view gains door/APC columns summed over constituents:
     has_door (every constituent covered), door_n, dwell_s, ons, offs,
     load_sum. Without a sidecar these come back as 0/NULL."""
-    # (shape_id, old_seg_id) -> (new_seg_id, k = constituents of new seg in shape)
+    # Identity map over canonical seg_bounds: stored seg_id == canonical
+    # seg_id since the 2026-07 regen. k = occurrences of the segment within
+    # the shape (loop routes can cross one canonical segment twice; the
+    # coverage filter then requires both parts present before merging).
     rows = []
-    for shape_id, pairs in registry["traversal_map"].items():
-        k_by_new: dict[str, int] = {}
-        for _, new in pairs:
-            k_by_new[new] = k_by_new.get(new, 0) + 1
-        for old, new in pairs:
-            rows.append((shape_id, old, new, k_by_new[new]))
+    for shape_id, rec in registry["shapes"].items():
+        k_by_seg: dict[str, int] = {}
+        for seg_id, _, _ in rec["seg_bounds"]:
+            k_by_seg[seg_id] = k_by_seg.get(seg_id, 0) + 1
+        for seg_id, k in k_by_seg.items():
+            rows.append((shape_id, seg_id, seg_id, k))
     con.execute(
         "CREATE OR REPLACE TABLE segmap(shape_id TEXT, old_seg TEXT, new_seg TEXT, k INT)"
     )

@@ -6,6 +6,12 @@ fon/foff = front), passenger_load. Source CSVs live on slow cloud storage —
 this converts them ONCE into ``caches/door_events/`` (gitignored) partitioned
 by service month; everything downstream reads the parquet.
 
+2026-08-05: expects the CLEAN 16-column exports (see memory: the original
+exports were corrupted by DBeaver batch segmentation — drops + duplicates).
+Now also carries bus_state_id (DB key; ingest dedupes on it as insurance),
+stop_id/stop_sequence (system's own stop attribution) and latitude/longitude
+(AVL position at the door event).
+
 Timestamps are stored as naive wall-clock exactly as in the CSV; the timezone
 is established empirically by ``infer.py``-style checks in door_join (CTA
 convention is America/Chicago — verified against AVL trajectories).
@@ -48,16 +54,22 @@ def ingest(city_id: str, csvs: list[str]) -> Path:
             f"""
             COPY (
               SELECT
+                bus_state_id::BIGINT       AS bus_state_id,
                 bus_id::VARCHAR            AS bus_id,
                 event_time::TIMESTAMP      AS event_time,
                 event_type::TINYINT        AS event_type,
                 trip_id::VARCHAR           AS trip_id,
                 trip_start_time::TIMESTAMP AS trip_start_time,
+                stop_id::VARCHAR           AS stop_id,
+                stop_sequence::SMALLINT    AS stop_sequence,
+                latitude::DOUBLE           AS latitude,
+                longitude::DOUBLE          AS longitude,
                 dwell_time::FLOAT          AS dwell_s,
                 ron::SMALLINT AS ron, roff::SMALLINT AS roff,
                 fon::SMALLINT AS fon, foff::SMALLINT AS foff,
                 passenger_load::SMALLINT   AS passenger_load
               FROM read_csv('{src}', header=true)
+              QUALIFY row_number() OVER (PARTITION BY bus_state_id) = 1
             ) TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)
             """
         )

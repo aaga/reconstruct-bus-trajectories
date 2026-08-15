@@ -45,18 +45,24 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
 from analysis.prep.geometry import (  # noqa: E402
-    cumulative_route_dist_m,
     simplify_polyline,
     slice_polyline,
 )
 from core.decompose.segments import Segment, build_segments_from_records  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 from dataio.gtfs import list_bus_shapes, load_gtfs_shape_with_dist  # noqa: E402
+from dataio.exceptions import load_exceptions  # noqa: E402
 from dataio.intersections import load_intersections  # noqa: E402
 
 LEN_OUTLIER_FRAC = 0.10  # instance length deviating >10% from median → flagged
 BOUNDARY_TYPES = ("traffic_signals",)  # network decision: ped signals demoted
 CLUSTER_RADIUS_M = 30.0  # matches intersections.DEFAULT_CLUSTER_GAP_M
+
+# Door-peak stop location (2026-08 decision): a stop's position is its modal
+# 10 ft bucket of door-event AVL fixes when trustworthy, else the GTFS pole.
+DOOR_PEAK_BUCKET_M = 3.048
+DOOR_PEAK_MIN_EVENTS = 5
+DOOR_PEAK_MAX_POLE_DIST_M = 100.0  # beyond this the attribution is suspect
 
 # GTFS `direction_id` fallback labels for trips whose human `direction`
 # column is unpopulated (CTA leaves it "0" on a few thousand trips).
@@ -80,14 +86,24 @@ def cluster_nodes(
     usage: dict[int, int],  # node -> #shapes using it (for representative pick)
     radius_m: float = CLUSTER_RADIUS_M,
     primary: set[int] | frozenset[int] = frozenset(),
+    extra_edges: list[tuple[int, int]] | tuple = (),
+    split_sides: dict[int, tuple[int, int]] | None = None,
 ) -> dict[int, int]:
     """Union-find nodes within ``radius_m``; return node -> canonical node.
 
     Canonical = prefer a ``primary`` member (true highway=traffic_signals
     node), then the member used by the most shapes, then lowest node id —
     a deterministic global rule, unlike the corridor study's per-shape
-    "first in route order". ``primary`` matters at junctions whose signals
-    OSM maps only as signalized crossings (promoted ped nodes).
+    "first in route order".
+
+    ``extra_edges`` unions specific node pairs regardless of distance —
+    used to fold per-approach stop-line signals (which can sit > radius
+    apart across a big junction) into one cluster via their shared anchor
+    junction vertex. Pairs with ids missing from ``positions`` are ignored.
+
+    ``split_sides`` (node -> (divide, side), from cluster_split exceptions)
+    forbids any union that would put nodes from both sides of a divide in
+    one component — including transitively through third-party nodes.
     """
     ids = sorted(positions)
     if not ids:
@@ -101,6 +117,13 @@ def cluster_nodes(
         cell[(int(p[0] // radius_m), int(p[1] // radius_m))].append(i)
 
     parent = list(range(len(ids)))
+    # component root -> {divide: side} constraint labels
+    comp_sides: dict[int, dict[int, int]] = {}
+    if split_sides:
+        for i, n in enumerate(ids):
+            s = split_sides.get(n)
+            if s is not None:
+                comp_sides[i] = {s[0]: s[1]}
 
     def find(i: int) -> int:
         while parent[i] != i:
@@ -110,8 +133,16 @@ def cluster_nodes(
 
     def union(i: int, j: int) -> None:
         ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[rj] = ri
+        if ri == rj:
+            return
+        a, b = comp_sides.get(ri, {}), comp_sides.get(rj, {})
+        for divide, side in b.items():
+            if divide in a and a[divide] != side:
+                return  # would bridge a cluster_split divide — refuse
+        parent[rj] = ri
+        if a or b:
+            comp_sides[ri] = {**a, **b}
+            comp_sides.pop(rj, None)
 
     for (cx, cy), members in cell.items():
         cand: list[int] = []
@@ -122,6 +153,12 @@ def cluster_nodes(
             for j in cand:
                 if i < j and np.hypot(*(xy[i] - xy[j])) < radius_m:
                     union(i, j)
+
+    idx = {n: i for i, n in enumerate(ids)}
+    for a, b in extra_edges:
+        ia, ib = idx.get(a), idx.get(b)
+        if ia is not None and ib is not None:
+            union(ia, ib)
 
     groups: dict[int, list[int]] = defaultdict(list)
     for i, n in enumerate(ids):
@@ -139,7 +176,22 @@ def cluster_nodes(
 # --------------------------------------------------------------------------
 
 def shape_route_direction(gtfs_zip: Path) -> dict[str, dict]:
-    """One pass over trips.txt: shape_id -> {route_id, direction, rep_trip_id}."""
+    """One pass over trips.txt: shape_id -> {route_id, direction, rep_trip_id}.
+
+    Direction label priority: trips.txt ``direction`` column (CTA) →
+    directions.txt (route_id, direction_id) names (MBTA "Outbound"/
+    "Inbound") → generic dir0/dir1.
+    """
+    # Optional directions.txt: (route_id, direction_id) -> human name.
+    dir_names: dict[tuple[str, str], str] = {}
+    with zipfile.ZipFile(gtfs_zip) as z:
+        if "directions.txt" in z.namelist():
+            with z.open("directions.txt") as f:
+                for r in csv.DictReader(_io.TextIOWrapper(f, encoding="utf-8-sig")):
+                    name = (r.get("direction") or "").strip()
+                    if name:
+                        dir_names[(r["route_id"], r["direction_id"])] = name
+
     votes: dict[str, Counter] = defaultdict(Counter)
     route_of: dict[str, str] = {}
     rep_trip: dict[str, str] = {}
@@ -150,7 +202,10 @@ def shape_route_direction(gtfs_zip: Path) -> dict[str, dict]:
                 continue
             label = (t.get("direction") or "").strip()
             if label in ("", "0", "1"):
-                label = _DIRECTION_ID_LABEL.get(t.get("direction_id", ""), "unknown")
+                label = dir_names.get(
+                    (t["route_id"], t.get("direction_id", "")),
+                    _DIRECTION_ID_LABEL.get(t.get("direction_id", ""), "unknown"),
+                )
             votes[sid][label] += 1
             route_of.setdefault(sid, t["route_id"])
             rep_trip.setdefault(sid, t["trip_id"])
@@ -164,8 +219,72 @@ def shape_route_direction(gtfs_zip: Path) -> dict[str, dict]:
     }
 
 
-def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[str, list[dict]]:
-    """One pass over stop_times.txt + stops.txt: shape_id -> ordered stops."""
+def _door_peaks(city) -> dict[str, tuple[float, float]]:
+    """stop_id -> modal-10ft-bucket door-event position, for cities with a
+    door cache. Empty dict when the cache is absent."""
+    door_dir = city.resolve("caches/door_events") / city.city_id
+    if not door_dir.exists() or not any(door_dir.glob("*.parquet")):
+        return {}
+    import math
+
+    import duckdb
+
+    mlon = 111320.0 * math.cos(math.radians(41.85 if city.city_id.startswith("cta")
+                                            else 42.36))
+    con = duckdb.connect()
+    rows = con.execute(f"""
+        WITH ev AS (
+          SELECT stop_id, latitude, longitude,
+                 floor(longitude * {mlon} / {DOOR_PEAK_BUCKET_M})::BIGINT AS bxx,
+                 floor(latitude * 111320.0 / {DOOR_PEAK_BUCKET_M})::BIGINT AS byy
+          FROM '{door_dir}/*.parquet'
+          WHERE latitude IS NOT NULL AND stop_id IS NOT NULL
+        ),
+        b AS (
+          SELECT stop_id, bxx, byy, count(*) AS n,
+                 avg(latitude) AS lat, avg(longitude) AS lon
+          FROM ev GROUP BY stop_id, bxx, byy
+        ),
+        rk AS (
+          SELECT *, row_number() OVER (PARTITION BY stop_id
+                                       ORDER BY n DESC, bxx, byy) AS rn,
+                 sum(n) OVER (PARTITION BY stop_id) AS tot
+          FROM b
+        )
+        SELECT stop_id, lat, lon FROM rk
+        WHERE rn = 1 AND tot >= {DOOR_PEAK_MIN_EVENTS}
+    """).fetchall()
+    return {str(r[0]): (float(r[1]), float(r[2])) for r in rows}
+
+
+def _dist_ll_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    import math
+
+    mlat = 111320.0 * math.cos(math.radians((lat1 + lat2) / 2))
+    return math.hypot((lon1 - lon2) * mlat, (lat1 - lat2) * 111320.0)
+
+
+def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str],
+                   city=None) -> dict[str, list[dict]]:
+    """One pass over stop_times.txt + stops.txt: shape_id -> ordered stops.
+
+    Stop distance-along is ALWAYS a physical position projected onto the
+    shape polyline (2026-07-30 decision; stop_times.shape_dist_traveled is
+    deliberately ignored — CTA generates it on the same glitched ruler as
+    shapes.txt). The position, per stop (2026-08 decision, when ``city`` is
+    given):
+
+      1. ``stop_coord_override`` exception, if present;
+      2. the stop's modal-10ft-bucket door-event peak, when the city has a
+         door cache, the stop has >= DOOR_PEAK_MIN_EVENTS located events,
+         the peak lies within DOOR_PEAK_MAX_POLE_DIST_M of the GTFS pole,
+         and the stop is not door_peak_reject-ed — measured service
+         location beats the agency's geocode;
+      3. the GTFS pole (always, for cities without door data).
+
+    ``terminal_stop`` exceptions are excluded entirely — off-street bays
+    are outside the signal-to-signal segment model.
+    """
     trip_to_shape = {v: k for k, v in rep_trip_by_shape.items()}
     rows_by_trip: dict[str, list[dict]] = defaultdict(list)
     with zipfile.ZipFile(gtfs_zip) as z:
@@ -179,22 +298,74 @@ def stops_by_shape(gtfs_zip: Path, rep_trip_by_shape: dict[str, str]) -> dict[st
                 for r in csv.DictReader(_io.TextIOWrapper(f, encoding="utf-8-sig"))
             }
 
+    exc = load_exceptions(city.city_id) if city is not None else None
+    peaks = _door_peaks(city) if city is not None else {}
+    loc: dict[str, tuple[float, float]] = {}
+    n_peak = n_override = 0
+    for sid_, m in stops_meta.items():
+        try:
+            pole = (float(m.get("stop_lat") or "nan"),
+                    float(m.get("stop_lon") or "nan"))
+        except ValueError:
+            continue
+        if exc and sid_ in exc.coord_overrides:
+            loc[sid_] = exc.coord_overrides[sid_]
+            n_override += 1
+            continue
+        pk = peaks.get(sid_)
+        if (pk is not None and not (exc and sid_ in exc.peak_rejects)
+                and pole == pole  # not NaN
+                and _dist_ll_m(*pk, *pole) <= DOOR_PEAK_MAX_POLE_DIST_M):
+            loc[sid_] = pk
+            n_peak += 1
+        else:
+            loc[sid_] = pole
+    if n_peak or n_override:
+        print(f"stops_by_shape: {n_peak} stops located by door peak, "
+              f"{n_override} by coord override")
+
+    from core.mapmatch.shape_snap import SnapToShapeMatcher
+
     out: dict[str, list[dict]] = {}
+    n_dropped = n_terminal = 0
     for trip_id, rows in rows_by_trip.items():
         rows.sort(key=lambda r: int(r["stop_sequence"]))
+        if exc is not None:
+            kept = [r for r in rows if r["stop_id"] not in exc.terminal_stops]
+            n_terminal += len(rows) - len(kept)
+            rows = kept
+        shape_id = trip_to_shape[trip_id]
+        polyline, dist_m = load_gtfs_shape_with_dist(gtfs_zip, shape_id)
+        matcher = SnapToShapeMatcher(
+            polyline, max_perp_m=100.0, dist_along_m_per_vertex=dist_m
+        )
+        locs = [loc.get(r["stop_id"], (float("nan"), float("nan")))
+                for r in rows]
+        lats = np.array([p[0] for p in locs])
+        lons = np.array([p[1] for p in locs])
+        ok = ~(np.isnan(lats) | np.isnan(lons))
+        res = matcher.match(np.where(ok, lats, 0.0), np.where(ok, lons, 0.0))
         stops = []
-        for r in rows:
-            if not r.get("shape_dist_traveled"):
+        for i, r in enumerate(rows):
+            # A stop >100 m off its own shape is a feed inconsistency;
+            # drop rather than pin a bogus distance to it.
+            if not ok[i] or not res.on_route[i]:
+                n_dropped += 1
                 continue
             sid = r["stop_id"]
             stops.append(
                 {
                     "stop_id": sid,
                     "name": stops_meta.get(sid, {}).get("stop_name", sid),
-                    "dist_along_m": float(r["shape_dist_traveled"]) / 3.28084,
+                    "dist_along_m": float(res.dist_along_m[i]),
                 }
             )
-        out[trip_to_shape[trip_id]] = stops
+        out[shape_id] = stops
+    if n_dropped:
+        print(f"stops_by_shape: dropped {n_dropped} stops >100 m off their shape")
+    if n_terminal:
+        print(f"stops_by_shape: excluded {n_terminal} terminal-stop rows "
+              f"(exceptions)")
     return out
 
 
@@ -368,63 +539,71 @@ def build_registry(city: CityConfig) -> dict:
         json.loads(way_geoms_path.read_text()) if way_geoms_path.exists() else {}
     )
     shape_meta = shape_route_direction(gtfs_zip)
-    bus_shapes = [s for s in list_bus_shapes(gtfs_zip) if s in intersections and s in shape_meta]
-    skipped_no_cache = sorted(set(list_bus_shapes(gtfs_zip)) - set(bus_shapes))
+    all_bus = list_bus_shapes(gtfs_zip, city.exclude_route_prefixes)
+    bus_shapes = [s for s in all_bus if s in intersections and s in shape_meta]
+    skipped_no_cache = sorted(set(all_bus) - set(bus_shapes))
 
     stops_map = stops_by_shape(
-        gtfs_zip, {s: shape_meta[s]["rep_trip_id"] for s in bus_shapes}
+        gtfs_zip, {s: shape_meta[s]["rep_trip_id"] for s in bus_shapes},
+        city=city,
     )
 
-    # ---- promote intersection-anchored ped-signal nodes ------------------
-    # Some (often recently remapped, multi-leg) junctions carry NO
-    # highway=traffic_signals node in OSM — the signal exists only as
-    # signalized crossing nodes (e.g. Milwaukee/Kimball, Milwaukee/Damen).
-    # A ped_crossing_signal ANCHORED to an intersection vertex (40 m rule
-    # from the corridor pipeline) is evidence of a signalized intersection →
-    # boundary. Mid-block ped signals (never anchored on any shape) stay
-    # demoted. Promotion is global per node so shapes can't disagree.
-    anchored_ped: set[int] = set()
-    for shape_id in bus_shapes:
-        for cp in intersections[shape_id]:
-            if (
-                cp.control_type == "ped_crossing_signal"
-                and cp.anchor_intersection_node_id is not None
-            ):
-                anchored_ped.add(cp.intersection_node_id)
-
-    # ---- global clustering: traffic signals + ALL ped-signal nodes -------
-    # Ped nodes participate in clustering so junction crossings chain into
-    # one supernode; PROMOTION then happens per cluster (below): a cluster is
-    # a boundary if it contains a true signal or any anchored crossing. This
-    # catches 6-way junctions where the bus street's own crossing nodes are
-    # unanchored but a cross street's are (e.g. Milwaukee/Damen/North).
+    # ---- global clustering: true traffic-signal nodes --------------------
+    # Boundaries come ONLY from highway=traffic_signals nodes (junction-node
+    # style, or per-approach stop-line style emitted by intersections.py
+    # since the 2026-07 regen). Ped signals stay demoted everywhere — the
+    # earlier cluster-level "promotion" workaround for junctions whose
+    # signals OSM mapped only as crossings (Milwaukee/Kimball, /Damen) is
+    # gone: those junctions now carry real per-approach signal nodes.
+    #
+    # Per-approach signals of one junction can sit farther apart than the
+    # cluster radius (~65 m across a 6-way), so each carries an anchor (its
+    # nearest street-street vertex, Euclidean → identical across shapes).
+    # Signal→anchor union edges plus the anchor vertices themselves as
+    # cluster members (anchors of one junction are mutually near) fold every
+    # approach signal into a single boundary cluster. Anchors are never
+    # ``primary`` so the representative stays a real signal node.
     positions: dict[int, tuple[float, float]] = {}
     usage: Counter = Counter()
     primary: set[int] = set()
+    anchor_edges: list[tuple[int, int]] = []
+    anchor_pos: dict[int, tuple[float, float]] = {}
     for shape_id in bus_shapes:
         seen_in_shape = set()
-        for cp in intersections[shape_id]:
-            if cp.control_type in BOUNDARY_TYPES or cp.control_type == "ped_crossing_signal":
+        cps = intersections[shape_id]
+        by_node = {}
+        for cp in cps:
+            by_node.setdefault(cp.intersection_node_id, cp)
+        for cp in cps:
+            if cp.control_type in BOUNDARY_TYPES:
                 positions[cp.intersection_node_id] = (cp.lat, cp.lon)
-                if cp.control_type in BOUNDARY_TYPES:
-                    primary.add(cp.intersection_node_id)
+                primary.add(cp.intersection_node_id)
                 if cp.intersection_node_id not in seen_in_shape:
                     usage[cp.intersection_node_id] += 1
                     seen_in_shape.add(cp.intersection_node_id)
-    canon = cluster_nodes(positions, usage, CLUSTER_RADIUS_M, primary=primary)
-
-    boundary_clusters: set[int] = {canon[n] for n in primary} | {
-        canon[n] for n in anchored_ped
-    }
-    promoted_ped = {
-        n for n, c in canon.items() if c in boundary_clusters and n not in primary
-    }
+                a = cp.anchor_intersection_node_id
+                if a is not None:
+                    anchor_edges.append((cp.intersection_node_id, a))
+                    ref = by_node.get(a)
+                    # Anchor position if the vertex is a CP on some shape;
+                    # else fall back to the signal's own position (≤ 40 m
+                    # away — close enough for grid membership; the explicit
+                    # edge does the actual union).
+                    if ref is not None:
+                        anchor_pos[a] = (ref.lat, ref.lon)
+                    else:
+                        anchor_pos.setdefault(a, (cp.lat, cp.lon))
+    for n, pos in anchor_pos.items():
+        positions.setdefault(n, pos)
+    from dataio.exceptions import load_all_cluster_splits
+    canon = cluster_nodes(
+        positions, usage, CLUSTER_RADIUS_M, primary=primary,
+        extra_edges=anchor_edges,
+        split_sides=load_all_cluster_splits(),
+    )
 
     def is_boundary_cp(cp) -> bool:
-        n = cp.intersection_node_id
-        if cp.control_type in BOUNDARY_TYPES:
-            return True
-        return cp.control_type == "ped_crossing_signal" and canon.get(n) in boundary_clusters
+        return cp.control_type in BOUNDARY_TYPES
     node_positions = positions  # node -> (lat, lon), incl. every canonical rep
     n_geom_fallback = [0]
     n_clusters_multi = len(
@@ -446,23 +625,19 @@ def build_registry(city: CityConfig) -> dict:
         cps = intersections[shape_id]
         stops = stops_map.get(shape_id, [])
 
-        # Canonical segmentation: traffic signals + promoted (intersection-
-        # anchored) ped-signal nodes, cluster-deduped. Un-promoted ped-signal
-        # CPs are excluded outright so the type-based boundary filter inside
-        # build_segments_from_records can't resurrect them.
+        # Canonical segmentation: true traffic-signal nodes, cluster-deduped
+        # (per-approach signals of one junction collapse to one boundary).
+        # Ped-signal CPs stay non-boundary control points.
         signals = sorted(
             (c for c in cps if is_boundary_cp(c)),
             key=lambda c: c.dist_along_route_m,
         )
         dedup = _dedupe_by_cluster(signals, canon)
         n_confetti_dropped += len(signals) - len(dedup)
-        non_boundary = [
-            c for c in cps
-            if not is_boundary_cp(c) and c.control_type != "ped_crossing_signal"
-        ]
+        non_boundary = [c for c in cps if not is_boundary_cp(c)]
         new_segs = build_segments_from_records(
             dedup + non_boundary, stops,
-            boundary_types=("traffic_signals", "ped_crossing_signal"),
+            boundary_types=BOUNDARY_TYPES,
         )
 
         def canon_seg_id(seg: Segment) -> str:
@@ -527,7 +702,11 @@ def build_registry(city: CityConfig) -> dict:
         rep = insts[int(np.argmin(np.abs(lens - med_len)))]
         polyline, dist_m = load_gtfs_shape_with_dist(gtfs_zip, rep["shape_id"])
         if dist_m is None:
-            dist_m = cumulative_route_dist_m(polyline)
+            # Same equirect ruler as every SnapToShapeMatcher fallback — the
+            # x_start/x_end being sliced against were measured in that space.
+            from core.mapmatch.shape_snap import equirect_cumulative_m
+
+            dist_m = equirect_cumulative_m(polyline)
         gtfs_slice = slice_polyline(polyline, dist_m, rep["x_start_m"], rep["x_end_m"])
 
         # Preferred: OSM way-chain geometry trimmed at canonical node positions.
@@ -569,6 +748,81 @@ def build_registry(city: CityConfig) -> dict:
 
         stop_ids = sorted({sid for i in insts for sid in i["stop_ids"]})
         seg = seg_objs[seg_id]
+
+        # Road-strip annotations (delay-distribution viz): stop and mid-block
+        # crossing positions as meters upstream of the DOWNSTREAM signal, from
+        # the representative instance. Includes demoted mid-block ped signals
+        # (excluded from segmentation but physically present).
+        # Stops are unioned across ALL instances (offsets from each
+        # instance's own downstream boundary, median across instances):
+        # the rep alone can be an express variant that skips local stops
+        # (2026-07-30: X4 rep hid Michigan/14th from the 14th→16th strip).
+        stop_offs: dict[str, list] = defaultdict(list)
+        stop_names: dict[str, str] = {}
+        for inst in insts:
+            for st in stops_map.get(inst["shape_id"], []):
+                if inst["x_start_m"] < st["dist_along_m"] <= inst["x_end_m"]:
+                    stop_offs[st["stop_id"]].append(
+                        inst["x_end_m"] - st["dist_along_m"])
+                    stop_names.setdefault(st["stop_id"], st["name"])
+        stops_off = sorted(
+            (
+                {
+                    "id": sid_,
+                    "name": stop_names[sid_],
+                    "off_m": round(float(np.median(offs)), 1),
+                }
+                for sid_, offs in stop_offs.items()
+            ),
+            key=lambda s: -s["off_m"],
+        )
+        crossings_off = []
+        stop_signs_off = []
+        for cp in intersections[rep["shape_id"]]:
+            if not (rep["x_start_m"] < cp.dist_along_route_m < rep["x_end_m"]):
+                continue
+            if cp.control_type in ("ped_crossing_marked", "ped_crossing_signal"):
+                crossings_off.append({
+                    "type": cp.control_type,
+                    "off_m": round(rep["x_end_m"] - cp.dist_along_route_m, 1),
+                })
+            elif cp.control_type == "stop":
+                stop_signs_off.append({
+                    "off_m": round(rep["x_end_m"] - cp.dist_along_route_m, 1),
+                    "cross": cp.cross_street_names[0] if cp.cross_street_names else None,
+                })
+
+        # Minor cross-street junctions (viz: dashed centerline breaks).
+        # Preferred source: "uncontrolled_junction" control points (real
+        # street-street vertices — present once the intersections cache is
+        # regenerated with them). Fallback: way-span boundaries, FILTERED to
+        # exclude splits caused by ped crossings / crossing footways (which
+        # are not street intersections).
+        junctions_off = []
+        junction_cps = [
+            cp for cp in intersections[rep["shape_id"]]
+            if cp.control_type == "uncontrolled_junction"
+            and rep["x_start_m"] + 15 < cp.dist_along_route_m < rep["x_end_m"] - 15
+        ]
+        if junction_cps:
+            for cp in junction_cps:
+                off = round(rep["x_end_m"] - cp.dist_along_route_m, 1)
+                if all(abs(off - j["off_m"]) > 15 for j in junctions_off):
+                    junctions_off.append({
+                        "off_m": off,
+                        "cross": cp.cross_street_names[0] if cp.cross_street_names else None,
+                    })
+        else:
+            ped_offs = [c["off_m"] for c in crossings_off]
+            for w in way_cache.get(rep["shape_id"], []):
+                x = w["dist_start_m"]
+                if rep["x_start_m"] + 15 < x < rep["x_end_m"] - 15:
+                    off = round(rep["x_end_m"] - x, 1)
+                    if any(abs(off - pc) <= 20 for pc in ped_offs):
+                        continue  # split caused by a crossing, not a street
+                    if all(abs(off - j["off_m"]) > 15 for j in junctions_off):
+                        junctions_off.append({"off_m": off, "cross": None})
+        junctions_off.sort(key=lambda j: j["off_m"])
         up_node = canon[seg.upstream_signal.intersection_node_id]
         down_node = canon[seg.downstream_signal.intersection_node_id]
 
@@ -589,6 +843,10 @@ def build_registry(city: CityConfig) -> dict:
             "stop_ids": stop_ids,
             "n_stops": len(stop_ids),
             "has_near_side": any(i["near_side"] for i in insts),
+            "stops_off": stops_off,
+            "crossings_off": crossings_off,
+            "stop_signs_off": stop_signs_off,
+            "junctions_off": junctions_off,
         }
 
     for seg_id, rec in registry.items():
@@ -609,9 +867,9 @@ def build_registry(city: CityConfig) -> dict:
             "n_instances": sum(len(v) for v in instances.values()),
             "n_boundary_nodes": len({canon[n] for n in canon}),
             "n_alias_clusters_merged": n_clusters_multi,
-            "n_promoted_ped_signal_nodes": len(promoted_ped),
-            "n_boundary_clusters_from_ped_only": sum(
-                1 for c in boundary_clusters if c not in {canon[n] for n in primary}
+            "n_anchor_union_edges": len(set(anchor_edges)),
+            "n_anchored_approach_signals": len(
+                {a for a, _ in set(anchor_edges)}
             ),
             "n_confetti_boundaries_dropped": n_confetti_dropped,
             "n_len_outlier_instances": n_outlier_instances,

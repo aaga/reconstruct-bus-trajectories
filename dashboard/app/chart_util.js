@@ -183,3 +183,29 @@ export function makeSvg() {
     .style("user-select", "none").style("display", "block");
   return { svg, width, height };
 }
+
+
+// Dismissible fixed banner for cross-cutting warnings (stale-tab data,
+// broken deep links). One banner per unique message.
+export function showBanner(msg, kind = "warn") {
+  const id = "app-banner-" + Array.from(msg).reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0);
+  if (document.getElementById(id)) return;
+  const div = document.createElement("div");
+  div.id = id;
+  div.style.cssText =
+    "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9999;" +
+    "max-width:min(680px,90vw);padding:10px 38px 10px 14px;border-radius:8px;" +
+    "font:13px/1.45 system-ui;box-shadow:0 4px 16px rgba(0,0,0,.25);" +
+    (kind === "warn"
+      ? "background:#fff3cd;color:#664d03;border:1px solid #ffec99;"
+      : "background:#d1e7dd;color:#0f5132;border:1px solid #a3cfbb;");
+  div.textContent = msg;
+  const x = document.createElement("button");
+  x.textContent = "\u00d7";
+  x.style.cssText =
+    "position:absolute;top:4px;right:8px;border:0;background:none;" +
+    "font-size:18px;cursor:pointer;color:inherit;line-height:1";
+  x.onclick = () => div.remove();
+  div.appendChild(x);
+  document.body.appendChild(div);
+}
