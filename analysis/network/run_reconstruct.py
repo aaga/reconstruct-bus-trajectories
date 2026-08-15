@@ -48,7 +48,7 @@ from analysis.network.assign_shapes import (  # noqa: E402
 )
 from core.decompose.travel_time import last_times_at_boundaries  # noqa: E402
 from core.mapmatch.shape_snap import SnapToShapeMatcher  # noqa: E402
-from core.smooth import locreg_pchip  # noqa: E402
+from core.smooth import fit_trajectory  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 from dataio.gtfs import load_gtfs_shape_with_dist  # noqa: E402
 
@@ -205,6 +205,8 @@ def _process_trip(
 
     lats = trip["latitude"].to_numpy(dtype=float)
     lons = trip["longitude"].to_numpy(dtype=float)
+    v_all = (trip["speed_mps"].to_numpy(dtype=float)
+             if "speed_mps" in trip.columns else None)
     matchers = {sid: _matcher(sid)[0] for sid in candidates}
     lens = {sid: _matcher(sid)[1] for sid in candidates}
 
@@ -218,6 +220,7 @@ def _process_trip(
     d_all = asg.match.dist_along_m
     t_on = t_sec_all[on]
     d_on = d_all[on]
+    v_on = v_all[on] if v_all is not None else None
 
     if monotone_frac(d_on) < MIN_MONOTONE:
         rejects["not_monotone"] += 1
@@ -231,12 +234,14 @@ def _process_trip(
         touched_terminal = True
         cut = at_term[0] + 1
         t_on, d_on = t_on[:cut], d_on[:cut]
+        if v_on is not None:
+            v_on = v_on[:cut]
         if len(t_on) < MIN_PINGS:
             rejects["few_pings_after_truncate"] += 1
             return None
 
     try:
-        sm = locreg_pchip(t_on, d_on, bandwidth=city.bandwidth)
+        sm = fit_trajectory(t_on, d_on, v_on)
     except Exception:
         rejects["smooth_failed"] += 1
         return None

@@ -77,7 +77,7 @@ from analysis.network.run_reconstruct import (  # noqa: E402
     TERMINAL_M,
 )
 from core.decompose.events import AbsoluteSpeedThreshold, detect_events  # noqa: E402
-from core.smooth import locreg_pchip  # noqa: E402
+from core.smooth import fit_trajectory  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 
 THRESHOLD = AbsoluteSpeedThreshold(5.0)
@@ -221,6 +221,8 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         return None
     lats = trip["latitude"].to_numpy(dtype=float)
     lons = trip["longitude"].to_numpy(dtype=float)
+    v_all = (trip["speed_mps"].to_numpy(dtype=float)
+             if "speed_mps" in trip.columns else None)
     stored_key = (
         f"{trip['trip_id'].iloc[0]}_{trip['vehicle_id'].iloc[0]}_{date_iso}"
     )
@@ -246,6 +248,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     on = asg.match.on_route
     t_on = t_sec_all[on]
     d_on = asg.match.dist_along_m[on]
+    v_on = v_all[on] if v_all is not None else None
     if monotone_frac(d_on) < MIN_MONOTONE:
         rejects["not_monotone"] += 1
         return None
@@ -253,11 +256,13 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     if len(at_term):
         cut = at_term[0] + 1
         t_on, d_on = t_on[:cut], d_on[:cut]
+        if v_on is not None:
+            v_on = v_on[:cut]
         if len(t_on) < MIN_PINGS:
             rejects["few_pings_after_truncate"] += 1
             return None
     try:
-        sm = locreg_pchip(t_on, d_on, bandwidth=city.bandwidth)
+        sm = fit_trajectory(t_on, d_on, v_on)
     except Exception:
         rejects["smooth_failed"] += 1
         return None

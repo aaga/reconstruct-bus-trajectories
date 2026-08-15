@@ -212,3 +212,108 @@ def locreg_mqsi(
     knot_derivs = [[x_for_spline[i], m[i], s[i]] for i in range(unique_t.size)]
     f = BPoly.from_derivatives(unique_t, knot_derivs, extrapolate=False)
     return LocregPchipResult(t=t, d_raw=d, x=x_in_input_order, f=f)
+
+
+# --------------------------------------------------------------------------
+# Slowscope reconstruction methods (2026-08, UT-Austin comparative study):
+# VCHIP-ME where the feed reports speeds, plain PCHIP (no LOCREG) elsewhere.
+# --------------------------------------------------------------------------
+
+def _dedupe_mono(t: np.ndarray, d: np.ndarray, v: np.ndarray | None):
+    """Sort by t, collapse duplicate timestamps (keep first), forward-fill
+    position monotonicity. Returns strictly-increasing knots."""
+    t = np.asarray(t, dtype=float)
+    d = np.asarray(d, dtype=float)
+    if t.shape != d.shape:
+        raise ValueError("t and d must have the same shape")
+    if t.size < 2:
+        raise ValueError("need at least 2 points to interpolate")
+    order = np.argsort(t, kind="stable")
+    t, d = t[order], d[order]
+    if v is not None:
+        v = np.asarray(v, dtype=float)[order]
+    keep = np.concatenate([[True], np.diff(t) > 0])
+    t, d = t[keep], d[keep]
+    if v is not None:
+        v = v[keep]
+    if t.size < 2:
+        raise ValueError("fewer than 2 distinct timestamps")
+    return t, enforce_monotonic(d), v
+
+
+def plain_pchip(t: np.ndarray, d: np.ndarray) -> LocregPchipResult:
+    """Monotone PCHIP straight through the (monotonized) observations —
+    the no-speed fallback. No LOCREG smoothing stage."""
+    tu, xu, _ = _dedupe_mono(t, d, None)
+    f = PchipInterpolator(tu, xu, extrapolate=False)
+    x_in = np.interp(np.asarray(t, dtype=float), tu, xu)
+    return LocregPchipResult(t=np.asarray(t, float), d_raw=np.asarray(d, float),
+                             x=x_in, f=f)
+
+
+def vchip_me(t: np.ndarray, d: np.ndarray, v: np.ndarray,
+             flat_eps: float = 1e-9) -> LocregPchipResult:
+    """Velocity-Constrained Hermite Interpolation with Monotonicity
+    Enforcement (Robbennolt, Munira & Boyles 2025, §2.2.3).
+
+    Tangents are initialized to the OBSERVED velocities (m/s) instead of
+    secant averages, then constrained exactly as Fritsch–Carlson:
+
+      * nearly-flat interval (|δ_k| < ε) → both endpoint tangents zeroed
+        (a dwell holds still and leaves it at rest);
+      * else α = m_k/δ_k, β = m_{k+1}/δ_k must satisfy α²+β² ≤ 9, enforced
+        by scaling both with τ = 3/√(α²+β²).
+
+    Non-finite velocities (feed sentinel / missing) fall back to the PCHIP
+    secant-average initialization for those knots. Result is C¹, matches
+    positions everywhere and observed speeds wherever the constraint is
+    inactive, and is monotone non-decreasing by the F–C guarantee.
+    """
+    from scipy.interpolate import CubicHermiteSpline
+
+    tu, xu, vu = _dedupe_mono(t, d, v)
+    n = tu.size
+    dt = np.diff(tu)
+    delta = np.diff(xu) / dt
+
+    m = np.asarray(vu, dtype=float).copy()
+    # sentinel/missing speeds -> PCHIP-style secant initialization
+    bad = ~np.isfinite(m)
+    if bad.any():
+        init = np.empty(n)
+        init[0] = delta[0]
+        init[-1] = delta[-1]
+        if n > 2:
+            init[1:-1] = (delta[:-1] + delta[1:]) / 2
+        m[bad] = init[bad]
+    np.clip(m, 0.0, None, out=m)  # forward travel only
+
+    for k in range(n - 1):
+        if abs(delta[k]) < flat_eps:
+            m[k] = 0.0
+            m[k + 1] = 0.0
+        else:
+            a = m[k] / delta[k]
+            b = m[k + 1] / delta[k]
+            r2 = a * a + b * b
+            if r2 > 9.0:
+                tau = 3.0 / np.sqrt(r2)
+                m[k] = tau * a * delta[k]
+                m[k + 1] = tau * b * delta[k]
+
+    f = CubicHermiteSpline(tu, xu, m, extrapolate=False)
+    x_in = np.interp(np.asarray(t, dtype=float), tu, xu)
+    return LocregPchipResult(t=np.asarray(t, float), d_raw=np.asarray(d, float),
+                             x=x_in, f=f)
+
+
+def fit_trajectory(t: np.ndarray, d: np.ndarray,
+                   v: np.ndarray | None = None) -> LocregPchipResult:
+    """Route to the reconstruction method for this feed (2026-08 decision):
+    VCHIP-ME when usable speeds are present (>= half the pings finite),
+    plain PCHIP otherwise. LOCREG is retired from the network pipeline."""
+    if v is not None:
+        v = np.asarray(v, dtype=float)
+        if np.isfinite(v).mean() >= 0.5:
+            return vchip_me(t, d, v)
+    return plain_pchip(t, d)

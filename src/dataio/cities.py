@@ -72,6 +72,10 @@ class CityConfig:
     # to the shape (2026-08-05 default); "door_mid" = trajectory position at
     # the door-interval time-midpoint (cta-hf investigation).
     door_anchor: str = "raw"
+    # Local high-resolution AVL export to ingest instead of the R2 scrape
+    # (avl_ingest.py converts it into archive hour-files under r2_agency).
+    # Speeds present -> VCHIP-ME reconstruction; absent -> plain PCHIP.
+    avl_source_dir: str | None = None
     # Hidden from the dashboard city tabs (investigation-only cities).
     show_in_ui: bool = True
 
@@ -105,7 +109,12 @@ class CityConfig:
 
 _CTA = CityConfig(
     city_id="cta",
-    r2_agency="cta",
+    # 2026-08-15: CTA reads the redshift AVL export (ingested locally under
+    # agency=cta-rs) instead of the R2 GTFS-rt scrape — denser pings + speeds.
+    r2_agency="cta-rs",
+    avl_source_dir=(
+        "/Users/ashwinagarwal/JTL/cta-code/cta-data-collector/"
+        "redshift-export/data/avl_archive"),
     tz="America/Chicago",
     gtfs_zip="data/gtfs/cta_gtfs.zip",
     intersections_file="caches/cta/intersections.json",
@@ -182,6 +191,7 @@ _CTA_HF = _dc_replace(
     _CTA,
     city_id="cta-hf",
     r2_agency="cta-hf",
+    avl_source_dir=None,  # keeps its own R2 scrape; no redshift export
     door_anchor="door_mid",
     show_in_ui=False,
 )
