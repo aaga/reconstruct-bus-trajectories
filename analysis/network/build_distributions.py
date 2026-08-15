@@ -55,7 +55,7 @@ FT_PER_M = 3.28084
 CLASSES = ["nd", "pre", "post", "post2", "dw"]
 
 
-def build(city_id: str) -> None:
+def build(city_id: str, suffix: str = "") -> None:
     city = get_city(city_id)
     base = REPO / "outputs" / "network" / city.city_id
     registry = json.loads((base / "segment_registry.json").read_text())
@@ -64,19 +64,26 @@ def build(city_id: str) -> None:
     # Raw ping density (ping_density.py; optional — "raw pings" dist tab)
     ping_path = base / "ping_density.parquet"
     ping_counts: dict[str, dict[int, int]] = {}
+    ping_speed: dict[str, dict[int, float]] = {}
     if ping_path.exists():
-        for seg_id_, b_, n_ in duckdb.connect().execute(
-                f"SELECT seg_id, bucket, n FROM read_parquet('{ping_path}')"
-        ).fetchall():
+        import pyarrow.parquet as _pq
+        _cols = _pq.ParquetFile(ping_path).schema.names
+        has_v = "n_v" in _cols
+        q = ("SELECT seg_id, bucket, n, n_v, sum_v" if has_v
+             else "SELECT seg_id, bucket, n, 0, 0.0")
+        for seg_id_, b_, n_, nv_, sv_ in duckdb.connect().execute(
+                f"{q} FROM read_parquet('{ping_path}')").fetchall():
             ping_counts.setdefault(seg_id_, {})[int(b_)] = int(n_)
+            if nv_ and nv_ >= 5:
+                ping_speed.setdefault(seg_id_, {})[int(b_)] = float(sv_) / nv_
     seg_index = {s: i for i, s in enumerate(sorted(registry["segments"]))}
 
     # CTA keeps the original flat location; other cities nest under their id
     # (mirrors the payload layout dashboard/data/network/<city>/).
     out_dir = (
-        REPO / "dashboard" / "data" / "network" / "dist"
+        REPO / "dashboard" / "data" / "network" / f"dist{suffix}"
         if city.city_id == "cta"
-        else REPO / "dashboard" / "data" / "network" / city.city_id / "dist"
+        else REPO / "dashboard" / "data" / "network" / city.city_id / f"dist{suffix}"
     )
     if out_dir.exists():
         shutil.rmtree(out_dir)
@@ -84,8 +91,9 @@ def build(city_id: str) -> None:
 
     con = duckdb.connect()
     con.execute("SET threads=4")
-    glob = str(base / "events" / "service_date=*" / "route=*.parquet")
-    sums_glob = str(base / "event_sums" / "service_date=*" / "route=*.parquet")
+    glob = str(base / f"events{suffix}" / "service_date=*" / "route=*.parquet")
+    sums_glob = str(base / f"event_sums{suffix}"
+                    / "service_date=*" / "route=*.parquet")
 
     # ---- turn movements (turn_movements.py; annotation only) -------------
     mv_path = base / "movements.json"
@@ -304,6 +312,13 @@ def build(city_id: str) -> None:
                 if 0 <= b < n_buckets:
                     parr[b] = n
             payload["ping"] = parr
+        ps = ping_speed.get(seg_id)
+        if ps:
+            varr = [None] * n_buckets
+            for b, v in ps.items():
+                if 0 <= b < n_buckets:
+                    varr[b] = round(v, 2)   # m/s, >=5 speed pings per bucket
+            payload["ping_v"] = varr
         payload["sha"] = sha12
         n_events_total += total
         (out_dir / f"{sid}.json").write_text(json.dumps(payload))
@@ -317,8 +332,11 @@ def build(city_id: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--city", default="cta")
+    ap.add_argument("--events-suffix", default="",
+                    help="read events<suffix>/event_sums<suffix>, write "
+                         "dist<suffix>/ (e.g. 3mph for the --mph 3 pass)")
     args = ap.parse_args()
-    build(args.city)
+    build(args.city, suffix=args.events_suffix)
 
 
 if __name__ == "__main__":

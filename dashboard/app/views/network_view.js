@@ -651,12 +651,24 @@ export class NetworkView {
   // the same as the (time-subtraction) map metrics until the event batch
   // redefines them.
   async _renderDistribution(host, props, coords) {
+    this._distThresh ??= "5";   // slow-event threshold pass: "5" | "3" mph
+    const distDir = this._distThresh === "3" ? "dist3mph" : "dist";
     let d;
     try {
-      const r = await fetch(`${this.data.base}/dist/${props.sid}.json`, { cache: "no-cache" });
+      const r = await fetch(`${this.data.base}/${distDir}/${props.sid}.json`, { cache: "no-cache" });
       if (!r.ok) throw new Error();
       d = await r.json();
     } catch {
+      if (this._distThresh === "3") {
+        host.innerHTML = `<div class="nw-note">no 3 mph pass built for this city/segment —
+          <a href="#" class="dist-back5">back to 5 mph</a></div>`;
+        host.querySelector(".dist-back5").onclick = (e) => {
+          e.preventDefault();
+          this._distThresh = "5";
+          this._renderDistribution(host, props, coords);
+        };
+        return;
+      }
       host.innerHTML = `<div class="nw-note">no delay-event data for this segment yet</div>`;
       return;
     }
@@ -786,21 +798,51 @@ export class NetworkView {
       if (ghost) bars += `<g opacity="0.5">${ghost}</g>`;
     }
 
-    // y axis: 0, mid, max
+    // y axis: 0, mid, max (+ unit label so the two axes read apart)
     const fmtY = (v) => secondsMode
       ? (v >= 60 ? `${(v / 60).toFixed(1)}m` : `${v.toFixed(1)}s`)
       : String(Math.round(v));
-    const yAxis = `
+    const leftUnit = pingMode ? "pings"
+      : secondsMode ? "s/trip" : queueMode ? "events" : "events";
+    let yAxis = `
       <line x1="${padL - 4}" y1="8" x2="${padL - 4}" y2="${chartH}" stroke="#999"/>
       <text x="${padL - 8}" y="16" text-anchor="end" class="dist-tick">${fmtY(yMax)}</text>
       <text x="${padL - 8}" y="${(chartH + 16) / 2}" text-anchor="end" class="dist-tick">${fmtY(yMax / 2)}</text>
-      <text x="${padL - 8}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>`;
+      <text x="${padL - 8}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>
+      <text x="${padL - 8}" y="6" text-anchor="end" class="dist-tick" style="font-style:italic">${leftUnit}</text>`;
+
+    // Average-speed overlay (raw ping speeds per 10 ft bucket): join-the-
+    // dots line + right-hand mph axis, opposite end from the traffic light.
+    this._showSpeed ??= false;
+    const MPH = 2.23694;
+    const spd = (this._showSpeed && d.ping_v) ? d.ping_v : null;
+    let vMaxMph = 0, ySpd = null, speedLine = "";
+    if (spd) {
+      vMaxMph = Math.max(...spd.filter((v) => v != null)) * MPH * 1.15 || 1;
+      ySpd = (mph) => chartH - (mph / vMaxMph) * (chartH - 6);
+      const pts = [];
+      for (let i = 0; i < spd.length; i++) {
+        if (spd[i] == null) continue;
+        pts.push([xOf((i + 0.5) * d.bucket_ft), ySpd(spd[i] * MPH)]);
+      }
+      if (pts.length > 1) {
+        speedLine = `<polyline points="${pts.map((p2) => p2.map((c) => c.toFixed(1)).join(",")).join(" ")}"
+            fill="none" stroke="#0a0a0a" stroke-width="1.6" opacity=".85"/>` +
+          pts.map((p2) => `<circle cx="${p2[0].toFixed(1)}" cy="${p2[1].toFixed(1)}" r="1.6" fill="#0a0a0a"/>`).join("");
+      }
+      const rx = W - padR + 4;
+      yAxis += `
+        <line x1="${rx}" y1="8" x2="${rx}" y2="${chartH}" stroke="#999"/>
+        <text x="${rx + 4}" y="16" class="dist-tick">${vMaxMph.toFixed(0)}</text>
+        <text x="${rx + 4}" y="${(chartH + 16) / 2}" class="dist-tick">${(vMaxMph / 2).toFixed(0)}</text>
+        <text x="${rx + 4}" y="${chartH}" class="dist-tick">0</text>
+        <text x="${rx + 4}" y="6" class="dist-tick" style="font-style:italic">mph</text>`;
+    }
 
     // road strip
     const roadY = chartH + 8;
     const roadBodyH = roadH - 18;
     const axisY = roadY + roadBodyH + 52;
-    const sideY = axisY - 2;   // sideways labels: leading edge at the x-axis
     // Break the roadway (12 px gaps) at NAMED junctions — non-signalized
     // by definition (signals are segment boundaries); label each gap.
     const namedJcts = (props.junctions_off ?? [])
@@ -827,8 +869,8 @@ export class NetworkView {
       }
       for (const j of namedJcts) {
         const nm = j.cross.replace(/^(North|South|East|West) /, "");
-        road += `<text transform="rotate(-90 ${j.x.toFixed(1)} ${sideY})" x="${j.x.toFixed(1)}"
-                 y="${sideY}" text-anchor="start"
+        road += `<text transform="rotate(-90 ${j.x.toFixed(1)} ${roadY})" x="${j.x.toFixed(1)}"
+                 y="${roadY}" text-anchor="end"
                  style="font-size:8px;fill:#555" dominant-baseline="middle">${nm}</text>`;
       }
     }
@@ -882,8 +924,8 @@ export class NetworkView {
       const downName = cname(ends[1]);
       const upName = cname(ends[0]);
       const sideLabel = (tx, name, fill = "#555") =>
-        `<text transform="rotate(-90 ${tx} ${sideY})" x="${tx}" y="${sideY}"
-         text-anchor="start" style="font-size:8px;fill:${fill}">${name}</text>`;
+        `<text transform="rotate(-90 ${tx} ${roadY})" x="${tx}" y="${roadY}"
+         text-anchor="end" style="font-size:8px;fill:${fill}">${name}</text>`;
       if (downName) road += sideLabel((xOf(0) - 42).toFixed(1), downName);
       if (upName) road += sideLabel((xOf(lenFt) + 14).toFixed(1), upName);
     }
@@ -930,9 +972,9 @@ export class NetworkView {
                 style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">BUS</text>
           <text x="${x.toFixed(1)}" y="${top + 31}" text-anchor="middle"
                 style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">STOP</text>
-          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 37 : 14)}"
+          <text x="${x.toFixed(1)}" y="${top + bh + 13}"
                 text-anchor="middle" style="font-size:9.5px;fill:#333;font-weight:600">${st.id}</text>
-          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 48 : 25)}"
+          <text x="${x.toFixed(1)}" y="${top + bh + 24}"
                 text-anchor="middle" style="font-size:9.5px;fill:#333">${st.name}</text>
         </g>`;
       });
@@ -953,6 +995,8 @@ export class NetworkView {
         <rect y="${axisY + 8}" width="58" height="16" rx="4" fill="#333"/>
         <text y="${axisY + 20}" text-anchor="middle" class="dist-tick"
               style="fill:#fff;font-weight:600"></text>
+        <text class="dist-cursor-spd" style="font-size:10px;font-weight:700;
+              paint-order:stroke;stroke:#fff;stroke-width:3px;fill:#0a0a0a"></text>
       </g>`;
 
     host.innerHTML = `
@@ -966,6 +1010,12 @@ export class NetworkView {
           ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
           ${d.ping ? `<button data-m="pings" class="${pingMode ? "on" : ""}">raw pings</button>` : ""}
         </span>
+        ${!pingMode ? `<span class="dist-toggle" style="margin-left:8px" title="slow-event speed threshold">
+          <button data-th="5" class="${this._distThresh === "5" ? "on" : ""}">&lt;5 mph</button>
+          <button data-th="3" class="${this._distThresh === "3" ? "on" : ""}">&lt;3 mph</button>
+        </span>` : ""}
+        ${d.ping_v ? `<label class="dist-speed" style="font-size:11px;margin-left:10px;cursor:pointer">
+          <input type="checkbox" class="dist-speed-cb" ${this._showSpeed ? "checked" : ""}> avg speed</label>` : ""}
         ${this.hasDoor && d.dw && !pingMode ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-doors-cb" ${this._showDoors ? "checked" : ""}> door events</label>` : ""}
         ${mvmtAll.length && !pingMode ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
@@ -989,7 +1039,7 @@ export class NetworkView {
           ? `(${totals.reduce((a, v) => a + v, 0).toLocaleString()} raw AVL pings, pre-reconstruction)`
           : `(${d.n_events} events · ${d.n_trips ?? "?"} trips)`}</span>
       </div>
-      <svg viewBox="0 0 ${W} ${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
+      <svg viewBox="0 0 ${W} ${H}" class="dist-svg">${yAxis}${bars}${speedLine}${road}${axis}</svg>
       ${this.hasDoor && !pingMode ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
@@ -998,8 +1048,17 @@ export class NetworkView {
         ${this._showDoors ? `<span><i style="background:#2b6fd6"></i>door events</span>` : ""}
       </div>` : ""}`;
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
-      b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props, coords); };
+      b.onclick = () => {
+        if (b.dataset.th) this._distThresh = b.dataset.th;
+        else this._distMode = b.dataset.m;
+        this._renderDistribution(host, props, coords);
+      };
     });
+    const speedCb = host.querySelector(".dist-speed-cb");
+    if (speedCb) speedCb.onchange = () => {
+      this._showSpeed = speedCb.checked;
+      this._renderDistribution(host, props, coords);
+    };
     const doorsCb = host.querySelector(".dist-doors-cb");
     if (doorsCb) doorsCb.onchange = () => {
       this._showDoors = doorsCb.checked;
@@ -1036,6 +1095,17 @@ export class NetworkView {
         curBox.setAttribute("x", (px - 29).toFixed(1));
         curText.setAttribute("x", px.toFixed(1));
         curText.textContent = `${Math.round(ft)} ft`;
+        const spdEl = cur.querySelector(".dist-cursor-spd");
+        if (spd && ySpd) {
+          const bi = Math.floor(ft / d.bucket_ft);
+          const v = spd[bi];
+          if (v != null) {
+            const mph = v * MPH;
+            spdEl.setAttribute("x", (px + 7).toFixed(1));
+            spdEl.setAttribute("y", (ySpd(mph) - 7).toFixed(1));
+            spdEl.textContent = `${mph.toFixed(1)} mph`;
+          } else spdEl.textContent = "";
+        } else if (spdEl) spdEl.textContent = "";
       });
       svg.addEventListener("mouseleave", () => { cur.style.display = "none"; });
     }

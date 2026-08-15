@@ -80,7 +80,7 @@ from core.decompose.events import AbsoluteSpeedThreshold, detect_events  # noqa:
 from core.smooth import fit_trajectory  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 
-THRESHOLD = AbsoluteSpeedThreshold(5.0)
+THRESHOLD = AbsoluteSpeedThreshold(5.0)   # overridden by --mph
 MIN_EVENT_S = 15.0
 PORTION_MIN_S = 10.0  # pre/post-boarding portions must exceed this
 DENSE_DT_S = 2.0
@@ -524,14 +524,25 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     return event_rows, sum_rows
 
 
+def _init_worker_ev(city_id: str, mph: float = 5.0, suffix: str = "") -> None:
+    """Shared initializer plus the threshold/suffix this pass runs at."""
+    _init_worker(city_id)
+    global THRESHOLD
+    THRESHOLD = AbsoluteSpeedThreshold(mph)
+    _G["out_suffix"] = suffix
+
+
 def process_date(args):
     city_id, date_iso, force = args[:3]
+    mph = args[3] if len(args) > 3 else 5.0
+    suffix = args[4] if len(args) > 4 else ""
     if "city" not in _G:
-        _init_worker(city_id)
+        _init_worker_ev(city_id, mph, suffix)
     city: CityConfig = _G["city"]
     base = REPO / "outputs" / "network" / city.city_id
-    ev_dir = base / "events" / f"service_date={date_iso}"
-    su_dir = base / "event_sums" / f"service_date={date_iso}"
+    suffix = _G.get("out_suffix", "")
+    ev_dir = base / f"events{suffix}" / f"service_date={date_iso}"
+    su_dir = base / f"event_sums{suffix}" / f"service_date={date_iso}"
     stats: list[dict] = []
 
     try:
@@ -591,6 +602,9 @@ def process_date(args):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--city", default="cta")
+    ap.add_argument("--mph", type=float, default=5.0,
+                    help="slow-event speed threshold; non-default values "
+                         "write to events<suffix>/ (e.g. --mph 3 -> events3mph/)")
     ap.add_argument("--date", default=None)
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
@@ -611,9 +625,11 @@ def main() -> None:
             dates = [d for d in dates if d <= args.end]
     print(f"{len(dates)} service date(s)")
 
-    index_path = REPO / "outputs" / "network" / city.city_id / "events_index.jsonl"
+    out_suffix = "" if args.mph == 5.0 else f"{args.mph:g}mph"
+    index_path = (REPO / "outputs" / "network" / city.city_id
+                  / f"events_index{out_suffix}.jsonl")
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    work = [(args.city, d, args.force) for d in dates]
+    work = [(args.city, d, args.force, args.mph, out_suffix) for d in dates]
     t_start = time.time()
     done = 0
 
@@ -632,11 +648,12 @@ def main() -> None:
               f"({time.time()-t_start:.0f}s){suffix}", flush=True)
 
     if args.workers <= 1:
-        _init_worker(args.city)
+        _init_worker_ev(args.city, args.mph, out_suffix)
         for w in work:
             log(process_date(w))
     else:
-        with Pool(args.workers, initializer=_init_worker, initargs=(args.city,)) as pool:
+        with Pool(args.workers, initializer=_init_worker_ev,
+                  initargs=(args.city, args.mph, out_suffix)) as pool:
             for stats in pool.imap_unordered(process_date, work):
                 log(stats)
     print("done")

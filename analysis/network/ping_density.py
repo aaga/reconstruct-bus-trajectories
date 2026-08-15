@@ -8,7 +8,9 @@ counted into 10 ft buckets measured upstream of the downstream signal —
 the exact frame the distribution view plots.
 
 Output: outputs/network/<city>/ping_density.parquet
-    (seg_id TEXT, bucket INT, n BIGINT)
+    (seg_id TEXT, bucket INT, n BIGINT, n_v BIGINT, sum_v DOUBLE)
+    — n_v/sum_v aggregate speed_mps where the feed reports it, powering the
+    per-bucket average-speed overlay.
 
 Consumed by build_distributions ("ping" array per dist file).
 
@@ -63,8 +65,9 @@ def build(city_id: str) -> None:
             SELECT DISTINCT trip_key, shape_id
             FROM read_parquet('{trav_glob}')
           )
-          SELECT tk.shape_id, p.latitude AS lat, p.longitude AS lon
-          FROM read_parquet('{glob}') p
+          SELECT tk.shape_id, p.latitude AS lat, p.longitude AS lon,
+                 TRY_CAST(p.speed_mps AS DOUBLE) AS v
+          FROM read_parquet('{glob}', union_by_name=true) p
           JOIN tk ON tk.trip_key =
             p.trip_id || '_' || p.vehicle_id || '_' ||
             strftime(CAST(p.timestamp AT TIME ZONE '{tz}' AS DATE), '%Y-%m-%d')
@@ -77,7 +80,8 @@ def build(city_id: str) -> None:
           f"({time.time() - t0:.0f}s)", flush=True)
 
     shapes = registry["shapes"]
-    counts: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    counts: dict[str, dict[int, list]] = defaultdict(
+        lambda: defaultdict(lambda: [0, 0, 0.0]))  # [n, n_v, sum_v]
     n_snapped = 0
     t0 = time.time()
     shape_ids = [r[0] for r in con.execute(
@@ -108,13 +112,14 @@ def build(city_id: str) -> None:
         tree = cKDTree(pts)
 
         pings = con.execute(
-            "SELECT lat, lon FROM read_parquet(?) WHERE shape_id = ?",
+            "SELECT lat, lon, v FROM read_parquet(?) WHERE shape_id = ?",
             [str(inter), sh]).fetch_df()
         q = np.column_stack([pings["lon"].to_numpy() * mlat,
                              pings["lat"].to_numpy() * 111320.0])
         dd, ii = tree.query(q, distance_upper_bound=SNAP_MAX_M)
         ok = np.isfinite(dd)
         d_along = ds[np.clip(ii[ok], 0, len(ds) - 1)]
+        v_ok = pings["v"].to_numpy(dtype=float)[ok]
         n_snapped += int(ok.sum())
 
         # locate in this shape's segment bounds; bucket from x_end
@@ -123,16 +128,31 @@ def build(city_id: str) -> None:
             if not m.any():
                 continue
             b = np.floor((x1 - d_along[m]) * FT_PER_M / BUCKET_FT).astype(int)
+            vv = v_ok[m]
+            fin = np.isfinite(vv)
             for bb, cnt in zip(*np.unique(b, return_counts=True)):
-                counts[seg_id][int(bb)] += int(cnt)
+                counts[seg_id][int(bb)][0] += int(cnt)
+            if fin.any():
+                bf = b[fin]
+                vf = vv[fin]
+                order = np.argsort(bf, kind="stable")
+                bs, starts = np.unique(bf[order], return_index=True)
+                sums = np.add.reduceat(vf[order], starts)
+                cnts = np.add.reduceat(np.ones_like(vf[order]), starts)
+                for bb, sv, nv in zip(bs, sums, cnts):
+                    c = counts[seg_id][int(bb)]
+                    c[1] += int(nv)
+                    c[2] += float(sv)
         if (si + 1) % 100 == 0:
             print(f"  [{si + 1}/{len(shape_ids)}] shapes "
                   f"({time.time() - t0:.0f}s)", flush=True)
 
-    rows = [(s, b, n) for s, d_ in counts.items() for b, n in d_.items()]
+    rows = [(s, b, c[0], c[1], c[2])
+            for s, d_ in counts.items() for b, c in d_.items()]
     out = base / "ping_density.parquet"
-    con.execute("CREATE TABLE pd(seg_id TEXT, bucket INT, n BIGINT)")
-    con.executemany("INSERT INTO pd VALUES (?, ?, ?)", rows)
+    con.execute("CREATE TABLE pd(seg_id TEXT, bucket INT, n BIGINT, "
+                "n_v BIGINT, sum_v DOUBLE)")
+    con.executemany("INSERT INTO pd VALUES (?, ?, ?, ?, ?)", rows)
     con.execute(f"COPY pd TO '{out}' (FORMAT PARQUET)")
     inter.unlink()
     print(f"wrote {out}: {len(counts):,} segments, {len(rows):,} buckets, "
