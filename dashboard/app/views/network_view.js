@@ -653,7 +653,7 @@ export class NetworkView {
   async _renderDistribution(host, props, coords) {
     let d;
     try {
-      const r = await fetch(`${this.data.base}/dist/${props.sid}.json`);
+      const r = await fetch(`${this.data.base}/dist/${props.sid}.json`, { cache: "no-cache" });
       if (!r.ok) throw new Error();
       d = await r.json();
     } catch {

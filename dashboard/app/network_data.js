@@ -32,8 +32,8 @@ export class NetworkData {
 
   async init() {
     const [meta, segments] = await Promise.all([
-      fetch(`${this.base}/meta.json`).then((r) => r.json()),
-      fetch(`${this.base}/segments.json`).then((r) => r.json()),
+      fetch(`${this.base}/meta.json`, { cache: "no-cache" }).then((r) => r.json()),
+      fetch(`${this.base}/segments.json`, { cache: "no-cache" }).then((r) => r.json()),
     ]);
     this.meta = meta;
     this.segments = segments;
@@ -66,14 +66,14 @@ export class NetworkData {
     let buf = null;
     // Prefer the pre-gzipped twin (~3x smaller; Pages won't compress .bin).
     if (typeof DecompressionStream === "function") {
-      const r = await fetch(`${this.base}/${name}.gz`);
+      const r = await fetch(`${this.base}/${name}.gz`, { cache: "no-cache" });
       if (r.ok) {
         const ds = r.body.pipeThrough(new DecompressionStream("gzip"));
         buf = await new Response(ds).arrayBuffer();
       }
     }
     if (!buf) {
-      buf = await fetch(`${this.base}/${name}`).then((r) => {
+      buf = await fetch(`${this.base}/${name}`, { cache: "no-cache" }).then((r) => {
         if (!r.ok) throw new Error(`shard part ${name}: HTTP ${r.status}`);
         return r.arrayBuffer();
       });
@@ -344,7 +344,7 @@ export function deriveMetrics(acc, tFf, meta) {
 // --------------------------------------------------------------------------
 
 export async function selfTestGolden(baseUrl = "../data/network") {
-  const g = await fetch(`${baseUrl}/golden.json`).then((r) => r.json());
+  const g = await fetch(`${baseUrl}/golden.json`, { cache: "no-cache" }).then((r) => r.json());
   const meta = { hist_families: g.families };
   const failures = [];
   for (const c of g.cases) {
