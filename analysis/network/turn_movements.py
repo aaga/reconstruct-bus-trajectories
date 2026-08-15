@@ -74,6 +74,12 @@ def build(city_id: str) -> None:
         polyline, dist_m = load_gtfs_shape_with_dist(gtfs, shape_id)
         pts = np.asarray(polyline, dtype=float)
         lats, lons = pts[:, 0], pts[:, 1]
+        if dist_m is None:
+            # Feeds without shape_dist_traveled (MBTA) — same equirect
+            # ruler every SnapToShapeMatcher fallback uses, so x_hi values
+            # from seg_bounds line up.
+            from core.mapmatch.shape_snap import equirect_cumulative_m
+            dist_m = equirect_cumulative_m(pts)
         dist_m = np.asarray(dist_m, dtype=float)
         for seg_id, _x_lo, x_hi in rec["seg_bounds"]:
             mv = classify(dist_m, lats, lons, float(x_hi))
