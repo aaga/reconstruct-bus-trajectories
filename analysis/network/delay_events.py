@@ -119,6 +119,10 @@ EVENTS_SCHEMA = pa.schema(
         # Piece time bounds (epoch s), for trip-sequencing analyses.
         ("t_start_s", pa.float64()),
         ("t_end_s", pa.float64()),
+        # Passenger load carried at piece start (load_asof: passenger_load
+        # of the most recent door close). Powers the passenger-seconds
+        # distribution tab: bucket pax·s = sum(dur_s × pax).
+        ("pax", pa.float32()),
     ]
 )
 
@@ -371,6 +375,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 "is_last": False, "trip_seq": 0, "is_last_all": False,
                 "stop_id": str(stop_id) if stop_id is not None else None,
                 "t_start_s": float(ta), "t_end_s": float(tb),
+                "pax": float(load_asof(ta)),
             }
         )
 

@@ -147,9 +147,10 @@ def build(city_id: str, suffix: str = "") -> None:
                coalesce(mv.m, '?') AS mvm,
                count(*) AS n,
                sum(e.dur_s) AS secs,
+               sum(e.dur_s * coalesce(e.pax, 0)) AS pax_secs,
                count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
                                 THEN e.is_last_all ELSE e.is_last END) AS n_last
-        FROM read_parquet('{glob}') e
+        FROM read_parquet('{glob}', union_by_name=true) e
         LEFT JOIN shp USING (seg_id, trip_key)
         LEFT JOIN mv ON mv.seg_id = e.seg_id AND mv.shape_id = shp.shape_id
         WHERE e.cls IN ('nd', 'pre', 'post', 'post2', 'dw')
@@ -169,9 +170,10 @@ def build(city_id: str, suffix: str = "") -> None:
                coalesce(mv.m, '?') AS mvm,
                count(*) AS n,
                sum(e.dur_s) AS secs,
+               sum(e.dur_s * coalesce(e.pax, 0)) AS pax_secs,
                count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
                                 THEN e.is_last_all ELSE e.is_last END) AS n_last
-        FROM read_parquet('{glob}') e
+        FROM read_parquet('{glob}', union_by_name=true) e
         JOIN shp USING (seg_id, trip_key)
         JOIN adj ON adj.shape_id = shp.shape_id AND adj.nb_seg = e.seg_id
         JOIN seglen sl ON sl.seg_id = adj.tgt_seg
@@ -185,12 +187,14 @@ def build(city_id: str, suffix: str = "") -> None:
 
     per_seg: dict[str, dict] = {}
     per_seg_mv: dict[str, dict[str, dict]] = {}
-    for seg_id, fcls, bucket, mvm, n, secs, n_last in rows:
+    for seg_id, fcls, bucket, mvm, n, secs, pax_secs, n_last in rows:
         b = int(bucket)
         d = per_seg.setdefault(seg_id, {})
         d.setdefault(fcls, {})[b] = d.get(fcls, {}).get(b, 0) + int(n)
         sd = d.setdefault(fcls + "_s", {})
         sd[b] = round(sd.get(b, 0.0) + float(secs), 1)
+        pd_ = d.setdefault(fcls + "_p", {})
+        pd_[b] = round(pd_.get(b, 0.0) + float(pax_secs), 1)
         if n_last:
             qd = d.setdefault(fcls + "_q", {})
             qd[b] = qd.get(b, 0) + int(n_last)
@@ -198,12 +202,13 @@ def build(city_id: str, suffix: str = "") -> None:
             md = per_seg_mv.setdefault(seg_id, {}).setdefault(mvm, {})
             md.setdefault(fcls, {})[b] = int(n)
             md.setdefault(fcls + "_s", {})[b] = round(float(secs), 1)
+            md.setdefault(fcls + "_p", {})[b] = round(float(pax_secs), 1)
             if n_last:
                 md.setdefault(fcls + "_q", {})[b] = int(n_last)
 
     per_seg_gh: dict[str, dict] = {}
     per_seg_mv_gh: dict[str, dict[str, dict]] = {}
-    for seg_id, fcls, bucket, mvm, n, secs, n_last in ghost_rows:
+    for seg_id, fcls, bucket, mvm, n, secs, pax_secs, n_last in ghost_rows:
         b = int(bucket)
         targets = [per_seg_gh.setdefault(seg_id, {})]
         if mvm != "?":
@@ -214,6 +219,8 @@ def build(city_id: str, suffix: str = "") -> None:
             cd[b] = cd.get(b, 0) + int(n)
             sd = t.setdefault(fcls + "_s", {})
             sd[b] = round(sd.get(b, 0.0) + float(secs), 1)
+            pd_ = t.setdefault(fcls + "_p", {})
+            pd_[b] = round(pd_.get(b, 0.0) + float(pax_secs), 1)
             if n_last:
                 qd = t.setdefault(fcls + "_q", {})
                 qd[b] = qd.get(b, 0) + int(n_last)
@@ -260,15 +267,20 @@ def build(city_id: str, suffix: str = "") -> None:
             "n_dates": dates[0],
         }
         total = 0
-        for cls in [c + suf for c in CLASSES for suf in ("", "_s", "_q")]:
+        for cls in [c + suf for c in CLASSES for suf in ("", "_s", "_q", "_p")]:
             arr = [0] * n_buckets
             for b, n in classes.get(cls, {}).items():
                 if 0 <= b < n_buckets:
                     arr[b] = n
                     # dw is an annotation layer, not a delay event
-                    if not cls.endswith(("_s", "_q")) and cls != "dw":
+                    if not cls.endswith(("_s", "_q", "_p")) and cls != "dw":
                         total += n
             payload[cls] = arr
+        # no-door cities (e.g. MBTA) have all-zero pax: drop the _p arrays
+        # so the dashboard hides the passenger-seconds tab entirely.
+        if not any(v for c in CLASSES for v in payload.get(c + "_p", [])):
+            for c in CLASSES:
+                payload.pop(c + "_p", None)
         payload["n_events"] = total
         payload["n_trips"] = int(n_trips.get(seg_id, 0))
         # Ghost zones: neighbors' events remapped into this segment's frame,
@@ -277,7 +289,7 @@ def build(city_id: str, suffix: str = "") -> None:
 
         def _ghost_arrays(src_dict):
             lo, hi = {}, {}
-            for cls in [c + s for c in CLASSES for s in ("", "_s", "_q")]:
+            for cls in [c + s for c in CLASSES for s in ("", "_s", "_q", "_p")]:
                 alo = [0] * G
                 ahi = [0] * G
                 for b, v in src_dict.get(cls, {}).items():
@@ -329,7 +341,7 @@ def build(city_id: str, suffix: str = "") -> None:
                 by = {}
                 for m, mcls in per_seg_mv.get(seg_id, {}).items():
                     arrs = {}
-                    for cls in [c + s for c in CLASSES for s in ("", "_s", "_q")]:
+                    for cls in [c + s for c in CLASSES for s in ("", "_s", "_q", "_p")]:
                         arr = [0] * n_buckets
                         for b, n in mcls.get(cls, {}).items():
                             if 0 <= b < n_buckets:

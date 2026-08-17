@@ -682,12 +682,14 @@ export class NetworkView {
       host.innerHTML = `<div class="nw-note">data version mismatch — reload the page</div>`;
       return;
     }
-    this._distMode ??= "events"; // "events" | "seconds" | "queue" | "pings"
+    this._distMode ??= "events"; // "events" | "seconds" | "pax" | "queue" | "pings"
     if (this._distMode === "pings" && !d.ping) this._distMode = "events";
+    if (this._distMode === "pax" && !d.nd_p) this._distMode = "events";
     const pingMode = this._distMode === "pings";
     const secondsMode = this._distMode === "seconds";
+    const paxMode = this._distMode === "pax";
     const queueMode = this._distMode === "queue";
-    const suffix = secondsMode ? "_s" : queueMode ? "_q" : "";
+    const suffix = secondsMode ? "_s" : paxMode ? "_p" : queueMode ? "_q" : "";
     // v2 classes; v1 files simply lack post2/dw (empty fallbacks keep them
     // working). dw (door events) is opt-in via the checkbox.
     this._showDoors ??= false;
@@ -709,7 +711,7 @@ export class NetworkView {
     const selTrips = mvmtFiltered
       ? [...this._mvmtSel].reduce((a, m) => a + (d.mvmt[m] ?? 0), 0)
       : (d.n_trips ?? 1);
-    const denom = secondsMode ? Math.max(1, selTrips) : 1;
+    const denom = (secondsMode || paxMode) ? Math.max(1, selTrips) : 1;
     const zeros = d.nd.map(() => 0);
     const pick = (c) => {
       if (mvmtFiltered) {
@@ -804,7 +806,8 @@ export class NetworkView {
       ? (v >= 60 ? `${(v / 60).toFixed(1)}m` : `${v.toFixed(1)}s`)
       : String(Math.round(v));
     const countUnit = pingMode ? "pings"
-      : secondsMode ? "s/trip" : queueMode ? "events" : "events";
+      : secondsMode ? "s/trip" : paxMode ? "pax·s/trip"
+      : queueMode ? "events" : "events";
     const crx = W - padR + 4;
     let yAxis = `
       <line x1="${crx}" y1="8" x2="${crx}" y2="${chartH}" stroke="#999"/>
@@ -1021,6 +1024,7 @@ export class NetworkView {
         <span class="dist-toggle">
           <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">delay events</button>
           <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
+          ${d.nd_p ? `<button data-m="pax" class="${this._distMode === "pax" ? "on" : ""}">passenger seconds</button>` : ""}
           ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
           ${d.ping ? `<button data-m="pings" class="${pingMode ? "on" : ""}">raw pings</button>` : ""}
         </span>
