@@ -59,7 +59,8 @@ def _hist_cols(expr: str) -> str:
     return ",\n           ".join(out)
 
 
-def build(city_id: str, out_root: Path | None = None) -> None:
+def build(city_id: str, out_root: Path | None = None,
+          only_months: list[str] | None = None) -> None:
     city = get_city(city_id)
     base = REPO / "outputs" / "network" / city.city_id
     registry = json.loads((base / "segment_registry.json").read_text())
@@ -71,9 +72,9 @@ def build(city_id: str, out_root: Path | None = None) -> None:
         movements = json.loads(mv_path.read_text())
 
     out = out_root or (REPO / "dashboard" / "data" / "network" / "facts")
-    if out.exists():
+    if out.exists() and not only_months:
         shutil.rmtree(out)
-    out.mkdir(parents=True)
+    out.mkdir(parents=True, exist_ok=True)
 
     con = duckdb.connect()
     con.execute(f"SET temp_directory='{base / 'duckdb_spill'}'")
@@ -96,13 +97,18 @@ def build(city_id: str, out_root: Path | None = None) -> None:
     con.execute("CREATE TABLE ff(seg_id TEXT, t_ff_s DOUBLE)")
     con.executemany("INSERT INTO ff VALUES (?, ?)",
                     [(k, v["t_ff_s"]) for k, v in freeflow["freeflow"].items()])
-    con.execute("CREATE TABLE mv(seg_id TEXT, shape_id TEXT, m TEXT)")
-    if movements:
-        con.executemany("INSERT INTO mv VALUES (?, ?, ?)",
-                        [(s, sh, m) for s, d in movements.items()
-                         for sh, m in d.items()])
+    # Era-complete: keyed by (shape_id, seg_id) for every era's shapes, not
+    # just the canonical snapshot (see turn_movements.movement_rows).
+    from analysis.network.turn_movements import movement_rows
+    con.execute("CREATE TABLE mv(shape_id TEXT, seg_id TEXT, m TEXT)")
+    mrows = movement_rows(city, registry)
+    if mrows:
+        con.executemany("INSERT INTO mv VALUES (?, ?, ?)", mrows)
+    print(f"movements: {len(mrows):,} (shape, seg) pairs across all eras")
 
     months = sorted({d[:7] for d in date_attrs["days"]})
+    if only_months:
+        months = [m for m in months if m in only_months]
     t0 = time.time()
     n_rows = 0
     for ym in months:
@@ -202,8 +208,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--city", default="cta")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--months", default=None,
+                    help="comma-separated YYYY-MM subset (testing)")
     a = ap.parse_args()
-    build(a.city, Path(a.out) if a.out else None)
+    build(a.city, Path(a.out) if a.out else None,
+          a.months.split(",") if a.months else None)
     return 0
 
 

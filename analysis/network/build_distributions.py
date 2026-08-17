@@ -124,19 +124,32 @@ def build(city_id: str, suffix: str = "") -> None:
     # ---- turn movements (turn_movements.py; annotation only) -------------
     mv_path = base / "movements.json"
     movements = json.loads(mv_path.read_text()) if mv_path.exists() else {}
+    # Era-complete (shape, seg) -> movement: movements.json is keyed by
+    # canonical shape_ids, so historical traversals would all read '?' and
+    # lose their per-movement splits.
+    from analysis.network.turn_movements import movement_rows
     con.execute("CREATE TABLE mv(seg_id TEXT, shape_id TEXT, m TEXT)")
-    if movements:
-        con.executemany(
-            "INSERT INTO mv VALUES (?, ?, ?)",
-            [(s, sh, m) for s, d_ in movements.items() for sh, m in d_.items()],
-        )
+    _mrows = movement_rows(city, registry)
+    if _mrows:
+        con.executemany("INSERT INTO mv VALUES (?, ?, ?)",
+                        [(seg, sh, m) for sh, seg, m in _mrows])
 
     # ---- segment adjacency along each shape (ghost zones) ----------------
     # For neighbor N of target S on shape sh, an N-event at off_N sits at
     # off_N + (x_hi_S − x_hi_N) in S's downstream-signal frame: negative =
     # past S's light, > len = upstream of S's start.
+    # Every era's shapes, for the same reason as movements above: ghost
+    # zones join on shape_id, so canonical-only would blank them historically.
+    _all_shapes = dict(registry["shapes"])
+    _era_dir = base / "era_shapes"
+    if _era_dir.is_dir():
+        for _p in sorted(_era_dir.glob("*.json")):
+            try:
+                _all_shapes.update(json.loads(_p.read_text()))
+            except Exception:  # noqa: BLE001
+                continue
     adj_rows = []
-    for sh, rec in registry["shapes"].items():
+    for sh, rec in _all_shapes.items():
         sb = sorted(rec["seg_bounds"], key=lambda r: r[1])
         for a, b in zip(sb, sb[1:]):
             adj_rows.append((sh, b[0], a[0], a[2] - b[2]))  # b is a's next
@@ -146,7 +159,7 @@ def build(city_id: str, suffix: str = "") -> None:
     for _sh, nb, tgt, _shift in adj_rows:
         # rows come in pairs; nb with larger x_end than tgt is tgt's NEXT
         pass
-    for sh_, rec_ in registry["shapes"].items():
+    for sh_, rec_ in _all_shapes.items():
         sb_ = sorted(rec_["seg_bounds"], key=lambda r: r[1])
         for a_, b_ in zip(sb_, sb_[1:]):
             next_of.setdefault(a_[0], set()).add(b_[0])
