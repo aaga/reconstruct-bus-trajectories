@@ -100,3 +100,26 @@ def test_fit_trajectory_routing():
 def test_vchip_requires_two_points():
     with pytest.raises(ValueError):
         vchip_me(np.array([1.0]), np.array([2.0]), np.array([3.0]))
+
+
+def test_pattern_stop_reattribution_nearest():
+    """Location-based door re-attribution picks the nearest pattern stop."""
+    sys.path.insert(0, str(REPO))
+    from analysis.network import delay_events as de
+    de._G.clear()
+    de._G["shapes"] = {"S1": {"seg_bounds": [["A", 0, 500], ["B", 500, 900]]}}
+    de._G["seg_stops"] = {"A": [(100.0, "s1"), (350.0, "s2")],
+                          "B": [(50.0, "s3")]}
+    dists, ids = de._pattern_stops("S1")
+    # A ends at 500: s1@400, s2@150; B ends at 900: s3@850
+    assert list(dists) == [150.0, 400.0, 850.0]
+    assert ids == ["s2", "s1", "s3"]
+    import numpy as np
+    for x, want in ((0, "s2"), (270, "s2"), (280, "s1"), (600, "s1"),
+                    (630, "s3"), (2000, "s3")):
+        j = np.searchsorted(dists, x)
+        lo, hi = max(0, j - 1), min(len(dists) - 1, j)
+        best = lo if abs(x - dists[lo]) <= abs(x - dists[hi]) else hi
+        assert ids[best] == want, (x, ids[best])
+    assert de._pattern_stops("missing") is None
+    de._G.clear()

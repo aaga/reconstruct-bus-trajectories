@@ -105,6 +105,13 @@ def _init_worker(city_id: str) -> None:
         by_route.setdefault(rec["route_id"], []).append(sid)
     _G["shapes_by_route"] = by_route
     _G["matchers"] = {}  # shape_id -> (matcher, shape_len_m)
+    # seg_id -> [(off_m_from_seg_end, stop_id), ...] — powers the
+    # location-based door re-attribution in delay_events (2026-08-16).
+    _G["seg_stops"] = {
+        seg_id: [(float(st["off_m"]), str(st["id"]))
+                 for st in rec.get("stops_off", [])]
+        for seg_id, rec in reg["segments"].items()
+    }
 
 
 def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:

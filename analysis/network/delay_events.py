@@ -113,7 +113,7 @@ EVENTS_SCHEMA = pa.schema(
         # Like is_last but door events (dw) compete too: the traversal's
         # final piece in the segment including dwells.
         ("is_last_all", pa.bool_()),
-        # System stop attribution of the associated door cycle (dw/pre/
+        # Stop attribution of the associated door cycle (dw/pre/
         # post/post2 rows; null for nd). Powers per-stop performance stats.
         ("stop_id", pa.string()),
         # Piece time bounds (epoch s), for trip-sequencing analyses.
@@ -196,6 +196,29 @@ def _stored_assignments(city: CityConfig, date_iso: str) -> dict[str, str]:
         f"SELECT DISTINCT trip_key, shape_id FROM read_parquet('{pat}')"
     ).fetchall()
     return {str(k): str(s) for k, s in rows}
+
+
+def _pattern_stops(shape_id: str):
+    """(sorted dists_along, stop_ids) for the shape's stops; None if none.
+
+    Stop offsets are per-segment (m upstream of the segment end); each
+    segment's end position on this shape comes from seg_bounds.
+    """
+    cache = _G.setdefault("pattern_stops", {})
+    if shape_id in cache:
+        return cache[shape_id]
+    rec = _G["shapes"].get(shape_id)
+    out = None
+    if rec is not None:
+        pts = []
+        for seg_id, _x_lo, x_hi in rec["seg_bounds"]:
+            for off_m, stop_id in _G.get("seg_stops", {}).get(seg_id, []):
+                pts.append((float(x_hi) - off_m, stop_id))
+        if pts:
+            pts.sort()
+            out = (np.array([p[0] for p in pts]), [p[1] for p in pts])
+    cache[shape_id] = out
+    return out
 
 
 def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Counter,
@@ -370,20 +393,46 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     #   "door_mid": trajectory position at the door-interval time-midpoint
     #               (cta-hf high-frequency investigation)
     door_snap: list[tuple] = []
+    door_x: list[float] = []          # along-shape position of each cycle
     if len(trip_doors):
         clamp_t = lambda t: min(max(t - t0_epoch, float(f.x[0])), float(f.x[-1]))
         if city.door_anchor == "door_mid":
             for k in range(len(trip_doors)):
                 tm = (float(trip_doors[k, 0]) + float(trip_doors[k, 1])) / 2
-                door_snap.append(seg_of(x_at(clamp_t(tm))))
+                x = x_at(clamp_t(tm))
+                door_x.append(float(x))
+                door_snap.append(seg_of(x))
         else:
             mtc = _matcher(asg.shape_id)[0]
             snp = mtc.match(trip_doors[:, 3], trip_doors[:, 4], exact_far=False)
             for k in range(len(trip_doors)):
                 if snp.on_route[k]:
-                    door_snap.append(seg_of(float(snp.dist_along_m[k])))
+                    x = float(snp.dist_along_m[k])
                 else:
-                    door_snap.append(seg_of(x_at(clamp_t(float(trip_doors[k, 1])))))
+                    x = float(x_at(clamp_t(float(trip_doors[k, 1]))))
+                door_x.append(x)
+                door_snap.append(seg_of(x))
+
+    # Location-based re-attribution (2026-08-16 decision): each door cycle
+    # is assigned to the NEAREST stop on the trip's pattern (the assigned
+    # shape's stop set, positioned along the shape), ignoring the AVL
+    # system's stop_id stamp — which lags on skips/bays/stations (the
+    # 6515/6137 bleed class). Modal stop locations themselves stay
+    # stamp-derived upstream in the registry. Falls back to the stamp only
+    # when the shape carries no stops.
+    if len(trip_doors):
+        pattern = _pattern_stops(asg.shape_id)
+        if pattern is not None:
+            p_dists, p_ids = pattern
+            idx = np.searchsorted(p_dists, np.asarray(door_x))
+            reattr = []
+            for k, j in enumerate(idx):
+                lo = max(0, j - 1)
+                hi = min(len(p_dists) - 1, j)
+                best = lo if (abs(door_x[k] - p_dists[lo])
+                              <= abs(door_x[k] - p_dists[hi])) else hi
+                reattr.append(p_ids[best])
+            trip_stops = reattr
 
     # ---- non-dwell events + viz shoulders + pax --------------------------
     for ev in events:
