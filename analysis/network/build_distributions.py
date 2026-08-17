@@ -65,6 +65,7 @@ def build(city_id: str, suffix: str = "") -> None:
     ping_path = base / "ping_density.parquet"
     ping_counts: dict[str, dict[int, int]] = {}
     ping_speed: dict[str, dict[int, float]] = {}
+    speed_w: dict[str, dict[int, int]] = {}
     if ping_path.exists():
         import pyarrow.parquet as _pq
         _cols = _pq.ParquetFile(ping_path).schema.names
@@ -76,6 +77,31 @@ def build(city_id: str, suffix: str = "") -> None:
             ping_counts.setdefault(seg_id_, {})[int(b_)] = int(n_)
             if nv_ and nv_ >= 5:
                 ping_speed.setdefault(seg_id_, {})[int(b_)] = float(sv_) / nv_
+        speed_w = ping_counts
+    # Trajectory crossing times (delay_events --traj-speed): bucket avg
+    # speed = bucket_len / mean(crossing dt) — the L/avg-crossing-time
+    # estimator. Preferred over the ping-speed bucket mean, which is biased
+    # by stop-zone milestone pings (positions stamped at fixed points with
+    # live speeds). Replaces the speed OVERLAY only; ping counts still feed
+    # the raw-pings tab.
+    ts_glob = base / "traj_speed"
+    if ts_glob.exists():
+        ping_speed, speed_w = {}, {}
+        bucket_m = 10.0 / FT_PER_M
+        seg_len_m = {s: r["len_m"] for s, r in registry["segments"].items()}
+        for seg_id_, b_, n_, sdt_ in duckdb.connect().execute(f"""
+                SELECT seg_id, bucket, sum(n), sum(sum_dt)
+                FROM read_parquet('{ts_glob}/service_date=*/route=*.parquet')
+                GROUP BY 1, 2""").fetchall():
+            if n_ < 5 or sdt_ <= 0:
+                continue
+            L = seg_len_m.get(seg_id_)
+            if L is None:
+                continue
+            nb = int(np.ceil(L / bucket_m))
+            blen = L - (nb - 1) * bucket_m if b_ == nb - 1 else bucket_m
+            ping_speed.setdefault(seg_id_, {})[int(b_)] = blen / (sdt_ / n_)
+            speed_w.setdefault(seg_id_, {})[int(b_)] = int(n_)
     seg_index = {s: i for i, s in enumerate(sorted(registry["segments"]))}
 
     # CTA keeps the original flat location; other cities nest under their id
@@ -315,7 +341,7 @@ def build(city_id: str, suffix: str = "") -> None:
                     v = ping_speed.get(nb, {}).get(bucket_of(nb))
                     if v is None:
                         continue
-                    w = ping_counts.get(nb, {}).get(bucket_of(nb), 1)
+                    w = speed_w.get(nb, {}).get(bucket_of(nb), 1)
                     num += v * w
                     den += w
                 return round(num / den, 2) if den else None

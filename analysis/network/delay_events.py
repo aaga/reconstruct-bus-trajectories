@@ -126,6 +126,15 @@ EVENTS_SCHEMA = pa.schema(
     ]
 )
 
+TRAJ_SPEED_SCHEMA = pa.schema(
+    [
+        ("seg_id", pa.dictionary(pa.int32(), pa.string())),
+        ("bucket", pa.int32()),   # 10 ft buckets upstream of downstream signal
+        ("n", pa.int64()),        # traversals fully crossing the bucket
+        ("sum_dt", pa.float64()), # summed crossing seconds (dwell included)
+    ]
+)
+
 SUMS_SCHEMA = pa.schema(
     [
         ("seg_id", pa.dictionary(pa.int32(), pa.string())),
@@ -309,6 +318,43 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     # dwell (2026-07-29 decision), so the dwell-blob pass below must run.
 
     bounds = _G["shapes"][asg.shape_id]["seg_bounds"]  # [seg_id, x_lo, x_hi]
+
+    # ---- trajectory bucket-crossing times (--traj-speed) -----------------
+    # Per 10 ft bucket, the time this trajectory took to cross it (dwell
+    # included): bucket avg speed = len / mean(dt), the L/avg-crossing-time
+    # estimator. Immune to the stop-zone milestone pings that bias the
+    # ping-speed bucket mean (positions stamped at fixed points).
+    ts_rows: list[tuple] = []
+    if _G.get("traj_speed"):
+        bucket_m = 10.0 / 3.28084
+        x_cov_lo, x_cov_hi = float(xg[0]), float(xg[-1])
+        for seg_id, x0, x1 in bounds:
+            if x1 <= x_cov_lo or x0 >= x_cov_hi:
+                continue
+            nb = int(np.ceil((x1 - x0) / bucket_m))
+            bx = x1 - np.arange(nb + 1) * bucket_m
+            bx[-1] = x0  # upstream bucket keeps its true (shorter) length
+            ok = (bx >= x_cov_lo) & (bx <= x_cov_hi)
+            if ok.sum() < 2:
+                continue
+            bxo = bx[ok]
+            # first time the (nondecreasing) trajectory reaches each boundary
+            idx = np.searchsorted(xg, bxo, side="left")
+            t_at = np.full(len(bxo), np.nan)
+            t_at[idx == 0] = tg[0]
+            inner = (idx > 0) & (idx < len(xg))
+            ii = idx[inner]
+            xa, xb = xg[ii - 1], xg[ii]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                frac = np.where(xb > xa, (bxo[inner] - xa) / (xb - xa), 0.0)
+            t_at[inner] = tg[ii - 1] + frac * (tg[ii] - tg[ii - 1])
+            t_full = np.full(nb + 1, np.nan)
+            t_full[ok] = t_at
+            # bucket k spans bx[k+1]..bx[k]; the downstream boundary bx[k]
+            # is reached later, so dt_k = t(bx[k]) - t(bx[k+1])
+            dt = t_full[:-1] - t_full[1:]
+            for k in np.nonzero(np.isfinite(dt) & (dt > 0))[0]:
+                ts_rows.append((seg_id, int(k), float(dt[k])))
 
     def seg_of(x: float):
         for seg_id, x_lo, x_hi in bounds:
@@ -575,28 +621,32 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         }
         for s in set(nd_by_seg) | set(dwell_by_seg) | set(pax_by_seg)
     ]
-    return event_rows, sum_rows
+    return event_rows, sum_rows, ts_rows
 
 
-def _init_worker_ev(city_id: str, mph: float = 5.0, suffix: str = "") -> None:
+def _init_worker_ev(city_id: str, mph: float = 5.0, suffix: str = "",
+                    traj_speed: bool = False) -> None:
     """Shared initializer plus the threshold/suffix this pass runs at."""
     _init_worker(city_id)
     global THRESHOLD
     THRESHOLD = AbsoluteSpeedThreshold(mph)
     _G["out_suffix"] = suffix
+    _G["traj_speed"] = traj_speed
 
 
 def process_date(args):
     city_id, date_iso, force = args[:3]
     mph = args[3] if len(args) > 3 else 5.0
     suffix = args[4] if len(args) > 4 else ""
+    traj_speed = args[5] if len(args) > 5 else False
     if "city" not in _G:
-        _init_worker_ev(city_id, mph, suffix)
+        _init_worker_ev(city_id, mph, suffix, traj_speed)
     city: CityConfig = _G["city"]
     base = REPO / "outputs" / "network" / city.city_id
     suffix = _G.get("out_suffix", "")
     ev_dir = base / f"events{suffix}" / f"service_date={date_iso}"
     su_dir = base / f"event_sums{suffix}" / f"service_date={date_iso}"
+    ts_dir = base / "traj_speed" / f"service_date={date_iso}"
     stats: list[dict] = []
 
     try:
@@ -610,12 +660,16 @@ def process_date(args):
         for route_id, route_df in df.groupby("route_id", sort=True):
             out_ev = ev_dir / f"route={route_id}.parquet"
             out_su = su_dir / f"route={route_id}.parquet"
-            if out_ev.exists() and out_su.exists() and not force:
+            if (out_ev.exists() and out_su.exists() and not force
+                    and not (_G.get("traj_speed")
+                             and not (ts_dir / f"route={route_id}.parquet").exists())):
                 continue
             t0 = time.time()
             rejects: Counter = Counter()
             ev_rows: list[dict] = []
             su_rows: list[dict] = []
+            ts_n: Counter = Counter()
+            ts_dt: Counter = Counter()
             n_kept = 0
             for _, trip in route_df.groupby(["trip_id", "vehicle_id"], sort=False):
                 got = _process_trip(trip, date_iso, doors, rejects, assigned,
@@ -624,11 +678,23 @@ def process_date(args):
                     continue
                 ev_rows.extend(got[0])
                 su_rows.extend(got[1])
+                for s_, b_, dt_ in got[2]:
+                    ts_n[(s_, b_)] += 1
+                    ts_dt[(s_, b_)] += dt_
                 n_kept += 1
-            for d, rows, schema, path in (
+            sinks = [
                 (ev_dir, ev_rows, EVENTS_SCHEMA, out_ev),
                 (su_dir, su_rows, SUMS_SCHEMA, out_su),
-            ):
+            ]
+            if _G.get("traj_speed"):
+                ts_rows = [
+                    {"seg_id": s_, "bucket": b_, "n": ts_n[(s_, b_)],
+                     "sum_dt": ts_dt[(s_, b_)]}
+                    for (s_, b_) in ts_n
+                ]
+                sinks.append((ts_dir, ts_rows, TRAJ_SPEED_SCHEMA,
+                              ts_dir / f"route={route_id}.parquet"))
+            for d, rows, schema, path in sinks:
                 d.mkdir(parents=True, exist_ok=True)
                 table = (
                     pa.Table.from_pylist(rows, schema=schema)
@@ -664,6 +730,9 @@ def main() -> None:
     ap.add_argument("--end", default=None)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--traj-speed", action="store_true",
+                    help="also write traj_speed/ per-bucket crossing times "
+                         "(threshold-independent; run with one pass only)")
     args = ap.parse_args()
 
     from analysis.network.run_reconstruct import _dates_in_archive
@@ -683,7 +752,8 @@ def main() -> None:
     index_path = (REPO / "outputs" / "network" / city.city_id
                   / f"events_index{out_suffix}.jsonl")
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    work = [(args.city, d, args.force, args.mph, out_suffix) for d in dates]
+    work = [(args.city, d, args.force, args.mph, out_suffix, args.traj_speed)
+            for d in dates]
     t_start = time.time()
     done = 0
 
@@ -702,12 +772,13 @@ def main() -> None:
               f"({time.time()-t_start:.0f}s){suffix}", flush=True)
 
     if args.workers <= 1:
-        _init_worker_ev(args.city, args.mph, out_suffix)
+        _init_worker_ev(args.city, args.mph, out_suffix, args.traj_speed)
         for w in work:
             log(process_date(w))
     else:
         with Pool(args.workers, initializer=_init_worker_ev,
-                  initargs=(args.city, args.mph, out_suffix)) as pool:
+                  initargs=(args.city, args.mph, out_suffix,
+                            args.traj_speed)) as pool:
             for stats in pool.imap_unordered(process_date, work):
                 log(stats)
     print("done")
