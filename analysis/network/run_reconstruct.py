@@ -40,6 +40,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
+from analysis.network import gtfs_history  # noqa: E402
 from analysis.network.assign_shapes import (  # noqa: E402
     LOW_CONFIDENCE_SCORE,
     Assignment,
@@ -92,13 +93,47 @@ TRAVERSAL_SCHEMA = pa.schema(
 _G: dict = {}
 
 
+def _set_era(date_iso: str) -> None:
+    """Point the worker's shape tables at the GTFS era live on ``date_iso``.
+
+    Segment ids are era-independent (OSM node pairs), so only the shape
+    table, the geometry source and the matcher cache swap. Workers process
+    dates in order, so this fires a few dozen times per run, not per date.
+    """
+    city: CityConfig = _G["city"]
+    era = gtfs_history.era_id(city, date_iso)
+    if era == _G.get("era") and "shapes" in _G:
+        return
+    if era is None:
+        _G["shapes"] = _G["canonical_shapes"]
+        _G["gtfs_zip"] = city.resolve(city.gtfs_zip)
+    else:
+        p = (REPO / "outputs" / "network" / city.city_id / "era_shapes"
+             / f"{era}.json")
+        if not p.exists():
+            _G["shapes"] = _G["canonical_shapes"]
+            _G["gtfs_zip"] = city.resolve(city.gtfs_zip)
+            era = None
+        else:
+            _G["shapes"] = json.loads(p.read_text())
+            _G["gtfs_zip"] = city.resolve(city.gtfs_history_dir) / f"{era}.zip"
+    _G["era"] = era
+    by_route: dict[str, list[str]] = {}
+    for sid, rec in _G["shapes"].items():
+        by_route.setdefault(rec["route_id"], []).append(sid)
+    _G["shapes_by_route"] = by_route
+    _G["matchers"] = {}
+
+
 def _init_worker(city_id: str) -> None:
     city = get_city(city_id)
     reg_path = REPO / "outputs" / "network" / city.city_id / "segment_registry.json"
     reg = json.loads(reg_path.read_text())
     _G["city"] = city
     _G["registry_meta"] = reg["meta"]
+    _G["canonical_shapes"] = reg["shapes"]
     _G["shapes"] = reg["shapes"]  # shape_id -> {route_id, direction, seg_bounds}
+    _G["gtfs_zip"] = city.resolve(city.gtfs_zip)
     # route_id -> [shape_id, ...]
     by_route: dict[str, list[str]] = {}
     for sid, rec in reg["shapes"].items():
@@ -118,7 +153,7 @@ def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:
     if shape_id not in _G["matchers"]:
         city: CityConfig = _G["city"]
         polyline, dist_m = load_gtfs_shape_with_dist(
-            city.resolve(city.gtfs_zip), shape_id
+            _G.get("gtfs_zip") or city.resolve(city.gtfs_zip), shape_id
         )
         m = SnapToShapeMatcher(
             polyline, max_perp_m=city.max_perp_m, dist_along_m_per_vertex=dist_m
@@ -132,12 +167,62 @@ def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:
 # Hour-file loading for one service date
 # --------------------------------------------------------------------------
 
+AVL_FPS_TO_MPS = 0.3048
+AVL_SPEED_SENTINEL = 255.0
+
+
+def _service_date_pings_direct(city: CityConfig, date_iso: str) -> pd.DataFrame:
+    """Read a service date straight from the daily AVL export.
+
+    The 2.5-year archive is already partitioned by calendar date, which is
+    the grain the batch iterates over, so materialising hour-files would
+    cost ~45 GB and an extra pass for nothing (2026-08-17 decision). A
+    service date spans two calendar files under the 03:00 cutover.
+
+    Column/unit mapping matches avl_ingest.ingest exactly: naive LOCAL
+    avl_event_time, speeds in feet per second with 255 as the u8 sentinel.
+    """
+    import duckdb
+
+    src = Path(city.avl_source_dir)
+    d0 = pd.Timestamp(date_iso).date()
+    files = [src / f"date={d0}.parquet",
+             src / f"date={d0 + pd.Timedelta(days=1)}.parquet"]
+    files = [f for f in files if f.exists()]
+    if not files:
+        return pd.DataFrame()
+    lst = ", ".join(f"'{f}'" for f in files)
+    df = duckdb.connect().execute(f"""
+        SELECT avl_event_time AT TIME ZONE '{city.tz}' AS timestamp,
+               CAST(trip_id AS VARCHAR)  AS trip_id,
+               CAST(route_id AS VARCHAR) AS route_id,
+               CAST(bus_id AS VARCHAR)   AS vehicle_id,
+               latitude, longitude,
+               CASE WHEN speed IS NULL OR speed >= {AVL_SPEED_SENTINEL}
+                    THEN NULL ELSE speed * {AVL_FPS_TO_MPS} END AS speed_mps
+        FROM read_parquet([{lst}], union_by_name=true)
+        WHERE onroute = 1 AND route_id IS NOT NULL AND trip_id IS NOT NULL
+          AND latitude IS NOT NULL AND longitude IS NOT NULL
+    """).fetch_df()
+    if df.empty:
+        return df
+    df = df[~df.route_id.isin(city.deadhead_route_ids)].copy()
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    df["ts_utc"] = ts
+    local = ts.dt.tz_convert(city.tz)
+    df["service_date"] = (
+        local - pd.Timedelta(hours=city.service_day_cutover_h)).dt.date
+    return df[df.service_date == d0]
+
+
 def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
     """All pings whose Chicago service date == date_iso (03:00 cutover).
 
     Loads the UTC hour-files spanning [date 03:00, date+1 03:00] local with
     1 h pad on both sides, from the local cache only (run prefetch first).
     """
+    if getattr(city, "avl_direct_read", False) and city.avl_source_dir:
+        return _service_date_pings_direct(city, date_iso)
     cache_dir = city.resolve(city.archive_cache_dir)
     lo_local = pd.Timestamp(f"{date_iso} 0{city.service_day_cutover_h}:00", tz=city.tz)
     hi_local = lo_local + pd.Timedelta(days=1)
@@ -354,6 +439,7 @@ def _process_date_inner(args) -> list[dict]:
     if "city" not in _G:
         _init_worker(city_id)
     city: CityConfig = _G["city"]
+    _set_era(date_iso)
 
     date_dir = _out_dir(city) / f"service_date={date_iso}"
     stats: list[dict] = []

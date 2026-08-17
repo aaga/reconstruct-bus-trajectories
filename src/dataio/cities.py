@@ -76,6 +76,13 @@ class CityConfig:
     # (avl_ingest.py converts it into archive hour-files under r2_agency).
     # Speeds present -> VCHIP-ME reconstruction; absent -> plain PCHIP.
     avl_source_dir: str | None = None
+    # Read avl_source_dir's daily parquet directly instead of ingesting it
+    # into hour-files (2026-08-17): the 2.5-year archive is already date-
+    # partitioned, so hour-files would cost ~45 GB for no benefit.
+    avl_direct_read: bool = False
+    # Historical GTFS: when set, shapes come from the Transitland feed cache
+    # valid for each service date rather than the single gtfs_zip snapshot.
+    gtfs_history_dir: str | None = None
     # Hidden from the dashboard city tabs (investigation-only cities).
     show_in_ui: bool = True
 
@@ -112,9 +119,13 @@ _CTA = CityConfig(
     # 2026-08-15: CTA reads the redshift AVL export (ingested locally under
     # agency=cta-rs) instead of the R2 GTFS-rt scrape — denser pings + speeds.
     r2_agency="cta-rs",
+    # 2026-08-17: the OneDrive archive supersedes the local redshift export —
+    # same schema and units, but 958 days (2024-01-01 → 2026-08) instead of 93.
     avl_source_dir=(
-        "/Users/ashwinagarwal/JTL/cta-code/cta-data-collector/"
-        "redshift-export/data/avl_archive"),
+        "/Users/ashwinagarwal/Library/CloudStorage/"
+        "OneDrive-ChicagoTransitAuthority/CTA AVL Archive/avl_archive"),
+    avl_direct_read=True,
+    gtfs_history_dir="caches/gtfs_history/cta",
     tz="America/Chicago",
     gtfs_zip="data/gtfs/cta_gtfs.zip",
     intersections_file="caches/cta/intersections.json",

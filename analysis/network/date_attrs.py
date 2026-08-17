@@ -33,6 +33,7 @@ import pandas as pd
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))
 
 from dataio.cities import CityConfig, get_city  # noqa: E402
 from dataio.realtime import fetch  # noqa: E402
@@ -47,12 +48,34 @@ NCEI_URL = (
     "&startDate={start}&endDate={end}&format=csv&units=metric"
 )
 
-# US federal holidays in the archive window (extend as the archive grows).
+# US federal holidays across the archive window (2024-01 → 2026-08 for the
+# historical CTA pass; extend as the archive grows). Holiday service runs a
+# Sunday-like schedule on a weekday date, so these get their own daytype.
 HOLIDAYS_2026 = {
+    # 2024
+    "2024-01-01", "2024-01-15", "2024-02-19", "2024-05-27",
+    "2024-06-19", "2024-07-04", "2024-09-02", "2024-11-28",
+    "2024-11-29", "2024-12-24", "2024-12-25",
+    # 2025
+    "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26",
+    "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27",
+    "2025-11-28", "2025-12-24", "2025-12-25",
+    # 2026
     "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
-    "2026-07-03", "2026-07-04", "2026-09-07", "2026-11-26",
-    "2026-12-25",
+    "2026-06-19", "2026-07-03", "2026-07-04", "2026-09-07",
+    "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25",
 }
+
+
+def _era_pick(city: CityConfig, iso: str) -> str | None:
+    """GTFS era (feed sha8) live on a date, as a pick label."""
+    try:
+        from analysis.network import gtfs_history
+
+        e = gtfs_history.era_id(city, iso)
+        return f"era_{e}" if e else None
+    except Exception:  # noqa: BLE001 — history is optional
+        return None
 
 
 def season_of(d: date) -> str:
@@ -98,7 +121,10 @@ def build_date_attrs(city: CityConfig, start: str, end: str) -> dict:
             "dow": d.weekday(),  # 0=Mon .. 6=Sun
             "daytype": daytype_of(d),
             "season": season_of(d),
-            "pick": city.pick_for_date(iso),
+            # Over the historical window the configured picks only cover
+            # 2026, so fall back to the GTFS era (feed version) live that
+            # day — which is the real service-change boundary anyway.
+            "pick": city.pick_for_date(iso) or _era_pick(city, iso),
             "weather": weather.get(iso, "unknown"),
         }
         d += timedelta(days=1)
