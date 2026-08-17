@@ -523,7 +523,18 @@ def _process_date_inner(args) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def _dates_in_archive(city: CityConfig) -> list[str]:
-    """Service dates covered by the local hour-file cache."""
+    """Service dates covered by the archive.
+
+    Direct-read cities enumerate the daily export itself; the last calendar
+    date is dropped because a service date needs the following day's file
+    to cover its post-midnight tail.
+    """
+    if getattr(city, "avl_direct_read", False) and city.avl_source_dir:
+        days = sorted(
+            p.stem.split("=", 1)[1]
+            for p in Path(city.avl_source_dir).glob("date=*.parquet")
+        )
+        return days[:-1] if len(days) > 1 else days
     cache_dir = city.resolve(city.archive_cache_dir)
     hours = []
     for p in cache_dir.glob(f"agency={city.r2_agency}__*.parquet"):
