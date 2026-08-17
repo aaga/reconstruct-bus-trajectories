@@ -1053,7 +1053,7 @@ export class NetworkView {
           ? `(${totals.reduce((a, v) => a + v, 0).toLocaleString()} raw AVL pings, pre-reconstruction)`
           : `(${d.n_events} events · ${d.n_trips ?? "?"} trips)`}</span>
       </div>
-      <svg viewBox="0 0 ${W} ${H}" class="dist-svg">${yAxis}${bars}${speedLine}${road}${axis}</svg>
+      <svg viewBox="0 -12 ${W} ${H + 12}" class="dist-svg">${yAxis}${bars}${speedLine}${road}${axis}</svg>
       ${this.hasDoor && !pingMode ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
