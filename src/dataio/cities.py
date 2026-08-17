@@ -80,6 +80,11 @@ class CityConfig:
     # into hour-files (2026-08-17): the 2.5-year archive is already date-
     # partitioned, so hour-files would cost ~45 GB for no benefit.
     avl_direct_read: bool = False
+    # Monthly bus-state export covering the full history. Unlike the 3-month
+    # cache it carries no stop_id/stop_sequence — harmless since door events
+    # are re-attributed by location (delay_events, 2026-08-16) — and names
+    # its dwell column dwell_time rather than dwell_s.
+    door_source_dir: str | None = None
     # Historical GTFS: when set, shapes come from the Transitland feed cache
     # valid for each service date rather than the single gtfs_zip snapshot.
     gtfs_history_dir: str | None = None
@@ -125,6 +130,9 @@ _CTA = CityConfig(
         "/Users/ashwinagarwal/Library/CloudStorage/"
         "OneDrive-ChicagoTransitAuthority/CTA AVL Archive/avl_archive"),
     avl_direct_read=True,
+    door_source_dir=(
+        "/Users/ashwinagarwal/Library/CloudStorage/"
+        "OneDrive-ChicagoTransitAuthority/Bus State History/bus_state_hist"),
     gtfs_history_dir="caches/gtfs_history/cta",
     tz="America/Chicago",
     gtfs_zip="data/gtfs/cta_gtfs.zip",

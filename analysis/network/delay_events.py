@@ -67,6 +67,7 @@ sys.path.insert(0, str(REPO))
 
 from analysis.network.assign_shapes import Assignment, choose_shape, monotone_frac  # noqa: E402
 from analysis.network.run_reconstruct import (  # noqa: E402
+    _set_era,
     _G,
     _init_worker,
     _matcher,
@@ -157,15 +158,37 @@ def _door_intervals(
     be genuine finely-gridded measurements, not stop lookups)."""
     import duckdb
 
-    ev_glob = str(city.resolve("caches/door_events") / city.city_id / "*.parquet")
     cut = city.service_day_cutover_h
     con = duckdb.connect()
+    if city.door_source_dir:
+        # Historical monthly export: one file per month, no stop_id, dwell
+        # named dwell_time. A service date can straddle two months, so read
+        # this month and the previous one and let the WHERE clause cut it.
+        d0 = pd.Timestamp(date_iso)
+        months = {d0.strftime("%Y%m"),
+                  (d0 - pd.Timedelta(days=1)).strftime("%Y%m"),
+                  (d0 + pd.Timedelta(days=1)).strftime("%Y%m")}
+        src = Path(city.door_source_dir)
+        files = [src / f"month={m}.parquet" for m in sorted(months)]
+        files = [f for f in files if f.exists()]
+        if not files:
+            return {}, {}
+        ev_glob = ", ".join(f"'{f}'" for f in files)
+        cols = set(pq.ParquetFile(files[0]).schema.names)
+        dwell = "dwell_s" if "dwell_s" in cols else "dwell_time"
+        stop = "stop_id" if "stop_id" in cols else "NULL"
+        src_sql = f"read_parquet([{ev_glob}], union_by_name=true)"
+    else:
+        ev_glob = str(city.resolve("caches/door_events") / city.city_id / "*.parquet")
+        dwell, stop = "dwell_s", "stop_id"
+        src_sql = f"read_parquet('{ev_glob}')"
     rows = con.execute(
         f"""
         SELECT bus_id,
                epoch((event_time AT TIME ZONE '{city.tz}')) AS t_open,
-               dwell_s, passenger_load, latitude, longitude, stop_id
-        FROM read_parquet('{ev_glob}')
+               {dwell} AS dwell_s, passenger_load, latitude, longitude,
+               {stop} AS stop_id
+        FROM {src_sql}
         WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{date_iso}'
           -- 2026-07-31 decision: zero-activity door cycles (nobody on or
           -- off) are ignored EVERYWHERE — treated as if the doors never
@@ -642,6 +665,7 @@ def process_date(args):
     if "city" not in _G:
         _init_worker_ev(city_id, mph, suffix, traj_speed)
     city: CityConfig = _G["city"]
+    _set_era(date_iso)
     base = REPO / "outputs" / "network" / city.city_id
     suffix = _G.get("out_suffix", "")
     ev_dir = base / f"events{suffix}" / f"service_date={date_iso}"

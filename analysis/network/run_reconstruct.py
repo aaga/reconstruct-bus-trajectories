@@ -123,6 +123,35 @@ def _set_era(date_iso: str) -> None:
         by_route.setdefault(rec["route_id"], []).append(sid)
     _G["shapes_by_route"] = by_route
     _G["matchers"] = {}
+    _G.pop("pattern_stops", None)
+    _set_month(date_iso)
+
+
+def _set_month(date_iso: str) -> None:
+    """Load the month's registered stop locations for door re-attribution.
+
+    Stops move over 2.5 years, so registration is redone monthly
+    (monthly_stops.py). Falls back to the canonical registry's stops_off
+    when a month hasn't been registered.
+    """
+    city: CityConfig = _G["city"]
+    month = date_iso[:4] + date_iso[5:7]
+    if _G.get("stops_month") == month:
+        return
+    p = (REPO / "outputs" / "network" / city.city_id / "monthly_stops"
+         / f"{month}.json")
+    if p.exists():
+        raw = json.loads(p.read_text())
+        _G["seg_stops"] = {
+            seg_id: [(float(s["off_m"]), str(s["id"])) for s in stops]
+            for seg_id, stops in raw.items()
+        }
+    elif "canonical_seg_stops" in _G:
+        _G["seg_stops"] = _G["canonical_seg_stops"]
+    _G["stops_month"] = month
+    # delay_events._pattern_stops memoises (shape -> stop offsets), which
+    # depends on both the era's seg_bounds and this month's stop positions.
+    _G.pop("pattern_stops", None)
 
 
 def _init_worker(city_id: str) -> None:
@@ -147,6 +176,7 @@ def _init_worker(city_id: str) -> None:
                  for st in rec.get("stops_off", [])]
         for seg_id, rec in reg["segments"].items()
     }
+    _G["canonical_seg_stops"] = _G["seg_stops"]
 
 
 def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:
