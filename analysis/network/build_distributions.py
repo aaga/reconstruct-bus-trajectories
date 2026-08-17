@@ -115,6 +115,16 @@ def build(city_id: str, suffix: str = "") -> None:
         for a, b in zip(sb, sb[1:]):
             adj_rows.append((sh, b[0], a[0], a[2] - b[2]))  # b is a's next
             adj_rows.append((sh, a[0], b[0], b[2] - a[2]))  # a is b's prev
+    next_of: dict[str, set] = {}
+    prev_of: dict[str, set] = {}
+    for _sh, nb, tgt, _shift in adj_rows:
+        # rows come in pairs; nb with larger x_end than tgt is tgt's NEXT
+        pass
+    for sh_, rec_ in registry["shapes"].items():
+        sb_ = sorted(rec_["seg_bounds"], key=lambda r: r[1])
+        for a_, b_ in zip(sb_, sb_[1:]):
+            next_of.setdefault(a_[0], set()).add(b_[0])
+            prev_of.setdefault(b_[0], set()).add(a_[0])
     con.execute("CREATE TABLE adj(shape_id TEXT, nb_seg TEXT, tgt_seg TEXT, "
                 "shift DOUBLE)")
     if adj_rows:
@@ -283,6 +293,31 @@ def build(city_id: str, suffix: str = "") -> None:
         if gh:
             payload["ghost_buckets"] = G
             payload["gh_lo"], payload["gh_hi"] = _ghost_arrays(gh)
+
+        # Avg-speed overlay ghosts: neighbors' per-bucket speeds remapped
+        # into this segment's frame (same ±10% window, drawn at 50% op).
+        if ping_speed:
+            def _nb_speed(nbs, bucket_of):
+                num = den = 0.0
+                for nb in nbs:
+                    v = ping_speed.get(nb, {}).get(bucket_of(nb))
+                    if v is None:
+                        continue
+                    w = ping_counts.get(nb, {}).get(bucket_of(nb), 1)
+                    num += v * w
+                    den += w
+                return round(num / den, 2) if den else None
+            nb_next = next_of.get(seg_id, ())
+            nb_prev = prev_of.get(seg_id, ())
+            nB_of = {nb: int(np.ceil(
+                registry["segments"][nb]["len_m"] * FT_PER_M / BUCKET_FT))
+                for nb in set(nb_next) | set(nb_prev)}
+            vlo = [_nb_speed(nb_next, lambda nb, i=i: nB_of[nb] - 1 - i)
+                   for i in range(G)]
+            vhi = [_nb_speed(nb_prev, lambda nb, i=i: i) for i in range(G)]
+            if any(v is not None for v in vlo + vhi):
+                payload["ping_v_lo"] = vlo
+                payload["ping_v_hi"] = vhi
 
         # Turn movements: label always (when known); per-movement array split
         # only for mixed segments — that's when the UI shows the filter.

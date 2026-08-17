@@ -723,7 +723,7 @@ export class NetworkView {
       return (d[c + suffix] ?? d[c] ?? zeros).map((v) => v / denom);
     };
     const src = Object.fromEntries(CLASSES.map((c) => [c, pick(c)]));
-    const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 28;
+    const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 28, padR = 58;
     const H = chartH + roadH + axisH + 52;
     const lenFt = d.len_ft;
     const nB = d.nd.length;
@@ -734,7 +734,8 @@ export class NetworkView {
     const ghB = (d.ghost_buckets && (d.gh_lo || d.gh_hi)) ? d.ghost_buckets : 0;
     const ghFt = ghB * d.bucket_ft;
     const domFt = lenFt + 2 * ghFt;
-    const xOf = (ft) => padL + ((ft + ghFt) / domFt) * innerW;
+    // Mirrored 2026-08-16: signal (0 ft) on the RIGHT, travel rightward.
+    const xOf = (ft) => W - padR - ((ft + ghFt) / domFt) * innerW;
     const bw = Math.max(1, (d.bucket_ft / domFt) * innerW);
 
     const totals = src[CLASSES[0]].map((_, i) =>
@@ -757,7 +758,7 @@ export class NetworkView {
         if (!v) continue;
         const h = ((v / yMax) * (chartH - 6));
         y -= h;
-        bars += `<rect x="${xOf(i * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
+        bars += `<rect x="${xOf((i + 1) * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
                  width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[cls]}"/>`;
       }
     }
@@ -790,7 +791,7 @@ export class NetworkView {
             if (y - h < 8) h = y - 8;          // clip the stack at the top
             if (h <= 0) break;
             y -= h;
-            ghost += `<rect x="${xOf(base + i * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
+            ghost += `<rect x="${xOf(base + (i + 1) * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
                      width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[cls]}"/>`;
           }
         }
@@ -802,14 +803,15 @@ export class NetworkView {
     const fmtY = (v) => secondsMode
       ? (v >= 60 ? `${(v / 60).toFixed(1)}m` : `${v.toFixed(1)}s`)
       : String(Math.round(v));
-    const leftUnit = pingMode ? "pings"
+    const countUnit = pingMode ? "pings"
       : secondsMode ? "s/trip" : queueMode ? "events" : "events";
+    const crx = W - padR + 4;
     let yAxis = `
-      <line x1="${padL - 4}" y1="8" x2="${padL - 4}" y2="${chartH}" stroke="#999"/>
-      <text x="${padL - 8}" y="16" text-anchor="end" class="dist-tick">${fmtY(yMax)}</text>
-      <text x="${padL - 8}" y="${(chartH + 16) / 2}" text-anchor="end" class="dist-tick">${fmtY(yMax / 2)}</text>
-      <text x="${padL - 8}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>
-      <text x="${padL - 8}" y="6" text-anchor="end" class="dist-tick" style="font-style:italic">${leftUnit}</text>`;
+      <line x1="${crx}" y1="8" x2="${crx}" y2="${chartH}" stroke="#999"/>
+      <text x="${crx + 4}" y="16" class="dist-tick">${fmtY(yMax)}</text>
+      <text x="${crx + 4}" y="${(chartH + 16) / 2}" class="dist-tick">${fmtY(yMax / 2)}</text>
+      <text x="${crx + 4}" y="${chartH}" class="dist-tick">0</text>
+      <text x="${crx + 4}" y="6" class="dist-tick" style="font-style:italic">${countUnit}</text>`;
 
     // Average-speed overlay (raw ping speeds per 10 ft bucket): join-the-
     // dots line + right-hand mph axis, opposite end from the traffic light.
@@ -820,23 +822,35 @@ export class NetworkView {
     if (spd) {
       vMaxMph = Math.max(...spd.filter((v) => v != null)) * MPH * 1.15 || 1;
       ySpd = (mph) => chartH - (mph / vMaxMph) * (chartH - 6);
-      const pts = [];
-      for (let i = 0; i < spd.length; i++) {
-        if (spd[i] == null) continue;
-        pts.push([xOf((i + 0.5) * d.bucket_ft), ySpd(spd[i] * MPH)]);
+      const mkPts = (arr, ftOf) => {
+        const out = [];
+        (arr ?? []).forEach((v, i) => {
+          if (v != null) out.push([xOf(ftOf(i)), ySpd(v * MPH)]);
+        });
+        return out;
+      };
+      const pts = mkPts(spd, (i) => (i + 0.5) * d.bucket_ft);
+      const drawLine = (pp, op) => pp.length > 1
+        ? `<g opacity="${op}"><polyline points="${pp.map((p2) => p2.map((c) => c.toFixed(1)).join(",")).join(" ")}"
+             fill="none" stroke="#0a0a0a" stroke-width="1.6"/>` +
+          pp.map((p2) => `<circle cx="${p2[0].toFixed(1)}" cy="${p2[1].toFixed(1)}" r="1.6" fill="#0a0a0a"/>`).join("") + "</g>"
+        : "";
+      speedLine = drawLine(pts, 0.85);
+      if (ghB) {
+        // buffer extensions: neighbors' speeds at ghost opacity, stitched
+        // to the main line's ends so the curve reads continuously
+        const lo = mkPts(d.ping_v_lo, (i) => -(i + 0.5) * d.bucket_ft);
+        const hi = mkPts(d.ping_v_hi, (i) => lenFt + (i + 0.5) * d.bucket_ft);
+        if (lo.length && pts.length) lo.unshift(pts[0]);
+        if (hi.length && pts.length) hi.unshift(pts[pts.length - 1]);
+        speedLine += drawLine(lo, 0.42) + drawLine(hi, 0.42);
       }
-      if (pts.length > 1) {
-        speedLine = `<polyline points="${pts.map((p2) => p2.map((c) => c.toFixed(1)).join(",")).join(" ")}"
-            fill="none" stroke="#0a0a0a" stroke-width="1.6" opacity=".85"/>` +
-          pts.map((p2) => `<circle cx="${p2[0].toFixed(1)}" cy="${p2[1].toFixed(1)}" r="1.6" fill="#0a0a0a"/>`).join("");
-      }
-      const rx = W - padR + 4;
       yAxis += `
-        <line x1="${rx}" y1="8" x2="${rx}" y2="${chartH}" stroke="#999"/>
-        <text x="${rx + 4}" y="16" class="dist-tick">${vMaxMph.toFixed(0)}</text>
-        <text x="${rx + 4}" y="${(chartH + 16) / 2}" class="dist-tick">${(vMaxMph / 2).toFixed(0)}</text>
-        <text x="${rx + 4}" y="${chartH}" class="dist-tick">0</text>
-        <text x="${rx + 4}" y="6" class="dist-tick" style="font-style:italic">mph</text>`;
+        <line x1="${padL - 4}" y1="8" x2="${padL - 4}" y2="${chartH}" stroke="#999"/>
+        <text x="${padL - 8}" y="16" text-anchor="end" class="dist-tick">${vMaxMph.toFixed(0)}</text>
+        <text x="${padL - 8}" y="${(chartH + 16) / 2}" text-anchor="end" class="dist-tick">${(vMaxMph / 2).toFixed(0)}</text>
+        <text x="${padL - 8}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>
+        <text x="${padL - 8}" y="6" text-anchor="end" class="dist-tick" style="font-style:italic">mph</text>`;
     }
 
     // road strip
@@ -848,18 +862,18 @@ export class NetworkView {
     const namedJcts = (props.junctions_off ?? [])
       .filter((j) => j.cross)
       .map((j) => ({ x: xOf(j.off_m * 3.28084), cross: j.cross }))
-      .filter((j) => j.x > xOf(0) + 18 && j.x < xOf(lenFt) - 18)
+      .filter((j) => j.x > xOf(lenFt) + 18 && j.x < xOf(0) - 18)
       .sort((a, b) => a.x - b.x);
     let road = "";
     {
       const cy = roadY + roadBodyH / 2;
-      let cursor = xOf(0);
+      let cursor = xOf(lenFt);
       const spans = [];
       for (const j of namedJcts) {
         spans.push([cursor, j.x - 6]);
         cursor = j.x + 6;
       }
-      spans.push([cursor, xOf(lenFt)]);
+      spans.push([cursor, xOf(0)]);
       for (const [a, b] of spans) {
         if (b - a < 2) continue;
         road += `<rect x="${a.toFixed(1)}" y="${roadY}" width="${(b - a).toFixed(1)}"
@@ -879,8 +893,8 @@ export class NetworkView {
       const cy = roadY + roadBodyH / 2;
       for (const frac of [0.22, 0.5, 0.78]) {
         const ax = xOf(lenFt * frac);
-        road += `<path d="M ${(ax + 7).toFixed(1)} ${cy - 6} L ${(ax - 5).toFixed(1)} ${cy}
-                 L ${(ax + 7).toFixed(1)} ${cy + 6}" fill="none" stroke="#fff"
+        road += `<path d="M ${(ax - 7).toFixed(1)} ${cy - 6} L ${(ax + 5).toFixed(1)} ${cy}
+                 L ${(ax - 7).toFixed(1)} ${cy + 6}" fill="none" stroke="#fff"
                  stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>`;
       }
       // street name on the roadway: pick the position that avoids bus-stop
@@ -908,7 +922,7 @@ export class NetworkView {
     }
     // traffic light pictogram at the segment's left edge (0 ft)
     const ly = roadY + roadBodyH / 2;
-    road += `<g transform="translate(${(xOf(0) - 34).toFixed(1)}, ${ly - 22})">
+    road += `<g transform="translate(${(xOf(0) + 15).toFixed(1)}, ${ly - 22})">
         <rect x="0" y="0" width="19" height="44" rx="4" fill="#222"/>
         <circle cx="9.5" cy="9" r="5" fill="#e33"/>
         <circle cx="9.5" cy="22" r="5" fill="#fb3"/>
@@ -926,8 +940,8 @@ export class NetworkView {
       const sideLabel = (tx, name, fill = "#555") =>
         `<text transform="rotate(-90 ${tx} ${roadY})" x="${tx}" y="${roadY}"
          text-anchor="end" style="font-size:8px;fill:${fill}">${name}</text>`;
-      if (downName) road += sideLabel((xOf(0) - 42).toFixed(1), downName);
-      if (upName) road += sideLabel((xOf(lenFt) + 14).toFixed(1), upName);
+      if (downName) road += sideLabel((xOf(0) + 46).toFixed(1), downName);
+      if (upName) road += sideLabel((xOf(lenFt) - 14).toFixed(1), upName);
     }
     // NB (2026-07-30): junction boxes removed from this view — the way-split
     // fallback produced nameless phantom boxes (alley splits, splits at
@@ -1087,7 +1101,7 @@ export class NetworkView {
         const rect = svg.getBoundingClientRect();
         // CSS may scale the svg; convert client px -> viewBox units.
         const px = (e.clientX - rect.left) * (W / rect.width);
-        const ft = ((px - padL) / innerW) * domFt - ghFt;
+        const ft = ((W - padR - px) / innerW) * domFt - ghFt;
         if (ft < 0 || ft > lenFt) { cur.style.display = "none"; return; }
         cur.style.display = "";
         curLine.setAttribute("x1", px.toFixed(1));
@@ -1114,8 +1128,8 @@ export class NetworkView {
     svg.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       const rect = svg.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const ft = ((px - padL) / innerW) * lenFt;
+      const px = (e.clientX - rect.left) * (W / rect.width);
+      const ft = ((W - padR - px) / innerW) * domFt - ghFt;
       if (ft < 0 || ft > lenFt || !coords || coords.length < 2) return;
       const offM = ft / 3.28084;                 // upstream of the light
       const fromStartM = Math.max(0, props.len_m - offM);
