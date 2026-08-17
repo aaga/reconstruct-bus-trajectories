@@ -87,3 +87,6 @@ analysis/AVL data/
 
 # Merged dashboard payloads are built by analysis/ (Phase 6) or copied locally
 dashboard/data/
+
+# vendored duckdb-wasm runtime (34 MB; re-fetch via the note in explore_view.js)
+dashboard/vendor/duckdb/

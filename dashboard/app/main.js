@@ -20,6 +20,7 @@ import { DelayView } from "./views/delay_view.js";
 import { NetworkData, NETWORK_CITIES } from "./network_data.js";
 import { NetworkView, METRICS } from "./views/network_view.js";
 import { AreasView } from "./views/areas_view.js";
+import { ExploreView } from "./views/explore_view.js";
 
 const S = {
   main: "single",          // "single" | "average"
@@ -67,6 +68,7 @@ const speedView = new SpeedView(S);
 const overallView = new OverallDelayView(S);
 const networkView = new NetworkView(S);
 const areasView = new AreasView(S);
+const exploreView = new ExploreView(S);
 
 // Display modes. Rich = every source + delay row; Lite = the primary source +
 // its inferred delays only (emulating the single-trip route dashboard). Modes
@@ -173,6 +175,15 @@ async function renderNetwork() {
   teardownMap();
   teardownAggViews();
   $("trip-meta").textContent = ""; // trip info is irrelevant on this tab
+  const xp = document.getElementById("explore-panel");
+  if (S.ntab === "explore") {
+    // Fact-table querying stands alone: no map, no payload download.
+    document.body.classList.remove("show-map", "network-mode", "network-areas");
+    xp.classList.remove("hidden");
+    exploreView.render(xp);
+    return;
+  }
+  xp.classList.add("hidden");
   document.body.classList.add("show-map", "network-mode");
   document.body.classList.remove("network-areas"); // areas sub-tab hidden
   S.network.syncHash = syncHash;
@@ -361,7 +372,7 @@ function applyHash() {
   S._applyingHash = true;
   if (main === "single" && ["trajectory", "speed"].includes(sub)) S.tab = sub;
   if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
-  if (main === "network") S.ntab = "map"; // areas sub-tab hidden (2026-07)
+  if (main === "network" && S.ntab !== "explore") S.ntab = "map";
   const params = new URLSearchParams(query || "");
   if (main === "network") {
     const N = S.network;
