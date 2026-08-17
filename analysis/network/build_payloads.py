@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -96,7 +97,11 @@ def _aggregate(
     spill = REPO / "outputs" / "network" / "duckdb_spill"
     spill.mkdir(parents=True, exist_ok=True)
     con.execute(f"SET temp_directory='{spill}'")
-    con.execute("SET memory_limit='12GB'")
+    # 12 GB by default; raise via PAYLOADS_MEMORY_LIMIT when the disk is too
+    # full to absorb the spill (duckdb caps max_temp_directory_size at the
+    # free space on the temp volume, so a full disk fails the query outright).
+    con.execute(
+        f"SET memory_limit='{os.environ.get('PAYLOADS_MEMORY_LIMIT', '12GB')}'")
     con.execute("SET preserve_insertion_order=false")
     # 2 threads: the event_sums hash join's per-thread build buffers OOM'd
     # the 12 GB cap at 4 threads (MBTA writes sums for every trip in

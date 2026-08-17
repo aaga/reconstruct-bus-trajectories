@@ -64,6 +64,11 @@ DOOR_PEAK_BUCKET_M = 3.048
 DOOR_PEAK_MIN_EVENTS = 5
 DOOR_PEAK_MAX_POLE_DIST_M = 100.0  # beyond this the attribution is suspect
 
+# Signal-side stop classification (2026-08-17): a stop counts as near/far side
+# only within this distance of the bounding signal; beyond it, "other".
+SIDE_WINDOW_FT = 150.0
+FT_PER_M = 3.28084
+
 # GTFS `direction_id` fallback labels for trips whose human `direction`
 # column is unpopulated (CTA leaves it "0" on a few thousand trips).
 _DIRECTION_ID_LABEL = {"0": "dir0", "1": "dir1"}
@@ -776,6 +781,30 @@ def build_registry(city: CityConfig) -> dict:
             ),
             key=lambda s: -s["off_m"],
         )
+        # Signal-side classification (2026-08-17). Every segment boundary is a
+        # signal, so each stop is measured against whichever bounding signal it
+        # sits within SIDE_WINDOW_FT of, using the conventional transit sense:
+        #   near_side — before the light (upstream of the DOWNSTREAM signal),
+        #               signal_dist_ft POSITIVE
+        #   far_side  — after the light (downstream of the UPSTREAM signal),
+        #               signal_dist_ft NEGATIVE
+        #   other     — neither; signal_dist_ft is null
+        # Short segments can put a stop in range of both signals; the nearer
+        # one wins. Distances are from the registered (modal) stop position.
+        for s_ in stops_off:
+            d_near = s_["off_m"] * FT_PER_M               # to the light ahead
+            d_far = (med_len - s_["off_m"]) * FT_PER_M    # from the light behind
+            near_ok = 0 <= d_near <= SIDE_WINDOW_FT
+            far_ok = 0 <= d_far <= SIDE_WINDOW_FT
+            if near_ok and (not far_ok or d_near <= d_far):
+                s_["signal_side"] = "near_side"
+                s_["signal_dist_ft"] = round(d_near, 1)
+            elif far_ok:
+                s_["signal_side"] = "far_side"
+                s_["signal_dist_ft"] = -round(d_far, 1)
+            else:
+                s_["signal_side"] = "other"
+                s_["signal_dist_ft"] = None
         crossings_off = []
         stop_signs_off = []
         for cp in intersections[rep["shape_id"]]:

@@ -41,15 +41,21 @@ def build(city_id: str) -> None:
 
     # stop names from the registry (union across segments)
     reg = json.loads((base / "segment_registry.json").read_text())
-    names: dict[str, str] = {}
+    # name + signal-side classification (registry.py): near_side is within
+    # SIDE_WINDOW_FT before the light (signal_dist_ft > 0), far_side within
+    # that distance after it (signal_dist_ft < 0), else other (null distance).
+    names: dict[str, tuple] = {}
     for rec in reg["segments"].values():
         for s in rec.get("stops_off", []):
-            names.setdefault(str(s["id"]), s["name"])
+            names.setdefault(str(s["id"]), (
+                s["name"], s.get("signal_side"), s.get("signal_dist_ft")))
 
     con = duckdb.connect()
-    con.execute("CREATE TABLE names(stop_id TEXT, stop_name TEXT)")
+    con.execute("CREATE TABLE names(stop_id TEXT, stop_name TEXT, "
+                "signal_side TEXT, signal_dist_ft DOUBLE)")
     if names:
-        con.executemany("INSERT INTO names VALUES (?, ?)", list(names.items()))
+        con.executemany("INSERT INTO names VALUES (?, ?, ?, ?)",
+                        [(k, *v) for k, v in names.items()])
 
     con.execute(
         f"""
@@ -83,6 +89,7 @@ def build(city_id: str) -> None:
             WHERE cls IN ('post', 'post2') AND stop_id IS NOT NULL GROUP BY 1
           )
           SELECT door.stop_id, names.stop_name,
+                 names.signal_side, names.signal_dist_ft,
                  n_door, door_s_total, door_s_p50, door_s_p90,
                  coalesce(n_pre, 0) AS n_pre, pre_s_total, pre_s_p50, pre_s_p90,
                  coalesce(n_post, 0) AS n_post, post_s_total, post_s_p50, post_s_p90

@@ -123,3 +123,37 @@ def test_pattern_stop_reattribution_nearest():
         assert ids[best] == want, (x, ids[best])
     assert de._pattern_stops("missing") is None
     de._G.clear()
+
+
+def test_signal_side_classification():
+    """near_side = before the light (+ft); far_side = after it (-ft)."""
+    sys.path.insert(0, str(REPO))
+    from analysis.network.registry import FT_PER_M, SIDE_WINDOW_FT
+
+    def classify(off_m, len_m):
+        d_near = off_m * FT_PER_M
+        d_far = (len_m - off_m) * FT_PER_M
+        near_ok = 0 <= d_near <= SIDE_WINDOW_FT
+        far_ok = 0 <= d_far <= SIDE_WINDOW_FT
+        if near_ok and (not far_ok or d_near <= d_far):
+            return "near_side", round(d_near, 1)
+        if far_ok:
+            return "far_side", -round(d_far, 1)
+        return "other", None
+
+    L = 300.0  # ~984 ft segment
+    # 30 m before the downstream light -> near side, positive
+    side, d = classify(30.0, L)
+    assert side == "near_side" and d > 0
+    # 30 m past the upstream light -> far side, negative
+    side, d = classify(L - 30.0, L)
+    assert side == "far_side" and d < 0
+    # mid-block on a long segment -> other, no distance
+    side, d = classify(L / 2, L)
+    assert side == "other" and d is None
+    # short segment in range of both signals: the nearer one wins
+    short = 60.0  # ~197 ft
+    side, d = classify(20.0, short)          # 66 ft to the light ahead
+    assert side == "near_side" and 0 < d < SIDE_WINDOW_FT
+    side, d = classify(40.0, short)          # 66 ft since the light behind
+    assert side == "far_side" and -SIDE_WINDOW_FT < d < 0
