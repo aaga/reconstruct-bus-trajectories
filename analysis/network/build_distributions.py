@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 import shutil
 import sys
 from pathlib import Path
@@ -89,10 +91,32 @@ def build(city_id: str, suffix: str = "") -> None:
         ping_speed, speed_w = {}, {}
         bucket_m = 10.0 / FT_PER_M
         seg_len_m = {s: r["len_m"] for s, r in registry["segments"].items()}
-        for seg_id_, b_, n_, sdt_ in duckdb.connect().execute(f"""
-                SELECT seg_id, bucket, sum(n), sum(sum_dt)
-                FROM read_parquet('{ts_glob}/service_date=*/route=*.parquet')
-                GROUP BY 1, 2""").fetchall():
+        # Accumulate (n, sum_dt) per bucket one year at a time on a BOUNDED
+        # connection. Aggregating all 957 days at once on a default
+        # connection drove the spill to 27.8 GB and filled the volume
+        # (2026-08-18): both sums are additive, so chunking is exact.
+        _spill = base / "duckdb_spill"
+        _spill.mkdir(parents=True, exist_ok=True)
+        tcon = duckdb.connect()
+        tcon.execute(f"SET temp_directory='{_spill}'")
+        tcon.execute(f"SET memory_limit='"
+                     f"{os.environ.get('DIST_MEMORY_LIMIT', '8GB')}'")
+        tcon.execute("SET preserve_insertion_order=false")
+        tcon.execute("SET threads=3")
+        acc: dict[tuple[str, int], list] = {}
+        _years = sorted({p_.name.split("=")[1][:7]
+                         for p_ in ts_glob.glob("service_date=*")})
+        for _y in _years:
+            for seg_id_, b_, n_, sdt_ in tcon.execute(f"""
+                    SELECT seg_id, bucket, sum(n), sum(sum_dt)
+                    FROM read_parquet(
+                      '{ts_glob}/service_date={_y}-*/route=*.parquet')
+                    GROUP BY 1, 2""").fetchall():
+                a = acc.setdefault((seg_id_, int(b_)), [0, 0.0])
+                a[0] += int(n_); a[1] += float(sdt_)
+            print(f"  traj_speed {_y}: {len(acc):,} buckets", flush=True)
+        tcon.close()
+        for (seg_id_, b_), (n_, sdt_) in acc.items():
             if n_ < 5 or sdt_ <= 0:
                 continue
             L = seg_len_m.get(seg_id_)
@@ -100,8 +124,8 @@ def build(city_id: str, suffix: str = "") -> None:
                 continue
             nb = int(np.ceil(L / bucket_m))
             blen = L - (nb - 1) * bucket_m if b_ == nb - 1 else bucket_m
-            ping_speed.setdefault(seg_id_, {})[int(b_)] = blen / (sdt_ / n_)
-            speed_w.setdefault(seg_id_, {})[int(b_)] = int(n_)
+            ping_speed.setdefault(seg_id_, {})[b_] = blen / (sdt_ / n_)
+            speed_w.setdefault(seg_id_, {})[b_] = n_
     seg_index = {s: i for i, s in enumerate(sorted(registry["segments"]))}
 
     # CTA keeps the original flat location; other cities nest under their id
@@ -116,7 +140,12 @@ def build(city_id: str, suffix: str = "") -> None:
     out_dir.mkdir(parents=True)
 
     con = duckdb.connect()
-    con.execute("SET threads=4")
+    spill = base / "duckdb_spill"
+    spill.mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET temp_directory='{spill}'")
+    con.execute(f"SET memory_limit='{os.environ.get('DIST_MEMORY_LIMIT', '8GB')}'")
+    con.execute("SET preserve_insertion_order=false")
+    con.execute("SET threads=3")
     glob = str(base / f"events{suffix}" / "service_date=*" / "route=*.parquet")
     sums_glob = str(base / f"event_sums{suffix}"
                     / "service_date=*" / "route=*.parquet")
@@ -172,14 +201,22 @@ def build(city_id: str, suffix: str = "") -> None:
     con.executemany("INSERT INTO seglen VALUES (?, ?)",
                     [(s, r["len_m"]) for s, r in registry["segments"].items()])
 
+    trav_glob_all = str(base / "traversals" / "service_date=*" / "route=*.parquet")
+
+    def yglob(g: str, y: str) -> str:
+        """Restrict a service_date=* glob to one chunk (YYYY or YYYY-MM), so
+        duckdb prunes files rather than reading 957 days and filtering rows."""
+        return g.replace("service_date=*", f"service_date={y}-*")
+
     # ---- bucket aggregation (split by movement; '?' = unknown shape) -----
     # Shape per (seg, trip) via event_sums; min() collapses the handful of
     # cross-route trip_key collisions (~6/day) to one shape.
-    rows = con.execute(
-        f"""
+    def _main_rows(y: str):
+        return con.execute(
+            f"""
         WITH shp AS (
           SELECT seg_id, trip_key, min(shape_id) AS shape_id
-          FROM read_parquet('{sums_glob}') GROUP BY 1, 2
+          FROM read_parquet('{yglob(sums_glob, y)}') GROUP BY 1, 2
         )
         SELECT e.seg_id, e.cls AS fcls,
                floor(e.off_down_m * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
@@ -189,20 +226,21 @@ def build(city_id: str, suffix: str = "") -> None:
                sum(e.dur_s * coalesce(e.pax, 0)) AS pax_secs,
                count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
                                 THEN e.is_last_all ELSE e.is_last END) AS n_last
-        FROM read_parquet('{glob}', union_by_name=true) e
+        FROM read_parquet('{yglob(glob, y)}', union_by_name=true) e
         LEFT JOIN shp USING (seg_id, trip_key)
         LEFT JOIN mv ON mv.seg_id = e.seg_id AND mv.shape_id = shp.shape_id
         WHERE e.cls IN ('nd', 'pre', 'post', 'post2', 'dw')
         GROUP BY 1, 2, 3, 4
         """
-    ).fetchall()
+        ).fetchall()
 
     # ---- ghost aggregation: neighbors' events in the ±10%-length zones ---
-    ghost_rows = con.execute(
-        f"""
+    def _ghost_rows(y: str):
+        return con.execute(
+            f"""
         WITH shp AS (
           SELECT seg_id, trip_key, min(shape_id) AS shape_id
-          FROM read_parquet('{sums_glob}') GROUP BY 1, 2
+          FROM read_parquet('{yglob(sums_glob, y)}') GROUP BY 1, 2
         )
         SELECT adj.tgt_seg, e.cls AS fcls,
                floor((e.off_down_m + adj.shift) * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
@@ -212,7 +250,7 @@ def build(city_id: str, suffix: str = "") -> None:
                sum(e.dur_s * coalesce(e.pax, 0)) AS pax_secs,
                count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
                                 THEN e.is_last_all ELSE e.is_last END) AS n_last
-        FROM read_parquet('{glob}', union_by_name=true) e
+        FROM read_parquet('{yglob(glob, y)}', union_by_name=true) e
         JOIN shp USING (seg_id, trip_key)
         JOIN adj ON adj.shape_id = shp.shape_id AND adj.nb_seg = e.seg_id
         JOIN seglen sl ON sl.seg_id = adj.tgt_seg
@@ -222,11 +260,15 @@ def build(city_id: str, suffix: str = "") -> None:
                OR (e.off_down_m + adj.shift) BETWEEN sl.len_m AND 1.1 * sl.len_m)
         GROUP BY 1, 2, 3, 4
         """
-    ).fetchall()
+        ).fetchall()
 
     per_seg: dict[str, dict] = {}
     per_seg_mv: dict[str, dict[str, dict]] = {}
-    for seg_id, fcls, bucket, mvm, n, secs, pax_secs, n_last in rows:
+    per_seg_gh: dict[str, dict] = {}
+    per_seg_mv_gh: dict[str, dict[str, dict]] = {}
+
+    def _fold_main(rows):
+      for seg_id, fcls, bucket, mvm, n, secs, pax_secs, n_last in rows:
         b = int(bucket)
         d = per_seg.setdefault(seg_id, {})
         d.setdefault(fcls, {})[b] = d.get(fcls, {}).get(b, 0) + int(n)
@@ -245,9 +287,8 @@ def build(city_id: str, suffix: str = "") -> None:
             if n_last:
                 md.setdefault(fcls + "_q", {})[b] = int(n_last)
 
-    per_seg_gh: dict[str, dict] = {}
-    per_seg_mv_gh: dict[str, dict[str, dict]] = {}
-    for seg_id, fcls, bucket, mvm, n, secs, pax_secs, n_last in ghost_rows:
+    def _fold_ghost(rows):
+      for seg_id, fcls, bucket, mvm, n, secs, pax_secs, n_last in rows:
         b = int(bucket)
         targets = [per_seg_gh.setdefault(seg_id, {})]
         if mvm != "?":
@@ -264,31 +305,44 @@ def build(city_id: str, suffix: str = "") -> None:
                 qd = t.setdefault(fcls + "_q", {})
                 qd[b] = qd.get(b, 0) + int(n_last)
 
-    dates = con.execute(
-        f"SELECT count(DISTINCT service_date) FROM read_parquet('{glob}')"
-    ).fetchone()
+    # Drive both aggregations one year at a time. Bucket counters are
+    # additive, so folding chunk by chunk is exact — and it keeps peak memory
+    # and spill bounded. Running all 957 days in one query drove duckdb's
+    # temp dir to 9.7 GB and nearly filled the volume (2026-08-18).
+    years = sorted({d.name.split("=")[1][:7]
+                    for d in (base / f"events{suffix}").glob("service_date=*")})
+    for y in years:
+        t_y = time.time()
+        _fold_main(_main_rows(y))
+        _fold_ghost(_ghost_rows(y))
+        print(f"  {y}: folded ({time.time() - t_y:.0f}s)", flush=True)
+
+    # Event-covered dates, straight off the partition names — counting
+    # DISTINCT service_date meant re-reading 12 GB of events.
+    ev_dates = sorted({d.name.split("=")[1]
+                       for d in (base / f"events{suffix}").glob("service_date=*")})
+    dates = (len(ev_dates),)
 
     # Traversal counts per segment over the SAME service dates as the events —
     # the denominator that turns summed delay seconds into per-trip averages.
-    trav_glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
-    create_canonical_view(con, trav_glob, registry, city)
-    n_trips = dict(con.execute(f"""
-        SELECT seg_id, count(*) FROM trav
-        WHERE service_date IN (
-          SELECT DISTINCT service_date FROM read_parquet('{glob}'))
-        GROUP BY 1
-    """).fetchall())
-    # traversal counts per (seg, movement) — the denominator for the
-    # movement-filtered avg-seconds view
+    # Chunked by month like the aggregations above: the canonical view joins
+    # segmap across 10 GB of traversals, and running it whole spilled 37.8 GB
+    # and filled the volume (2026-08-18). Counts are additive.
+    ev_months = sorted({d[:7] for d in ev_dates})
+    n_trips: dict[str, int] = {}
     mv_trips: dict[str, dict[str, int]] = {}
-    for seg_id, m, n in con.execute(f"""
-        SELECT t.seg_id, mv.m, count(*) FROM trav t
-        JOIN mv ON mv.seg_id = t.seg_id AND mv.shape_id = t.shape_id
-        WHERE t.service_date IN (
-          SELECT DISTINCT service_date FROM read_parquet('{glob}'))
-        GROUP BY 1, 2
-    """).fetchall():
-        mv_trips.setdefault(seg_id, {})[m] = int(n)
+    for ym in ev_months:
+        create_canonical_view(
+            con, yglob(trav_glob_all, ym), registry, city, view_name="trav_m")
+        for seg_id, n in con.execute(
+                "SELECT seg_id, count(*) FROM trav_m GROUP BY 1").fetchall():
+            n_trips[seg_id] = n_trips.get(seg_id, 0) + int(n)
+        for seg_id, m, n in con.execute("""
+                SELECT t.seg_id, mv.m, count(*) FROM trav_m t
+                JOIN mv ON mv.seg_id = t.seg_id AND mv.shape_id = t.shape_id
+                GROUP BY 1, 2""").fetchall():
+            d_ = mv_trips.setdefault(seg_id, {})
+            d_[m] = d_.get(m, 0) + int(n)
 
     n_files = 0
     n_events_total = 0
