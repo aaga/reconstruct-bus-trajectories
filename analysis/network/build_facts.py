@@ -83,16 +83,29 @@ def build(city_id: str, out_root: Path | None = None,
     con.execute("SET threads=3")
 
     trav_glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
-    create_canonical_view(con, trav_glob, registry, city)
     su = base / "event_sums"
-    if list(su.glob("service_date=*")):
-        con.execute(f"""CREATE VIEW es AS SELECT trip_key, seg_id,
-            nd_event_s, dwell_union_s, pax_event_s
-            FROM read_parquet('{su}/service_date=*/route=*.parquet')""")
-    else:
-        con.execute("""CREATE VIEW es AS SELECT NULL::TEXT trip_key,
-            NULL::TEXT seg_id, 0.0 nd_event_s, 0.0 dwell_union_s,
-            0.0 pax_event_s WHERE FALSE""")
+    has_sums = bool(list(su.glob("service_date=*")))
+
+    def scope_month(ym: str) -> None:
+        """Point trav/es at ONE month's files.
+
+        Building them over all 957 days and filtering by month in the WHERE
+        clause makes every month's query join segmap across 10 GB of
+        traversals — 7.4 GB of heap before it dies (2026-08-18). Scoping the
+        globs lets duckdb read only that month.
+        """
+        create_canonical_view(
+            con, trav_glob.replace("service_date=*", f"service_date={ym}-*"),
+            registry, city)
+        if has_sums:
+            con.execute(f"""CREATE OR REPLACE VIEW es AS
+                SELECT trip_key, seg_id, nd_event_s, dwell_union_s, pax_event_s
+                FROM read_parquet(
+                  '{su}/service_date={ym}-*/route=*.parquet')""")
+        else:
+            con.execute("""CREATE OR REPLACE VIEW es AS SELECT NULL::TEXT
+                trip_key, NULL::TEXT seg_id, 0.0 nd_event_s,
+                0.0 dwell_union_s, 0.0 pax_event_s WHERE FALSE""")
 
     con.execute("CREATE TABLE ff(seg_id TEXT, t_ff_s DOUBLE)")
     con.executemany("INSERT INTO ff VALUES (?, ?)",
@@ -115,6 +128,7 @@ def build(city_id: str, out_root: Path | None = None,
         y, m = ym[:4], ym[5:7]
         part = out / f"year={y}" / f"month={m}"
         part.mkdir(parents=True, exist_ok=True)
+        scope_month(ym)
         q = f"""
         COPY (
           WITH t AS (
@@ -134,7 +148,6 @@ def build(city_id: str, out_root: Path | None = None,
             WHERE tr.t_obs_s > 0 AND ff.t_ff_s > 0
               AND tr.max_gap_in_seg_s <= {MAX_GAP_S}
               AND (tr.flags & {FLAG_TOUCHED_TERMINAL}) = 0
-              AND strftime(tr.service_date, '%Y-%m') = '{ym}'
           )
           SELECT seg_id, route_id, service_date, period, mvm, dir,
                  count(*)::INT              AS n,
