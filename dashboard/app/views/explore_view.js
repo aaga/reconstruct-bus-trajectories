@@ -10,8 +10,11 @@
 // Every measure in the fact table is additive, so a coarser slice is a SUM:
 // mean delay = sum_delay/n, and variance comes from sum_delay_sq.
 
-const DUCKDB_BASE = "./vendor/duckdb";
-const FACTS = "./data/network/facts";
+// Resolve against the PAGE, not this module: a bare "./vendor/..." inside
+// /app/views/ resolves to /app/views/vendor/... for dynamic import().
+const ROOT = new URL(".", document.baseURI).href;
+const DUCKDB_BASE = `${ROOT}vendor/duckdb`;
+const FACTS = `${ROOT}data/network/facts`;
 
 const DOWS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const PERIODS = ["am_peak", "midday", "pm_peak", "evening", "late_night"];
@@ -46,9 +49,8 @@ export class ExploreView {
     const note = (m) => { host.querySelector(".xp-status").textContent = m; };
     try {
       note("loading query engine (~34 MB, cached after first load)…");
-      const duckdb = await import(`${DUCKDB_BASE}/duckdb-browser.mjs`);
-      const worker = new Worker(`${DUCKDB_BASE}/duckdb-browser-eh.worker.js`,
-                                { type: "module" });
+      const duckdb = await import(`${DUCKDB_BASE}/duckdb-browser.bundled.mjs`);
+      const worker = new Worker(`${DUCKDB_BASE}/duckdb-browser-eh.worker.js`);
       this.db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger("WARNING"), worker);
       await this.db.instantiate(`${DUCKDB_BASE}/duckdb-eh.wasm`);
       this.conn = await this.db.connect();
