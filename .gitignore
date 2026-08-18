@@ -90,3 +90,6 @@ dashboard/data/
 
 # vendored duckdb-wasm runtime (34 MB; re-fetch via the note in explore_view.js)
 dashboard/vendor/duckdb/
+
+# local valhalla routing containers (not part of the pipeline)
+routing-valhalla*/
