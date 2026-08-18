@@ -49,6 +49,23 @@ def build(city_id: str) -> None:
     registry = json.loads((base / "segment_registry.json").read_text())
     gtfs = city.resolve(city.gtfs_zip)
     cache = city.resolve(city.archive_cache_dir)
+    # Direct-read cities (CTA since 2026-08-17) have no hour-file cache;
+    # read the daily export in place, mapping columns/units exactly as
+    # run_reconstruct._service_date_pings_direct does.
+    if getattr(city, "avl_direct_read", False) and city.avl_source_dir:
+        src_sql = f"""(
+          SELECT avl_event_time AT TIME ZONE '{tz}' AS timestamp,
+                 CAST(trip_id AS VARCHAR) AS trip_id,
+                 CAST(bus_id AS VARCHAR)  AS vehicle_id,
+                 latitude, longitude,
+                 CASE WHEN speed IS NULL OR speed >= 255 THEN NULL
+                      ELSE speed * 0.3048 END AS speed_mps
+          FROM read_parquet('{city.avl_source_dir}/date=*.parquet')
+          WHERE onroute = 1 AND route_id IS NOT NULL AND trip_id IS NOT NULL
+        )"""
+    else:
+        src_sql = (f"read_parquet('{cache}/agency={city.r2_agency}__*.parquet',"
+                   " union_by_name=true)")
     glob = str(cache / f"agency={city.r2_agency}__*.parquet")
     trav_glob = str(base / "traversals" / "service_date=*" / "*.parquet")
     tz = city.tz
@@ -67,7 +84,7 @@ def build(city_id: str) -> None:
           )
           SELECT tk.shape_id, p.latitude AS lat, p.longitude AS lon,
                  TRY_CAST(p.speed_mps AS DOUBLE) AS v
-          FROM read_parquet('{glob}', union_by_name=true) p
+          FROM {src_sql} p
           JOIN tk ON tk.trip_key =
             p.trip_id || '_' || p.vehicle_id || '_' ||
             strftime(CAST(p.timestamp AT TIME ZONE '{tz}' AS DATE), '%Y-%m-%d')
