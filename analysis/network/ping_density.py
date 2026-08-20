@@ -96,7 +96,22 @@ def build(city_id: str) -> None:
     print(f"matched {n_total:,} pings to shapes "
           f"({time.time() - t0:.0f}s)", flush=True)
 
-    shapes = registry["shapes"]
+    # Shapes from EVERY GTFS era, plus where each one's geometry lives:
+    # historical traversals carry that era's shape_ids, so a canonical-only
+    # table drops their pings entirely and the canonical zip has no geometry
+    # for them (2026-08-20 sweep).
+    shapes = dict(registry["shapes"])
+    shape_zip: dict[str, Path] = {}
+    era_dir = base / "era_shapes"
+    if era_dir.is_dir() and city.gtfs_history_dir:
+        hist = city.resolve(city.gtfs_history_dir)
+        for p_ in sorted(era_dir.glob("*.json")):
+            recs = json.loads(p_.read_text())
+            shapes.update(recs)
+            z = hist / f"{p_.stem}.zip"
+            if z.exists():
+                for sid_ in recs:
+                    shape_zip[sid_] = z
     counts: dict[str, dict[int, list]] = defaultdict(
         lambda: defaultdict(lambda: [0, 0, 0.0]))  # [n, n_v, sum_v]
     n_snapped = 0
@@ -107,7 +122,7 @@ def build(city_id: str) -> None:
         rec = shapes.get(sh)
         if rec is None:
             continue
-        poly, dist = load_gtfs_shape_with_dist(gtfs, sh)
+        poly, dist = load_gtfs_shape_with_dist(shape_zip.get(sh, gtfs), sh)
         arr = np.asarray(poly, dtype=float)
         if dist is None:
             from core.mapmatch.shape_snap import equirect_cumulative_m

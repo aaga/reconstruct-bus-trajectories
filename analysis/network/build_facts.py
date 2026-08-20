@@ -137,7 +137,11 @@ def build(city_id: str, out_root: Path | None = None,
                    tr.t_obs_s, ff.t_ff_s,
                    tr.t_obs_s - ff.t_ff_s AS delay_s,
                    tr.t_obs_s / ff.t_ff_s AS ratio,
-                   tr.has_door AS has_door,
+                   -- create_canonical_view is built WITHOUT a door
+                   -- sidecar here, so tr.has_door is hardcoded FALSE and
+                   -- n_door came out 0 for every year. event_sums has full
+                   -- 957-day coverage, so derive door presence from it.
+                   (coalesce(es.dwell_union_s, 0.0) > 0) AS has_door,
                    coalesce(es.nd_event_s, 0.0)   AS nd_s,
                    coalesce(es.dwell_union_s, 0.0) AS dwell_s,
                    coalesce(es.pax_event_s, 0.0)  AS pax_s

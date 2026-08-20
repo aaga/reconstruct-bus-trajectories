@@ -46,18 +46,31 @@ from dataio.cities import CityConfig, get_city  # noqa: E402
 
 def _connect(city: CityConfig) -> tuple[duckdb.DuckDBPyConnection, str, str]:
     con = duckdb.connect()
-    ev_glob = str(city.resolve("caches/door_events") / city.city_id / "*.parquet")
+    # Same source as delay_events._door_intervals: the 3-month cache covers
+    # only 93 of 957 dates, which would leave has_door/ons/offs/load_in blank
+    # across the history (2026-08-20 sweep).
+    if city.door_source_dir:
+        ev_glob = str(Path(city.door_source_dir) / "month=*.parquet")
+        # the historical export names its dwell column dwell_time
+        import glob as _g
+        import pyarrow.parquet as _pq
+        _f = sorted(_g.glob(ev_glob))
+        _cols = set(_pq.ParquetFile(_f[0]).schema.names) if _f else set()
+        dwell_col = "dwell_s" if "dwell_s" in _cols else "dwell_time"
+    else:
+        ev_glob = str(city.resolve("caches/door_events") / city.city_id / "*.parquet")
+        dwell_col = "dwell_s"
     trav_glob = str(
         REPO / "outputs" / "network" / city.city_id / "traversals"
         / "service_date=*" / "route=*.parquet"
     )
-    return con, ev_glob, trav_glob
+    return con, ev_glob, trav_glob, dwell_col
 
 
 def verify_timezone(city: CityConfig, sample_date: str = "2026-06-03") -> dict:
     """Fraction of a day's door events landing inside the same vehicle's
     traversal windows, under Chicago-local vs UTC interpretation."""
-    con, ev_glob, trav_glob = _connect(city)
+    con, ev_glob, trav_glob, dwell_col = _connect(city)
     out = {}
     for label, expr in (
         ("chicago", f"(event_time AT TIME ZONE '{city.tz}')"),
@@ -90,7 +103,7 @@ def verify_timezone(city: CityConfig, sample_date: str = "2026-06-03") -> dict:
 
 
 def build_sidecar(city: CityConfig, force: bool = False) -> None:
-    con, ev_glob, trav_glob = _connect(city)
+    con, ev_glob, trav_glob, dwell_col = _connect(city)
     out_dir = REPO / "outputs" / "network" / city.city_id / "door_sidecar"
     out_dir.mkdir(parents=True, exist_ok=True)
     cut = city.service_day_cutover_h
@@ -116,7 +129,8 @@ def build_sidecar(city: CityConfig, force: bool = False) -> None:
               WITH ev AS (
                 SELECT bus_id,
                        (event_time AT TIME ZONE '{city.tz}') AS t_utc,
-                       dwell_s, (ron + fon) AS ons, (roff + foff) AS offs,
+                       {dwell_col} AS dwell_s, (ron + fon) AS ons,
+                       (roff + foff) AS offs,
                        passenger_load
                 FROM read_parquet('{ev_glob}')
                 WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{d}'
