@@ -10,6 +10,14 @@ Usage:
     PYTHONPATH=src uv run python analysis/run_decomposition.py --trip-id 1001350
 """
 
+# DEPRECATION (2026-08-21): the proximity-based categories this emits
+# (dwell_near_signal / signal_uniform / signal_overflow / crossing /
+# slowdown) are no longer consumed by the dashboard. The speed tab's
+# inferred rows now come from core.decompose.door_delay — the same
+# door-overlap rules the network distributions use. Kept for the
+# route-aggregate path and historical comparison; remove once that is
+# migrated too.
+
 from __future__ import annotations
 
 import argparse
