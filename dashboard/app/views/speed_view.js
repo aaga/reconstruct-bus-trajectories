@@ -13,7 +13,45 @@ import { distToLonLat } from "../projection.js";
 
 // delay_row.key → the toggle that controls its row. AVL/Observed have their own
 // checkboxes; the inferred rows follow whether that source's speed curve shows.
-const ROW_TOGGLE = { avl: "dAVL", observed: "dWeb", phone: "phoneSpeed", r2: "r2Speed" };
+const ROW_TOGGLE = { door: "dAVL", avl: "dAVL", observed: "dWeb",
+                     phone: "phoneSpeed", r2: "r2Speed" };
+
+// Hatches for post at a NEAR-SIDE stop: delay there is a stop-then-signal
+// compound, so it reads as purple over red rather than either alone.
+// post2_ns doubles up the slashes, matching post2's existing idiom.
+const HATCH_DEFS = `
+  <pattern id="nsHatch" width="7" height="7" patternUnits="userSpaceOnUse"
+           patternTransform="rotate(45)">
+    <rect width="7" height="7" fill="#8a4fc8"/>
+    <rect width="3.4" height="7" fill="#d63a2f"/>
+  </pattern>
+  <pattern id="ns2Hatch" width="7" height="7" patternUnits="userSpaceOnUse"
+           patternTransform="rotate(45)">
+    <rect width="7" height="7" fill="#8a4fc8"/>
+    <rect width="3.4" height="7" fill="#d63a2f"/>
+    <line x1="0" y1="0" x2="0" y2="7" stroke="#fff" stroke-width="1.6"/>
+  </pattern>`;
+
+// What an inferred row shows, given the Door events / stop loss toggles:
+//   doors off        -> every slow stretch is unlabelled red
+//   doors on         -> door cycles blue + named; the rest red
+//   + stop loss on   -> >10 s shoulders become teal (pre) / purple (post)
+function rowItems(row, doorItems, doorsOn, lossOn) {
+  if (row.role !== "inferred") return row.items;
+  const out = [];
+  for (const d of row.items) {
+    const c = d.category;
+    if (c === "nd") { out.push(d); continue; }
+    if (!doorsOn || !lossOn) {
+      // pre/post are slow time like any other when stop loss is hidden
+      out.push({ ...d, category: "nd", label: "" });
+    } else {
+      out.push(d);
+    }
+  }
+  if (doorsOn) out.push(...doorItems);
+  return out;
+}
 
 export class SpeedView {
   constructor(S) { this.S = S; }
@@ -109,11 +147,19 @@ export class SpeedView {
     const pT = getSource(t, "phone").curve.t;
     // Rows from the unified delay_rows[]; AVL gets the rich tooltip and, in
     // distance mode, is clipped to the observed trajectory's time span.
+    const doorRow = t.delay_rows.find((dr) => dr.key === "door");
+    const doorItems = doorRow ? doorRow.items || [] : [];
+    const doorsOn = !!S.toggles.dAVL;
+    const lossOn = doorsOn && !!S.toggles.dLoss;
     const rows = t.delay_rows.map((dr) => {
       const source = getSource(t, dr.source_key);
-      const avl = dr.role === "avl";
-      let items = dr.items || [];
+      const avl = dr.role === "avl" || dr.role === "door";
+      let items = rowItems(dr, doorItems, doorsOn, lossOn);
       if (distMode && avl) items = items.filter((b) => b.t_start >= pT[0] && b.t_start <= pT[pT.length - 1]);
+      // Draw doors last so they sit ON TOP: post2 spans the cycles it
+      // swallowed, and the blue must remain visible through it.
+      items = items.slice().sort((a, b) =>
+        (a.category === "door" ? 1 : 0) - (b.category === "door" ? 1 : 0));
       // Inferred rows are tinted in their source colour (magenta/green) when shown.
       const srcColor = dr.role === "inferred" ? SRC_COLOR[dr.source_key] : null;
       return { key: ROW_TOGGLE[dr.key] || dr.key, label: dr.label, delays: items, src: source ? source.curve : null, avl, srcColor };
@@ -137,6 +183,7 @@ export class SpeedView {
     const x = d3.scaleLinear().range([M.l, width - M.r]);
     const y = d3.scaleLinear().domain([0, maxV]).nice().range([speedH, M.t]);
 
+    svg.append("defs").html(HATCH_DEFS);
     svg.append("g").attr("class", "axis").attr("transform", `translate(${M.l},0)`).call(d3.axisLeft(y));
     svg.append("text").attr("transform", "rotate(-90)").attr("x", -(speedH / 2)).attr("y", 14)
       .attr("text-anchor", "middle").attr("font-size", 12).attr("fill", "#555").text("speed (mph)");

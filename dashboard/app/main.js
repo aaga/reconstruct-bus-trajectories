@@ -34,7 +34,7 @@ const S = {
   view: { trajectory: null, speed: null },
   toggles: {
     phoneCurve: true, phoneRaw: false, r2Curve: true, r2Raw: false, stops: false,
-    phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true,
+    phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true, dLoss: false,
   },
   // map (speed tab): pub/sub + ported views, rebuilt per trip
   mapState: null, mapView: null, streetView: null,
@@ -75,13 +75,14 @@ const exploreView = new ExploreView(S);
 // are just preset toggle states over the shared views — no separate chart code.
 const MODE_PRESETS = {
   rich: { phoneCurve: true, phoneRaw: false, r2Curve: true, r2Raw: false, stops: false,
-          phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true },
+          phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true, dLoss: false },
   lite: { phoneCurve: true, phoneRaw: false, r2Curve: false, r2Raw: false, stops: false,
-          phoneSpeed: true, r2Speed: false, dAVL: false, dWeb: false },
+          phoneSpeed: true, r2Speed: false, dAVL: false, dWeb: false, dLoss: false },
 };
 const TOGGLE_IDS = {
   "t-phoneCurve": "phoneCurve", "t-phoneRaw": "phoneRaw", "t-r2Curve": "r2Curve", "t-r2Raw": "r2Raw", "t-stops": "stops",
   "s-phoneSpeed": "phoneSpeed", "s-r2Speed": "r2Speed", "s-dAVL": "dAVL", "s-dWeb": "dWeb",
+  "s-dLoss": "dLoss",
 };
 
 function setMode(mode) {
@@ -513,7 +514,15 @@ async function init() {
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");
   bind("t-r2Curve", "r2Curve"); bind("t-r2Raw", "r2Raw"); bind("t-stops", "stops");
   bind("s-phoneSpeed", "phoneSpeed"); bind("s-r2Speed", "r2Speed");
-  bind("s-dAVL", "dAVL"); bind("s-dWeb", "dWeb");
+  bind("s-dAVL", "dAVL"); bind("s-dWeb", "dWeb"); bind("s-dLoss", "dLoss");
+  // stop loss is meaningless without the door cycles that define it
+  const syncLoss = () => {
+    const el = $("s-dLoss"); if (!el) return;
+    el.disabled = !S.toggles.dAVL;
+    el.parentElement.style.opacity = S.toggles.dAVL ? "" : "0.45";
+  };
+  $("s-dAVL")?.addEventListener("change", syncLoss);
+  syncLoss();
   document.querySelectorAll("#modes button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
   document.querySelectorAll('input[name="speedx"]').forEach((r) =>
     r.onchange = (e) => {

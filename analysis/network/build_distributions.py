@@ -54,7 +54,7 @@ BUCKET_FT = 10.0
 FT_PER_M = 3.28084
 
 
-CLASSES = ["nd", "pre", "post", "post2", "dw"]
+CLASSES = ["nd", "pre", "post", "post_ns", "post2", "post2_ns", "dw"]
 
 
 def build(city_id: str, suffix: str = "") -> None:
@@ -153,6 +153,25 @@ def build(city_id: str, suffix: str = "") -> None:
     # ---- turn movements (turn_movements.py; annotation only) -------------
     mv_path = base / "movements.json"
     movements = json.loads(mv_path.read_text()) if mv_path.exists() else {}
+    # (month, stop) -> near-side, straight from the monthly registration.
+    # The events table also carries a near_side column now, but only dates
+    # regenerated since 2026-08-21 have it; deriving here means the split
+    # works across all 957 days without rewriting 12 GB of events.
+    con.execute("CREATE TABLE nstop(ym TEXT, stop_id TEXT)")
+    ns_rows = []
+    for mp in sorted((base / "monthly_stops").glob("*.json")):
+        try:
+            raw = json.loads(mp.read_text())
+        except Exception:  # noqa: BLE001
+            continue
+        ym = mp.stem
+        ns_rows += [(ym, str(st["id"])) for stops in raw.values() for st in stops
+                    if st.get("signal_side") == "near_side"]
+    if ns_rows:
+        con.executemany("INSERT INTO nstop VALUES (?, ?)", ns_rows)
+        con.execute("CREATE INDEX IF NOT EXISTS nstop_i ON nstop(ym, stop_id)")
+    print(f"near-side stop-months: {len(ns_rows):,}")
+
     # Era-complete (shape, seg) -> movement: movements.json is keyed by
     # canonical shape_ids, so historical traversals would all read '?' and
     # lose their per-movement splits.
@@ -218,7 +237,9 @@ def build(city_id: str, suffix: str = "") -> None:
           SELECT seg_id, trip_key, min(shape_id) AS shape_id
           FROM read_parquet('{yglob(sums_glob, y)}') GROUP BY 1, 2
         )
-        SELECT e.seg_id, e.cls AS fcls,
+        SELECT e.seg_id,
+               CASE WHEN e.cls IN ('post','post2') AND (ns.stop_id IS NOT NULL)
+                    THEN e.cls || '_ns' ELSE e.cls END AS fcls,
                floor(e.off_down_m * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
                coalesce(mv.m, '?') AS mvm,
                count(*) AS n,
@@ -227,6 +248,8 @@ def build(city_id: str, suffix: str = "") -> None:
                count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
                                 THEN e.is_last_all ELSE e.is_last END) AS n_last
         FROM read_parquet('{yglob(glob, y)}', union_by_name=true) e
+        LEFT JOIN nstop ns ON ns.stop_id = e.stop_id
+             AND ns.ym = strftime(e.service_date, '%Y%m')
         LEFT JOIN shp USING (seg_id, trip_key)
         LEFT JOIN mv ON mv.seg_id = e.seg_id AND mv.shape_id = shp.shape_id
         WHERE e.cls IN ('nd', 'pre', 'post', 'post2', 'dw')
@@ -242,7 +265,9 @@ def build(city_id: str, suffix: str = "") -> None:
           SELECT seg_id, trip_key, min(shape_id) AS shape_id
           FROM read_parquet('{yglob(sums_glob, y)}') GROUP BY 1, 2
         )
-        SELECT adj.tgt_seg, e.cls AS fcls,
+        SELECT adj.tgt_seg,
+               CASE WHEN e.cls IN ('post','post2') AND (ns.stop_id IS NOT NULL)
+                    THEN e.cls || '_ns' ELSE e.cls END AS fcls,
                floor((e.off_down_m + adj.shift) * {FT_PER_M} / {BUCKET_FT})::INT AS bucket,
                coalesce(mv.m, '?') AS mvm,
                count(*) AS n,
@@ -251,6 +276,8 @@ def build(city_id: str, suffix: str = "") -> None:
                count(*) FILTER (WHERE CASE WHEN e.cls = 'dw'
                                 THEN e.is_last_all ELSE e.is_last END) AS n_last
         FROM read_parquet('{yglob(glob, y)}', union_by_name=true) e
+        LEFT JOIN nstop ns ON ns.stop_id = e.stop_id
+             AND ns.ym = strftime(e.service_date, '%Y%m')
         JOIN shp USING (seg_id, trip_key)
         JOIN adj ON adj.shape_id = shp.shape_id AND adj.nb_seg = e.seg_id
         JOIN seglen sl ON sl.seg_id = adj.tgt_seg

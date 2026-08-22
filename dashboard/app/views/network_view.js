@@ -694,7 +694,7 @@ export class NetworkView {
     // working). dw (door events) is opt-in via the checkbox.
     this._showDoors ??= false;
     const CLASSES = pingMode ? ["ping"]
-                   : ["nd", "pre", "post", "post2",
+                   : ["nd", "pre", "post", "post_ns", "post2", "post2_ns",
                       ...(this._showDoors ? ["dw"] : [])];
     // Turn-movement filter (T/L/R/E through the downstream signal).
     // Selection resets when the popup moves to a different segment.
@@ -745,13 +745,27 @@ export class NetworkView {
     const yMax = Math.max(1, ...totals);
     const yOf = (n) => chartH - (n / yMax) * (chartH - 6);
 
+    // *_ns = post at a NEAR-SIDE stop: a stop-then-signal compound, drawn
+    // as purple over red rather than either alone.
     const COLORS = { nd: "#d63a2f", pre: "#1fb8b0",
                      post: "#8a4fc8", post2: "url(#post2hatch)",
+                     post_ns: "url(#nshatch)", post2_ns: "url(#ns2hatch)",
                      dw: "#2b6fd6", ping: "#3f3f3f" };
     let bars = `<defs><pattern id="post2hatch" width="6" height="6"
         patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
         <rect width="6" height="6" fill="#8a4fc8"/>
         <line x1="0" y1="0" x2="0" y2="6" stroke="#fff" stroke-width="2.2"/>
+      </pattern>
+      <pattern id="nshatch" width="7" height="7"
+        patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="7" height="7" fill="#8a4fc8"/>
+        <rect width="3.4" height="7" fill="#d63a2f"/>
+      </pattern>
+      <pattern id="ns2hatch" width="7" height="7"
+        patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="7" height="7" fill="#8a4fc8"/>
+        <rect width="3.4" height="7" fill="#d63a2f"/>
+        <line x1="0" y1="0" x2="0" y2="7" stroke="#fff" stroke-width="1.6"/>
       </pattern></defs>`;
     for (let i = 0; i < nB; i++) {
       let y = chartH;

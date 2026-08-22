@@ -100,7 +100,11 @@ def _doors(city, bus_id: str, lo_ms: int, hi_ms: int) -> list[tuple]:
     lst = ", ".join(f"'{f}'" for f in files)
     rows = duckdb.connect().execute(f"""
         SELECT epoch(event_time AT TIME ZONE '{city.tz}') AS t_open,
-               coalesce({dwell}, 0) AS dwell_s, latitude, longitude
+               coalesce({dwell}, 0) AS dwell_s, latitude, longitude,
+               event_type,
+               coalesce(fon,0) AS fon, coalesce(ron,0) AS ron,
+               coalesce(foff,0) AS foff, coalesce(roff,0) AS roff,
+               passenger_load
         FROM read_parquet([{lst}], union_by_name=true)
         WHERE CAST(bus_id AS VARCHAR) = '{bus_id}'
           AND coalesce(ron,0)+coalesce(roff,0)
@@ -108,8 +112,21 @@ def _doors(city, bus_id: str, lo_ms: int, hi_ms: int) -> list[tuple]:
           AND epoch(event_time AT TIME ZONE '{city.tz}')
               BETWEEN {lo_ms / 1000.0} AND {hi_ms / 1000.0}
         ORDER BY t_open""").fetchall()
-    return [(float(a), float(a) + float(b), float(c or 0), float(d or 0))
-            for a, b, c, d in rows]
+    out = []
+    for a, b, c, d, et, fon, ron, foff, roff, load in rows:
+        on, off = int(fon) + int(ron), int(foff) + int(roff)
+        after = int(load) if load is not None else None
+        out.append({
+            "open": float(a), "close": float(a) + float(b),
+            "lat": float(c or 0), "lon": float(d or 0),
+            "dwell_s": round(float(b), 1), "event_type": int(et),
+            "on_front": int(fon), "on_rear": int(ron),
+            "off_front": int(foff), "off_rear": int(roff),
+            "on_total": on, "off_total": off, "flow": on + off,
+            "load_after": after,
+            "load_before": (after - (on - off)) if after is not None else None,
+        })
+    return out
 
 
 def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
@@ -137,7 +154,7 @@ def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
     month = None
     if doors:
         import pandas as pd
-        month = pd.Timestamp(doors[0][0], unit="s",
+        month = pd.Timestamp(doors[0]["open"], unit="s",
                              tz="UTC").tz_convert(city.tz).strftime("%Y%m")
     pos, near = _stop_table(city, shape_id, month or "") if shape_id else ({}, set())
 
@@ -151,7 +168,8 @@ def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
     ids = list(pos)
     sdist = np.array([pos[s] for s in ids]) if ids else np.empty(0)
     stop_ids: list = []
-    for _o, _c, lat, lon in doors:
+    for dc in doors:
+        lat, lon = dc["lat"], dc["lon"]
         if not ids:
             stop_ids.append(None)
             continue
@@ -163,11 +181,21 @@ def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
 
     rows, referenced = [], set()
     door_items = [
-        {"t_start": round(o - t0_ms / 1000.0, 1),
-         "t_end": round(c - t0_ms / 1000.0, 1),
+        {"t_start": round(dc["open"] - t0_ms / 1000.0, 1),
+         "t_end": round(dc["close"] - t0_ms / 1000.0, 1),
          "category": "door", "stop_id": s,
-         "label": names.get(str(s)) or (f"stop {s}" if s else "door")}
-        for (o, c, _la, _lo), s in zip(doors, stop_ids)
+         "label": names.get(str(s)) or (f"stop {s}" if s else "door"),
+         # keeps the rich passenger tooltip working on the Door events row
+         "event_type": dc["event_type"],
+         "event_desc": "Serviced stop" if dc["event_type"] == 3 else "Unknown stop",
+         "dwell_s": dc["dwell_s"], "flow": dc["flow"],
+         "on_total": dc["on_total"], "on_front": dc["on_front"],
+         "on_rear": dc["on_rear"], "off_total": dc["off_total"],
+         "off_front": dc["off_front"], "off_rear": dc["off_rear"],
+         "load_before": dc["load_before"], "load_after": dc["load_after"],
+         "dwell_per_pax": (round(dc["dwell_s"] / dc["flow"], 1)
+                           if dc["flow"] else None)}
+        for dc, s in zip(doors, stop_ids)
     ]
     rows.append({"key": "door", "label": "Door events", "role": "door",
                  "source_key": "phone", "items": door_items})
@@ -180,7 +208,7 @@ def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
         t = np.asarray(src["curve"]["t"], float)
         x = np.asarray(src["curve"]["dist_m"], float)
         abs_t = t + t0_ms / 1000.0
-        pieces = classify(abs_t, x, [(o, c) for o, c, _a, _b in doors],
+        pieces = classify(abs_t, x, [(d["open"], d["close"]) for d in doors],
                           stop_ids=stop_ids, stop_names=names, near_side=near,
                           emit_short_shoulders=True)
         items = [

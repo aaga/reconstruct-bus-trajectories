@@ -124,6 +124,10 @@ EVENTS_SCHEMA = pa.schema(
         # of the most recent door close). Powers the passenger-seconds
         # distribution tab: bucket pax·s = sum(dur_s × pax).
         ("pax", pa.float32()),
+        # post/post2 whose attributed stop is NEAR-SIDE: delay there is a
+        # stop-then-signal compound, split out in the distributions as
+        # post_ns/post2_ns (2026-08-21).
+        ("near_side", pa.bool_()),
     ]
 )
 
@@ -445,6 +449,9 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 "stop_id": str(stop_id) if stop_id is not None else None,
                 "t_start_s": float(ta), "t_end_s": float(tb),
                 "pax": float(load_asof(ta)),
+                "near_side": bool(
+                    cls in ("post", "post2") and stop_id is not None
+                    and str(stop_id) in _G.get("near_side_stops", ())),
             }
         )
 

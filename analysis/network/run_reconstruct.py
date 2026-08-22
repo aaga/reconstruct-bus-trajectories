@@ -146,6 +146,10 @@ def _set_month(date_iso: str) -> None:
             seg_id: [(float(s["off_m"]), str(s["id"])) for s in stops]
             for seg_id, stops in raw.items()
         }
+        _G["near_side_stops"] = {
+            str(s["id"]) for stops in raw.values() for s in stops
+            if s.get("signal_side") == "near_side"
+        }
     elif "canonical_seg_stops" in _G:
         _G["seg_stops"] = _G["canonical_seg_stops"]
     _G["stops_month"] = month
@@ -177,6 +181,11 @@ def _init_worker(city_id: str) -> None:
         for seg_id, rec in reg["segments"].items()
     }
     _G["canonical_seg_stops"] = _G["seg_stops"]
+    _G["near_side_stops"] = {
+        str(st["id"]) for rec in reg["segments"].values()
+        for st in rec.get("stops_off", [])
+        if st.get("signal_side") == "near_side"
+    }
 
 
 def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:
