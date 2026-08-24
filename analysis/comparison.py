@@ -56,7 +56,7 @@ from core.serialize import to_pchip_record  # noqa: E402
 
 GTFS = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 INTERSECTIONS = REPO / "caches" / "cta" / "intersections.json"
-PAGES = "https://cta-observation-tool.pages.dev/api/trips"
+PAGES = "https://bus-observation-tool.pages.dev/api/trips"
 CHICAGO = ZoneInfo("America/Chicago")
 MPS_TO_MPH = 2.23694
 OUT = REPO / "outputs" / "obs_trips"

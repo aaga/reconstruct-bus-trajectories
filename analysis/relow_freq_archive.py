@@ -5,9 +5,9 @@ position only — so the low-freq trajectory could never use VCHIP-ME, and
 the single-trip view disagreed with the network pipeline about the same
 bus on the same day (20 s AVL + VCHIP-ME there, 30 s R2 + LOCREG here).
 
-Rebuilding the bundles outright needs the observation webapp, which is
-unreachable (DNS failure on cta-observation-tool.pages.dev), and we only
-need one block of them. So this rewrites the ``r2`` source in place:
+Rebuilding the bundles outright goes through the observation webapp
+(bus-observation-tool.pages.dev) and re-derives everything; when only the
+low-freq layer needs changing, this rewrites the ``r2`` source in place:
 archive pings for the vehicle's ride window, clustered to the ride,
 map-matched to the same shape, reconstructed with fit_trajectory.
 Everything else in the bundle — observed events, features, phone layer —
