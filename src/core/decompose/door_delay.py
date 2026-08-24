@@ -163,3 +163,43 @@ def classify(
 
     out.sort(key=lambda p: (p.t_start, p.cls))
     return out
+
+
+# A door cycle at the FIRST or LAST active event of a trip carries the
+# terminal layover in dwell_time, not door-open time: on 2026-06 data, 4.6%
+# of active cycles exceed 300 s and ~94% of those sit at a trip boundary
+# (vs 3.2% for normal cycles), with dwells up to 9 hours. Left alone they
+# paint a huge blue bar over the start of a trip and swallow every real
+# stop under it.
+LAYOVER_MIN_S = 120.0
+
+
+def sanitize_cycles(cycles: list[dict]) -> list[dict]:
+    """Strip layover dwell and forbid overlap. ``cycles`` need ``open``,
+    ``close`` and ``trip_key`` (bus+trip+trip_start); order is preserved.
+
+    The door genuinely opened — boarding counts are real — so the event is
+    kept and only its bogus duration is dropped. A cycle is also never
+    allowed to run past the next one, which is physically impossible and is
+    what makes these read as "overlapping".
+    """
+    if not cycles:
+        return cycles
+    out = [dict(c) for c in sorted(cycles, key=lambda c: c["open"])]
+    # first/last active event of each trip
+    by_trip: dict = {}
+    for i, c in enumerate(out):
+        by_trip.setdefault(c.get("trip_key"), []).append(i)
+    edge = set()
+    for idxs in by_trip.values():
+        edge.add(idxs[0])
+        edge.add(idxs[-1])
+    for i, c in enumerate(out):
+        dur = c["close"] - c["open"]
+        if i in edge and dur > LAYOVER_MIN_S:
+            c["close"] = c["open"]          # layover, not a dwell
+            c["layover_trimmed"] = True
+        if i + 1 < len(out):
+            c["close"] = min(c["close"], out[i + 1]["open"])
+        c["close"] = max(c["close"], c["open"])
+    return out

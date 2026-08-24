@@ -31,7 +31,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from core.decompose.door_delay import classify  # noqa: E402
+from core.decompose.door_delay import classify, sanitize_cycles  # noqa: E402
 from dataio.cities import get_city  # noqa: E402
 
 _CACHE: dict = {}
@@ -104,7 +104,9 @@ def _doors(city, bus_id: str, lo_ms: int, hi_ms: int) -> list[tuple]:
                event_type,
                coalesce(fon,0) AS fon, coalesce(ron,0) AS ron,
                coalesce(foff,0) AS foff, coalesce(roff,0) AS roff,
-               passenger_load
+               passenger_load,
+               CAST(trip_id AS VARCHAR) || '|' ||
+                 CAST(trip_start_time AS VARCHAR) AS trip_key
         FROM read_parquet([{lst}], union_by_name=true)
         WHERE CAST(bus_id AS VARCHAR) = '{bus_id}'
           AND coalesce(ron,0)+coalesce(roff,0)
@@ -113,7 +115,7 @@ def _doors(city, bus_id: str, lo_ms: int, hi_ms: int) -> list[tuple]:
               BETWEEN {lo_ms / 1000.0} AND {hi_ms / 1000.0}
         ORDER BY t_open""").fetchall()
     out = []
-    for a, b, c, d, et, fon, ron, foff, roff, load in rows:
+    for a, b, c, d, et, fon, ron, foff, roff, load, tkey in rows:
         on, off = int(fon) + int(ron), int(foff) + int(roff)
         after = int(load) if load is not None else None
         out.append({
@@ -125,8 +127,12 @@ def _doors(city, bus_id: str, lo_ms: int, hi_ms: int) -> list[tuple]:
             "on_total": on, "off_total": off, "flow": on + off,
             "load_after": after,
             "load_before": (after - (on - off)) if after is not None else None,
+            "trip_key": tkey,
         })
-    return out
+    # A trip's first/last cycle carries the terminal layover in dwell_time,
+    # which otherwise paints a multi-minute blue bar over the start of the
+    # ride and swallows the real stops beneath it.
+    return sanitize_cycles(out)
 
 
 def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
@@ -208,8 +214,15 @@ def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
         t = np.asarray(src["curve"]["t"], float)
         x = np.asarray(src["curve"]["dist_m"], float)
         abs_t = t + t0_ms / 1000.0
-        pieces = classify(abs_t, x, [(d["open"], d["close"]) for d in doors],
-                          stop_ids=stop_ids, stop_names=names, near_side=near,
+        # A layover-trimmed cycle is a door opening, not a passenger dwell:
+        # left in, its instant sits inside the terminal's long slow event and
+        # turns the whole layover into one huge pre/post bar. It still shows
+        # on the Door events row; it just cannot anchor stop loss.
+        keep = [i for i, dc in enumerate(doors) if not dc.get("layover_trimmed")]
+        pieces = classify(abs_t, x,
+                          [(doors[i]["open"], doors[i]["close"]) for i in keep],
+                          stop_ids=[stop_ids[i] for i in keep],
+                          stop_names=names, near_side=near,
                           emit_short_shoulders=True)
         items = [
             {"t_start": round(p.t_start - t0_ms / 1000.0, 1),

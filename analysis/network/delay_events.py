@@ -191,7 +191,9 @@ def _door_intervals(
         SELECT bus_id,
                epoch((event_time AT TIME ZONE '{city.tz}')) AS t_open,
                {dwell} AS dwell_s, passenger_load, latitude, longitude,
-               {stop} AS stop_id
+               {stop} AS stop_id,
+               CAST(trip_id AS VARCHAR) || '|'
+                 || CAST(trip_start_time AS VARCHAR) AS dtrip
         FROM {src_sql}
         WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{date_iso}'
           -- 2026-07-31 decision: zero-activity door cycles (nobody on or
@@ -204,11 +206,30 @@ def _door_intervals(
     ).fetchall()
     out: dict[str, list] = defaultdict(list)
     stops: dict[str, list] = defaultdict(list)
-    for bus, t_open, dwell, load, lat, lon, stop_id in rows:
-        out[str(bus)].append((float(t_open), float(t_open) + float(dwell or 0.0),
-                              min(int(load or 0), MAX_LOAD),
-                              float(lat or 0.0), float(lon or 0.0)))
-        stops[str(bus)].append(stop_id)
+    # Terminal layover: dwell_time on a trip's first/last active event is the
+    # layover, not door-open time (4.6% of cycles exceed 300 s and ~94% of
+    # those sit at a trip boundary; max observed 9 hours). Left in they
+    # inflate dwell_union_s and swallow real stops. sanitize_cycles zeroes
+    # the bogus duration, keeping the boarding counts.
+    from core.decompose.door_delay import sanitize_cycles
+
+    raw: dict[str, list] = defaultdict(list)
+    for bus, t_open, dwell, load, lat, lon, stop_id, dtrip in rows:
+        raw[str(bus)].append({
+            "open": float(t_open), "close": float(t_open) + float(dwell or 0.0),
+            "load": min(int(load or 0), MAX_LOAD),
+            "lat": float(lat or 0.0), "lon": float(lon or 0.0),
+            "stop_id": stop_id, "trip_key": dtrip})
+    for bus, cyc in raw.items():
+        for c in sanitize_cycles(cyc):
+            # Drop the layover outright: zero-width it still OVERLAPS the
+            # terminal's long slow event, anchoring a dwell blob and a post
+            # that span the whole recovery time. Scheduled recovery is not
+            # passenger delay.
+            if c.get("layover_trimmed"):
+                continue
+            out[bus].append((c["open"], c["close"], c["load"], c["lat"], c["lon"]))
+            stops[bus].append(c["stop_id"])
     return ({k: np.asarray(v) for k, v in out.items()}, dict(stops))
 
 

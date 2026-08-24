@@ -107,3 +107,32 @@ def test_short_shoulders_returned_as_red_when_requested():
     o, c = doors[0]
     assert reds[0].t_start == dw.t_start and reds[0].t_end == o
     assert reds[1].t_start == c and reds[1].t_end == dw.t_end
+
+
+def test_sanitize_strips_terminal_layover_dwell():
+    """First/last event of a trip carries the layover, not door time."""
+    from core.decompose.door_delay import sanitize_cycles
+    cycles = [
+        {"open": 0, "close": 832, "trip_key": "A"},      # last of trip A
+        {"open": 300, "close": 1132, "trip_key": "B"},   # first of trip B
+        {"open": 430, "close": 438, "trip_key": "B"},    # a real stop
+        {"open": 520, "close": 526, "trip_key": "B"},
+    ]
+    got = sanitize_cycles(cycles)
+    assert got[0]["close"] == got[0]["open"]          # layover dropped
+    assert got[1]["close"] == got[1]["open"]
+    assert got[2]["close"] - got[2]["open"] == 8      # real dwell untouched
+    # and nothing overlaps its successor any more
+    assert all(a["close"] <= b["open"] + 1e-9 for a, b in zip(got, got[1:]))
+
+
+def test_sanitize_keeps_long_mid_trip_dwell():
+    """A genuine hold in the middle of a trip is not a layover."""
+    from core.decompose.door_delay import sanitize_cycles
+    cycles = [
+        {"open": 0, "close": 10, "trip_key": "A"},
+        {"open": 100, "close": 400, "trip_key": "A"},   # 300 s hold, mid-trip
+        {"open": 600, "close": 610, "trip_key": "A"},
+    ]
+    got = sanitize_cycles(cycles)
+    assert got[1]["close"] - got[1]["open"] == 300
