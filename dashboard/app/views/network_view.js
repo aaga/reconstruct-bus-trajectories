@@ -195,10 +195,8 @@ export class NetworkView {
             `<option value="dow${i}">${d} only</option>`).join("")}
         </select>
       </div>
-      <div class="nw-group"><b>Pick / Weather</b>
+      <div class="nw-group"><b>Weather</b>
         <div class="nw-inline">
-          <select id="nw-pick"><option value="">pick: all</option>
-            ${dims.picks.map((p, i) => `<option value="${i}">${p}</option>`).join("")}</select>
           <select id="nw-weather"><option value="">weather: any</option>
             ${dims.weathers.filter((w) => w !== "unknown").map((w) =>
               `<option value="${dims.weathers.indexOf(w)}">${w}</option>`).join("")}</select>
@@ -344,7 +342,7 @@ export class NetworkView {
       else { this.F.daytype = v || null; this.F.dow = null; }
       this.refresh();
     };
-    for (const [id, key] of [["nw-pick", "pick"], ["nw-weather", "weather"]]) {
+    for (const [id, key] of [["nw-weather", "weather"]]) {
       el.querySelector(`#${id}`).onchange = (e) => {
         this.F[key] = e.target.value === "" ? null : Number(e.target.value);
         this.refresh();
@@ -420,8 +418,6 @@ export class NetworkView {
     if (days) {
       days.value = this.F.dow != null ? `dow${this.F.dow}` : (this.F.daytype ?? "");
     }
-    const pick = el.querySelector("#nw-pick");
-    if (pick) pick.value = this.F.pick == null ? "" : String(this.F.pick);
     const weather = el.querySelector("#nw-weather");
     if (weather) weather.value = this.F.weather == null ? "" : String(this.F.weather);
     el.querySelector("#nw-cmp-peak").checked = this.N.compare === "peak";
@@ -658,6 +654,15 @@ export class NetworkView {
       const r = await fetch(`${this.data.base}/${distDir}/${props.sid}.json`, { cache: "no-cache" });
       if (!r.ok) throw new Error();
       d = await r.json();
+      // headway CV (frequent network only): absent file just greys the box
+      if (this._cvSeg !== props.sid) {
+        this._cvSeg = props.sid;
+        this._cv = null;
+        try {
+          const rc = await fetch(`${this.data.base}/cv/${props.sid}.json`, { cache: "no-cache" });
+          if (rc.ok) this._cv = await rc.json();
+        } catch { /* keep null */ }
+      }
     } catch {
       if (this._distThresh === "3") {
         host.innerHTML = `<div class="nw-note">no 3 mph pass built for this city/segment —
@@ -870,6 +875,41 @@ export class NetworkView {
         <text x="${padL - 8}" y="6" text-anchor="end" class="dist-tick" style="font-style:italic">mph</text>`;
     }
 
+    // headway CV overlay: one line per frequent route through the segment.
+    // Dimensionless, own scale (capped at max(1, data max)); the dashed
+    // rule marks CV = 0.5, a common bunching threshold.
+    let cvLines = "";
+    const cvOn = this._showCV && this._cv;
+    if (cvOn) {
+      const CV_COLORS = ["#b8860b", "#7b3fa0", "#00838f", "#c2185b", "#5d4037"];
+      const routes = Object.keys(this._cv.routes);
+      let cvMax = 1.0;
+      for (const r of routes)
+        for (const v of this._cv.routes[r].cv) if (v != null) cvMax = Math.max(cvMax, v);
+      cvMax *= 1.08;
+      const yCv = (v) => chartH - (v / cvMax) * (chartH - 6);
+      cvLines = `<line x1="${padL}" y1="${yCv(0.5).toFixed(1)}" x2="${W - padR}" y2="${yCv(0.5).toFixed(1)}"
+        stroke="#b8860b" stroke-width="0.7" stroke-dasharray="5,4" opacity="0.5"/>`;
+      routes.forEach((r, ri) => {
+        const rec = this._cv.routes[r];
+        const col = CV_COLORS[ri % CV_COLORS.length];
+        const pts = [];
+        rec.cv.forEach((v, i) => {
+          if (v != null) pts.push([xOf((i + 0.5) * this._cv.bucket_ft), yCv(v)]);
+        });
+        if (pts.length > 1) {
+          cvLines += `<polyline points="${pts.map((q) => q.map((c) => c.toFixed(1)).join(",")).join(" ")}"
+            fill="none" stroke="${col}" stroke-width="1.8" opacity="0.9"/>`;
+          const [lx, ly] = pts[pts.length - 1];
+          cvLines += `<text x="${(lx - 4).toFixed(1)}" y="${(ly - 5).toFixed(1)}" font-size="10"
+            fill="${col}" text-anchor="end">rt ${r}</text>`;
+        }
+      });
+      yAxis += `
+        <text x="${padL + 4}" y="16" class="dist-tick" fill="#b8860b">CV ${ (cvMax / 1.08).toFixed(2)}</text>
+        <text x="${padL + 4}" y="${yCv(0.5) - 3}" class="dist-tick" fill="#b8860b" opacity="0.7">0.5</text>`;
+    }
+
     // road strip
     const roadY = chartH + 8;
     const roadBodyH = roadH - 18;
@@ -1048,6 +1088,9 @@ export class NetworkView {
         </span>` : ""}
         ${d.ping_v ? `<label class="dist-speed" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-speed-cb" ${this._showSpeed ? "checked" : ""}> avg speed</label>` : ""}
+        <label class="dist-cv" style="font-size:11px;margin-left:10px;cursor:pointer;${this._cv ? "" : "opacity:.4"}"
+          title="${this._cv ? "coefficient of variation of headways, frequent network" : "no frequent route through this segment"}">
+          <input type="checkbox" class="dist-cv-cb" ${this._cv ? "" : "disabled"} ${this._showCV && this._cv ? "checked" : ""}> headway CV</label>
         ${this.hasDoor && d.dw && !pingMode ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-doors-cb" ${this._showDoors ? "checked" : ""}> door events</label>` : ""}
         ${mvmtAll.length && !pingMode ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
@@ -1071,7 +1114,7 @@ export class NetworkView {
           ? `(${totals.reduce((a, v) => a + v, 0).toLocaleString()} raw AVL pings, pre-reconstruction)`
           : `(${d.n_events} events · ${d.n_trips ?? "?"} trips)`}</span>
       </div>
-      <svg viewBox="0 -12 ${W} ${H + 12}" class="dist-svg">${yAxis}${bars}${speedLine}${road}${axis}</svg>
+      <svg viewBox="0 -12 ${W} ${H + 12}" class="dist-svg">${yAxis}${bars}${speedLine}${cvLines}${road}${axis}</svg>
       ${this.hasDoor && !pingMode ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
@@ -1086,6 +1129,11 @@ export class NetworkView {
         this._renderDistribution(host, props, coords);
       };
     });
+    const cvCb = host.querySelector(".dist-cv-cb");
+    if (cvCb) cvCb.onchange = () => {
+      this._showCV = cvCb.checked;
+      this._renderDistribution(host, props, coords);
+    };
     const speedCb = host.querySelector(".dist-speed-cb");
     if (speedCb) speedCb.onchange = () => {
       this._showSpeed = speedCb.checked;

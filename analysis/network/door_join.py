@@ -129,11 +129,29 @@ def build_sidecar(city: CityConfig, force: bool = False) -> None:
               WITH ev AS (
                 SELECT bus_id,
                        (event_time AT TIME ZONE '{city.tz}') AS t_utc,
-                       {dwell_col} AS dwell_s, (ron + fon) AS ons,
+                       -- layover guard (2026-08-24): dwell on a trip's
+                       -- FIRST/LAST active event is the terminal layover;
+                       -- cap it at 0 there so per-segment dwell sums do not
+                       -- absorb scheduled recovery time (matches
+                       -- core.decompose.door_delay.sanitize_cycles).
+                       CASE WHEN {dwell_col} > 120 AND rn_seq IN (1, n_seq)
+                            THEN 0 ELSE {dwell_col} END AS dwell_s,
+                       (ron + fon) AS ons,
                        (roff + foff) AS offs,
                        passenger_load
-                FROM read_parquet('{ev_glob}')
-                WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{d}'
+                FROM (
+                  SELECT *, row_number() OVER (
+                           PARTITION BY bus_id, trip_id, trip_start_time
+                           ORDER BY event_time) AS rn_seq,
+                         count(*) OVER (
+                           PARTITION BY bus_id, trip_id, trip_start_time
+                           ) AS n_seq
+                  FROM read_parquet('{ev_glob}')
+                  WHERE (event_time - INTERVAL {cut} HOUR)::DATE = DATE '{d}'
+                    AND coalesce(ron,0)+coalesce(roff,0)
+                        +coalesce(fon,0)+coalesce(foff,0) > 0
+                )
+                WHERE TRUE
                   -- zero-activity cycles ignored (2026-07-31, kept
                   -- consistent with delay_events._door_intervals)
                   AND coalesce(ron,0) + coalesce(roff,0)

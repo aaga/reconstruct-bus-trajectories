@@ -7,7 +7,9 @@ Outputs (dashboard/data/network/):
     stats_<period>.bin packed columnar per-bin stats, one shard per period
     golden.json        parity fixture for the JS decoder
 
-Bin key: (seg, route, pick, season, dow, weather) × period(shard). Per bin:
+Bin key: (seg, route, season, dow, weather) × period(shard). Per bin:
+(pick dropped 2026-08-24: 36 GTFS eras made it useless as a filter — the
+date itself, via Explore, is the tool for that — and it multiplied bins.)
 n, sum_delay, m2, and a 16-bucket histogram of delay ratio t_obs/t_ff (see
 ``stats.py``). Aggregation runs in duckdb straight off the parquet glob.
 
@@ -66,7 +68,6 @@ WEATHER_NAMES = ["dry", "rain", "snow", "unknown"]
 def _dims(city: CityConfig, registry: dict, date_attrs: dict) -> dict:
     seg_ids = sorted(registry["segments"])
     route_ids = sorted({r["route_id"] for s in registry["segments"].values() for r in s["routes"]})
-    picks = [p.pick_id for p in city.picks]
     seasons = sorted({d["season"] for d in date_attrs["days"].values()})
     periods = [name for name, _, _ in city.periods]
     if len(route_ids) > 255 or len(seg_ids) > 65535:
@@ -74,7 +75,6 @@ def _dims(city: CityConfig, registry: dict, date_attrs: dict) -> dict:
     return {
         "seg_ids": seg_ids,
         "route_ids": route_ids,
-        "picks": picks,
         "seasons": seasons,
         "dows": DOW_NAMES,
         "weathers": WEATHER_NAMES,
@@ -89,9 +89,19 @@ def _aggregate(
     date_attrs: dict,
     dims: dict,
     registry: dict,
+    month: str | None = None,
+    con: "duckdb.DuckDBPyConnection | None" = None,
 ) -> "duckdb.DuckDBPyRelation":
-    """One duckdb query: filter, join attrs + freeflow, bin, histogram."""
-    con = duckdb.connect()
+    """One duckdb query: filter, join attrs + freeflow, bin, histogram.
+
+    With ``month`` (YYYY-MM) the trav/es views are scoped to that month's
+    files: bins carry additive intermediates (sums + sums of squares), so
+    the caller folds months with a groupby-sum and derives m2 at the end.
+    Running all 957 days in one query needs more heap/spill than the box
+    has (measured repeatedly on the other aggregators, 2026-08-18).
+    """
+    if con is None:
+        con = duckdb.connect()
     # The event_sums join (20M+ rows) can blow past duckdb's default 80%-of-
     # RAM ceiling on a loaded machine — cap it and let it spill to disk.
     spill = REPO / "outputs" / "network" / "duckdb_spill"
@@ -107,10 +117,14 @@ def _aggregate(
     # the 12 GB cap at 4 threads (MBTA writes sums for every trip in
     # no-door mode — larger join than CTA's door-covered subset).
     con.execute("SET threads=2")
+    sc_pat = ("service_date=*.parquet" if month is None
+              else f"service_date={month}-*.parquet")
     sidecar = str(
-        REPO / "outputs" / "network" / city.city_id / "door_sidecar" / "service_date=*.parquet"
+        REPO / "outputs" / "network" / city.city_id / "door_sidecar" / sc_pat
     )
-    create_canonical_view(con, traversals_glob, registry, city, door_sidecar_glob=sidecar)
+    tg = (traversals_glob if month is None
+          else traversals_glob.replace("service_date=*", f"service_date={month}-*"))
+    create_canonical_view(con, tg, registry, city, door_sidecar_glob=sidecar)
 
     # Event-classified per-traversal sums (delay_events.py): nd_event_s,
     # dwell_union_s, pax_event_s keyed by (trip_key, seg_id). A missing row on
@@ -121,14 +135,15 @@ def _aggregate(
     su_dir = REPO / "outputs" / "network" / city.city_id / "event_sums"
     su_files = _globmod.glob(str(su_dir / "service_date=*" / "route=*.parquet"))
     es_dates = sorted({Path(f).parent.name.split("=")[1] for f in su_files})
-    con.execute("CREATE TABLE es_dates(date_iso TEXT)")
+    con.execute("CREATE OR REPLACE TABLE es_dates(date_iso TEXT)")
     if es_dates:  # no-door cities have no event_sums at all
         con.executemany("INSERT INTO es_dates VALUES (?)", [(d,) for d in es_dates])
     if su_files:
+        su_pat = "service_date=*" if month is None else f"service_date={month}-*"
         con.execute(
-            f"""CREATE VIEW es AS
+            f"""CREATE OR REPLACE VIEW es AS
             SELECT trip_key, seg_id, nd_event_s, dwell_union_s, pax_event_s
-            FROM read_parquet('{su_dir}/service_date=*/route=*.parquet')"""
+            FROM read_parquet('{su_dir}/{su_pat}/route=*.parquet')"""
         )
     else:
         con.execute(
@@ -138,7 +153,7 @@ def _aggregate(
 
     # Lookup tables.
     ff_rows = [(k, v["t_ff_s"]) for k, v in freeflow["freeflow"].items()]
-    con.execute("CREATE TABLE ff(seg_id TEXT, t_ff_s DOUBLE)")
+    con.execute("CREATE OR REPLACE TABLE ff(seg_id TEXT, t_ff_s DOUBLE)")
     con.executemany("INSERT INTO ff VALUES (?, ?)", ff_rows)
 
     da_rows = [
@@ -146,7 +161,7 @@ def _aggregate(
         for d, a in date_attrs["days"].items()
     ]
     con.execute(
-        "CREATE TABLE da(date_iso TEXT, pick TEXT, season TEXT, dow INT, weather TEXT, daytype TEXT)"
+        "CREATE OR REPLACE TABLE da(date_iso TEXT, pick TEXT, season TEXT, dow INT, weather TEXT, daytype TEXT)"
     )
     con.executemany("INSERT INTO da VALUES (?, ?, ?, ?, ?, ?)", da_rows)
 
@@ -179,10 +194,10 @@ def _aggregate(
     bucket_cols += hist_cols("t.pax_s", PAX_EDGES, "hp", door)
 
     seg_enc = {s: i for i, s in enumerate(dims["seg_ids"])}
-    con.execute("CREATE TABLE segenc(seg_id TEXT, sid INT)")
+    con.execute("CREATE OR REPLACE TABLE segenc(seg_id TEXT, sid INT)")
     con.executemany("INSERT INTO segenc VALUES (?, ?)", list(seg_enc.items()))
     route_enc = {r: i for i, r in enumerate(dims["route_ids"])}
-    con.execute("CREATE TABLE routeenc(route_id TEXT, rid INT)")
+    con.execute("CREATE OR REPLACE TABLE routeenc(route_id TEXT, rid INT)")
     con.executemany("INSERT INTO routeenc VALUES (?, ?)", list(route_enc.items()))
 
     q = f"""
@@ -212,14 +227,13 @@ def _aggregate(
     )
     SELECT
       se.sid, re.rid,
-      {enc('da.pick', dims['picks'])} AS pick,
       {enc('da.season', dims['seasons'])} AS season,
       CASE WHEN da.daytype = 'holiday' THEN 7 ELSE da.dow END AS dow,
       {enc('da.weather', dims['weathers'])} AS weather,
       t.period AS period,
       COUNT(*)::BIGINT AS n,
       SUM(t.delay_s) AS sum_delay,
-      COALESCE(VAR_POP(t.delay_s) * COUNT(*), 0.0) AS m2,
+      SUM(t.delay_s * t.delay_s) AS sumsq_delay,
       COUNT(*) FILTER (WHERE t.has_door)::BIGINT AS n_door,
       COALESCE(SUM(t.dwell_s)  FILTER (WHERE t.has_door), 0.0) AS sum_dwell,
       COALESCE(SUM(t.delay_s)  FILTER (WHERE t.has_door), 0.0) AS sum_delay_door,
@@ -227,25 +241,25 @@ def _aggregate(
       COALESCE(SUM(t.ons)      FILTER (WHERE t.has_door), 0)   AS sum_ons,
       COALESCE(SUM(t.offs)     FILTER (WHERE t.has_door), 0)   AS sum_offs,
       COALESCE(SUM(t.load_sum) FILTER (WHERE t.has_door), 0)   AS sum_load,
-      COALESCE(VAR_POP(t.dwell_s) FILTER (WHERE t.has_door)
-               * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_dw,
-      COALESCE(VAR_POP(t.nd_s) FILTER (WHERE t.has_door)
-               * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_nd,
+      COALESCE(SUM(t.dwell_s * t.dwell_s) FILTER (WHERE t.has_door), 0.0)
+        AS sumsq_dwell,
+      COALESCE(SUM(t.nd_s * t.nd_s) FILTER (WHERE t.has_door), 0.0)
+        AS sumsq_nd,
       COALESCE(SUM(t.pax_s) FILTER (WHERE t.has_door), 0.0) AS sum_pax,
-      COALESCE(VAR_POP(t.pax_s) FILTER (WHERE t.has_door)
-               * COUNT(*) FILTER (WHERE t.has_door), 0.0) AS m2_pax,
+      COALESCE(SUM(t.pax_s * t.pax_s) FILTER (WHERE t.has_door), 0.0)
+        AS sumsq_pax,
       {', '.join(bucket_cols)}
     FROM t
     JOIN da ON da.date_iso = t.date_iso
     JOIN segenc se ON se.seg_id = t.seg_id
     JOIN routeenc re ON re.route_id = t.route_id
-    GROUP BY 1, 2, 3, 4, 5, 6, 7
+    GROUP BY 1, 2, 3, 4, 5, 6
     """
     return con, con.sql(q)
 
 
 SHARD_DTYPES = {
-    "sid": "<u2", "rid": "<u1", "pick": "<u1", "season": "<u1",
+    "sid": "<u2", "rid": "<u1", "season": "<u1",
     "dow": "<u1", "weather": "<u1",
     "n": "<u2", "sum_delay": "<f4", "m2": "<f4",
     # door/APC (zero when the bin's dates precede door coverage);
@@ -312,8 +326,37 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     # ---- stats shards, one per period ------------------------------------
     glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
     sidecar = str(base / "door_sidecar" / "service_date=*.parquet")
-    con, rel = _aggregate(city, glob, freeflow, date_attrs, dims, registry)
-    df = rel.df()
+    # month-by-month fold: bins are additive (counts, sums, sums of squares,
+    # histogram buckets), so summing partials over the group key is exact;
+    # m2 is derived from the folded sums afterwards.
+    import pandas as pd
+    months = sorted({d[:7] for d in date_attrs["days"]})
+    con = duckdb.connect()
+    parts = []
+    for ym in months:
+        _, rel = _aggregate(city, glob, freeflow, date_attrs, dims, registry,
+                            month=ym, con=con)
+        part = rel.df()
+        if len(part):
+            parts.append(part)
+        print(f"  {ym}: {len(part):,} partial bins", flush=True)
+    if not parts:
+        raise SystemExit("no traversals binned")
+    key = ["sid", "rid", "season", "dow", "weather", "period"]
+    df = (pd.concat(parts, ignore_index=True)
+          .groupby(key, as_index=False, sort=False).sum(numeric_only=True))
+    # variance accumulators from the folded moments: m2 = sumsq - sum^2/n
+    n = df["n"].to_numpy(dtype=float)
+    nd = df["n_door"].to_numpy(dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["m2"] = np.maximum(
+            df["sumsq_delay"] - np.where(n > 0, df["sum_delay"] ** 2 / n, 0), 0)
+        df["m2_dw"] = np.maximum(
+            df["sumsq_dwell"] - np.where(nd > 0, df["sum_dwell"] ** 2 / nd, 0), 0)
+        df["m2_nd"] = np.maximum(
+            df["sumsq_nd"] - np.where(nd > 0, df["sum_nd"] ** 2 / nd, 0), 0)
+        df["m2_pax"] = np.maximum(
+            df["sumsq_pax"] - np.where(nd > 0, df["sum_pax"] ** 2 / nd, 0), 0)
     print(f"binned rows total: {len(df)}")
 
     shard_meta = {}
@@ -322,7 +365,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
         cols = {
             "sid": sub.sid.to_numpy(),
             "rid": sub.rid.to_numpy(),
-            "pick": sub.pick.to_numpy(),
             "season": sub.season.to_numpy(),
             "dow": sub.dow.to_numpy(),
             "weather": sub.weather.to_numpy(),
@@ -399,11 +441,12 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     # ---- meta.json --------------------------------------------------------
     # Date counts per (pick, season, dow, weather) — only dates that actually
     # produced traversals, so buses/hour denominators are honest.
+    # trav is scoped to the LAST month after the fold loop, so date presence
+    # comes from the partition names instead.
     dates_present = {
-        r[0]
-        for r in con.execute(
-            "SELECT DISTINCT strftime(service_date, '%Y-%m-%d') FROM trav"
-        ).fetchall()
+        d.name.split("=")[1]
+        for d in (REPO / "outputs" / "network" / city.city_id
+                  / "traversals").glob("service_date=*")
     }
     date_counts: dict[str, int] = {}
     for d, a in date_attrs["days"].items():
@@ -411,7 +454,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
             continue
         key = "|".join(
             [
-                str(dims["picks"].index(a["pick"]) if a["pick"] in dims["picks"] else 0),
                 str(dims["seasons"].index(a["season"])),
                 str(7 if a["daytype"] == "holiday" else a["dow"]),
                 str(
@@ -436,7 +478,6 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
             continue
         key = "|".join(
             [
-                str(dims["picks"].index(a["pick"]) if a["pick"] in dims["picks"] else 0),
                 str(dims["seasons"].index(a["season"])),
                 str(7 if a["daytype"] == "holiday" else a["dow"]),
                 str(

@@ -131,6 +131,26 @@ EVENTS_SCHEMA = pa.schema(
     ]
 )
 
+# Headway CV (2026-08-24): per 10 ft bucket, moments of the headway between
+# consecutive buses of the SAME ROUTE crossing the bucket midpoint. CV needs
+# only (n, sum, sum^2), all additive, so no per-crossing storage. Scope: the
+# CTA frequent network from 2026-01-01, within its operating hours.
+CV_ROUTES = {"9", "12", "81", "72", "4", "J14", "20", "34", "47", "49", "53",
+             "54", "55", "60", "63", "66", "77", "79", "82", "95"}
+CV_START = "2026-01-01"
+CV_MAX_HEADWAY_S = 3600.0
+CV_HOURS = {True: (6, 21), False: (9, 21)}   # weekday -> [6,21), weekend [9,21)
+
+CV_SCHEMA = pa.schema(
+    [
+        ("seg_id", pa.dictionary(pa.int32(), pa.string())),
+        ("bucket", pa.int32()),
+        ("n", pa.int32()),          # headways observed
+        ("sum_h", pa.float64()),    # seconds
+        ("sum_h2", pa.float64()),
+    ]
+)
+
 TRAJ_SPEED_SCHEMA = pa.schema(
     [
         ("seg_id", pa.dictionary(pa.int32(), pa.string())),
@@ -164,6 +184,39 @@ def _door_intervals(
 
     cut = city.service_day_cutover_h
     con = duckdb.connect()
+    # Fast path (2026-08-24): door_daily.py pre-splits the monthly export by
+    # service date, so a date reads its own few-MB file instead of rescanning
+    # ~700 MB of month files — worth ~1-1.5 h over 957 dates.
+    daily = (REPO / "outputs" / "network" / city.city_id / "door_daily"
+             / f"service_date={date_iso}")
+    if city.door_source_dir and daily.exists():
+        rows = con.execute(f"""
+            SELECT bus_id, t_open, dwell_s, passenger_load,
+                   latitude, longitude, stop_id,
+                   d_trip || '|' || d_trip_start AS dtrip
+            FROM read_parquet('{daily}/*.parquet')
+            ORDER BY bus_id, t_open
+        """).fetchall()
+        from core.decompose.door_delay import sanitize_cycles
+
+        raw: dict[str, list] = defaultdict(list)
+        for bus, t_open, dwell, load, lat, lon, stop_id, dtrip in rows:
+            raw[str(bus)].append({
+                "open": float(t_open),
+                "close": float(t_open) + float(dwell or 0.0),
+                "load": min(int(load or 0), MAX_LOAD),
+                "lat": float(lat or 0.0), "lon": float(lon or 0.0),
+                "stop_id": stop_id, "trip_key": dtrip})
+        out: dict[str, list] = defaultdict(list)
+        stops: dict[str, list] = defaultdict(list)
+        for bus, cyc in raw.items():
+            for c in sanitize_cycles(cyc):
+                if c.get("layover_trimmed"):
+                    continue
+                out[bus].append((c["open"], c["close"], c["load"],
+                                 c["lat"], c["lon"]))
+                stops[bus].append(c["stop_id"])
+        return ({k: np.asarray(v) for k, v in out.items()}, dict(stops))
     if city.door_source_dir:
         # Historical monthly export: one file per month, no stop_id, dwell
         # named dwell_time. A service date can straddle two months, so read
@@ -373,6 +426,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     # estimator. Immune to the stop-zone milestone pings that bias the
     # ping-speed bucket mean (positions stamped at fixed points).
     ts_rows: list[tuple] = []
+    cv_rows: list[tuple] = []
     if _G.get("traj_speed"):
         bucket_m = 10.0 / 3.28084
         x_cov_lo, x_cov_hi = float(xg[0]), float(xg[-1])
@@ -403,6 +457,13 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             dt = t_full[:-1] - t_full[1:]
             for k in np.nonzero(np.isfinite(dt) & (dt > 0))[0]:
                 ts_rows.append((seg_id, int(k), float(dt[k])))
+            if _G.get("cv_on"):
+                # midpoint crossing epoch per bucket (boundary-time average —
+                # exact to well under a second over a 10 ft cell)
+                t_mid = (t_full[:-1] + t_full[1:]) / 2.0
+                for k in np.nonzero(np.isfinite(t_mid))[0]:
+                    cv_rows.append((seg_id, int(k),
+                                    t0_epoch + float(t_mid[k])))
 
     def seg_of(x: float):
         for seg_id, x_lo, x_hi in bounds:
@@ -672,17 +733,18 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         }
         for s in set(nd_by_seg) | set(dwell_by_seg) | set(pax_by_seg)
     ]
-    return event_rows, sum_rows, ts_rows
+    return event_rows, sum_rows, ts_rows, cv_rows
 
 
 def _init_worker_ev(city_id: str, mph: float = 5.0, suffix: str = "",
-                    traj_speed: bool = False) -> None:
+                    traj_speed: bool = False, cv_on: bool = False) -> None:
     """Shared initializer plus the threshold/suffix this pass runs at."""
     _init_worker(city_id)
     global THRESHOLD
     THRESHOLD = AbsoluteSpeedThreshold(mph)
     _G["out_suffix"] = suffix
     _G["traj_speed"] = traj_speed
+    _G["cv_on"] = cv_on and traj_speed  # crossings come from the traj block
 
 
 def process_date(args):
@@ -690,8 +752,9 @@ def process_date(args):
     mph = args[3] if len(args) > 3 else 5.0
     suffix = args[4] if len(args) > 4 else ""
     traj_speed = args[5] if len(args) > 5 else False
+    cv_on = args[6] if len(args) > 6 else False
     if "city" not in _G:
-        _init_worker_ev(city_id, mph, suffix, traj_speed)
+        _init_worker_ev(city_id, mph, suffix, traj_speed, cv_on)
     city: CityConfig = _G["city"]
     _set_era(date_iso)
     base = REPO / "outputs" / "network" / city.city_id
@@ -712,7 +775,13 @@ def process_date(args):
         for route_id, route_df in df.groupby("route_id", sort=True):
             out_ev = ev_dir / f"route={route_id}.parquet"
             out_su = su_dir / f"route={route_id}.parquet"
+            cv_missing = (_G.get("cv_on") and str(route_id) in CV_ROUTES
+                          and date_iso >= CV_START
+                          and not (base / "headway_cv"
+                                   / f"service_date={date_iso}"
+                                   / f"route={route_id}.parquet").exists())
             if (out_ev.exists() and out_su.exists() and not force
+                    and not cv_missing
                     and not (_G.get("traj_speed")
                              and not (ts_dir / f"route={route_id}.parquet").exists())):
                 continue
@@ -722,6 +791,9 @@ def process_date(args):
             su_rows: list[dict] = []
             ts_n: Counter = Counter()
             ts_dt: Counter = Counter()
+            cv_x: dict[tuple, list] = {}
+            cv_want = (_G.get("cv_on") and str(route_id) in CV_ROUTES
+                       and date_iso >= CV_START)
             n_kept = 0
             for _, trip in route_df.groupby(["trip_id", "vehicle_id"], sort=False):
                 got = _process_trip(trip, date_iso, doors, rejects, assigned,
@@ -733,7 +805,33 @@ def process_date(args):
                 for s_, b_, dt_ in got[2]:
                     ts_n[(s_, b_)] += 1
                     ts_dt[(s_, b_)] += dt_
+                if cv_want:
+                    for s_, b_, tm in got[3]:
+                        cv_x.setdefault((s_, b_), []).append(tm)
                 n_kept += 1
+            # headways: consecutive same-route crossings of each bucket
+            # midpoint, differenced within the service date. Both crossings
+            # must fall inside the frequent network's operating hours, and
+            # gaps over an hour are service breaks, not headways.
+            cv_rows_out: list[dict] = []
+            if cv_want and cv_x:
+                wk = pd.Timestamp(date_iso).weekday() < 5
+                h_lo, h_hi = CV_HOURS[wk]
+                for (s_, b_), times in cv_x.items():
+                    tt = np.sort(np.asarray(times))
+                    hours = pd.to_datetime(tt, unit="s", utc=True).tz_convert(
+                        city.tz).hour.to_numpy()
+                    inwin = (hours >= h_lo) & (hours < h_hi)
+                    h = np.diff(tt)
+                    keep = (inwin[:-1] & inwin[1:]
+                            & (h > 0) & (h <= CV_MAX_HEADWAY_S))
+                    if not keep.any():
+                        continue
+                    hh = h[keep]
+                    cv_rows_out.append({
+                        "seg_id": s_, "bucket": int(b_),
+                        "n": int(len(hh)), "sum_h": float(hh.sum()),
+                        "sum_h2": float((hh * hh).sum())})
             sinks = [
                 (ev_dir, ev_rows, EVENTS_SCHEMA, out_ev),
                 (su_dir, su_rows, SUMS_SCHEMA, out_su),
@@ -746,6 +844,10 @@ def process_date(args):
                 ]
                 sinks.append((ts_dir, ts_rows, TRAJ_SPEED_SCHEMA,
                               ts_dir / f"route={route_id}.parquet"))
+            if cv_want:
+                cv_dir = base / "headway_cv" / f"service_date={date_iso}"
+                sinks.append((cv_dir, cv_rows_out, CV_SCHEMA,
+                              cv_dir / f"route={route_id}.parquet"))
             for d, rows, schema, path in sinks:
                 d.mkdir(parents=True, exist_ok=True)
                 table = (
@@ -785,6 +887,9 @@ def main() -> None:
     ap.add_argument("--traj-speed", action="store_true",
                     help="also write traj_speed/ per-bucket crossing times "
                          "(threshold-independent; run with one pass only)")
+    ap.add_argument("--headway-cv", action="store_true",
+                    help="also write headway_cv/ moments for the frequent "
+                         "network (needs --traj-speed)")
     args = ap.parse_args()
 
     from analysis.network.run_reconstruct import _dates_in_archive
@@ -804,8 +909,8 @@ def main() -> None:
     index_path = (REPO / "outputs" / "network" / city.city_id
                   / f"events_index{out_suffix}.jsonl")
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    work = [(args.city, d, args.force, args.mph, out_suffix, args.traj_speed)
-            for d in dates]
+    work = [(args.city, d, args.force, args.mph, out_suffix, args.traj_speed,
+             args.headway_cv) for d in dates]
     t_start = time.time()
     done = 0
 
@@ -824,13 +929,14 @@ def main() -> None:
               f"({time.time()-t_start:.0f}s){suffix}", flush=True)
 
     if args.workers <= 1:
-        _init_worker_ev(args.city, args.mph, out_suffix, args.traj_speed)
+        _init_worker_ev(args.city, args.mph, out_suffix, args.traj_speed,
+                        args.headway_cv)
         for w in work:
             log(process_date(w))
     else:
         with Pool(args.workers, initializer=_init_worker_ev,
-                  initargs=(args.city, args.mph, out_suffix,
-                            args.traj_speed)) as pool:
+                  initargs=(args.city, args.mph, out_suffix, args.traj_speed,
+                            args.headway_cv)) as pool:
             for stats in pool.imap_unordered(process_date, work):
                 log(stats)
     print("done")

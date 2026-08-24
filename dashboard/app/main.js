@@ -335,7 +335,6 @@ function currentHash() {
     if (F.periods.join(".") !== defPeriods.join(".")) q.set("periods", F.periods.join("."));
     if (F.dow != null) q.set("days", `dow${F.dow}`);
     else if (F.daytype !== "weekday") q.set("days", F.daytype ?? "everyday");
-    if (F.pick != null) q.set("pick", F.pick);
     if (F.weather != null) q.set("weather", F.weather);
     const rids = N.data?.meta?.dims?.route_ids;
     if (rids) {
@@ -409,7 +408,6 @@ function applyHash() {
       else if (days === "everyday") { F.daytype = null; F.dow = null; }
       else if (["weekday", "weekend"].includes(days)) { F.daytype = days; F.dow = null; }
     }
-    F.pick = params.has("pick") ? Number(params.get("pick")) : F.pick;
     F.weather = params.has("weather") ? Number(params.get("weather")) : F.weather;
     // Route ids can't map to indices until NetworkData's meta is loaded —
     // stash names; NetworkView resolves them on first render.

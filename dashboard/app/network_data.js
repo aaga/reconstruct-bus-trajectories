@@ -83,7 +83,7 @@ export class NetworkData {
 
   // ---- filter combination ------------------------------------------------
 
-  // filters: {periods: [..], routes: [rid ints]|null, pick, season, weather,
+  // filters: {periods: [..], routes: [rid ints]|null, season, weather,
   //           dow (0-6)|null, daytype: "weekday"|"sat"|"sun"|null}
   // Returns Map<sid, {n, sum, m2, hist: Float64Array}>
   async combine(filters) {
@@ -94,7 +94,6 @@ export class NetworkData {
       for (const c of blocks) {
       for (let i = 0; i < c.n_rows; i++) {
         if (routeSet && !routeSet.has(c.rid[i])) continue;
-        if (filters.pick != null && c.pick[i] !== filters.pick) continue;
         if (filters.season != null && c.season[i] !== filters.season) continue;
         if (filters.weather != null && c.weather[i] !== filters.weather) continue;
         if (filters.dow != null) {
@@ -155,13 +154,12 @@ export class NetworkData {
     return out;
   }
 
-  // Service-date count matching the (pick, season, weather, dow/daytype)
+  // Service-date count matching the (season, weather, dow/daytype)
   // parts of a filter — the buses/hour denominator.
   dateCount(filters) {
     let total = 0;
     for (const [key, count] of Object.entries(this.meta.date_counts)) {
-      const [pick, season, dow, weather] = key.split("|").map(Number);
-      if (filters.pick != null && pick !== filters.pick) continue;
+      const [season, dow, weather] = key.split("|").map(Number);
       if (filters.season != null && season !== filters.season) continue;
       if (filters.weather != null && weather !== filters.weather) continue;
       if (filters.dow != null) {
@@ -185,8 +183,7 @@ export class NetworkData {
   doorDateCount(filters) {
     let total = 0;
     for (const [key, count] of Object.entries(this.meta.door_date_counts ?? {})) {
-      const [pick, season, dow, weather] = key.split("|").map(Number);
-      if (filters.pick != null && pick !== filters.pick) continue;
+      const [season, dow, weather] = key.split("|").map(Number);
       if (filters.season != null && season !== filters.season) continue;
       if (filters.weather != null && weather !== filters.weather) continue;
       if (filters.dow != null) {
