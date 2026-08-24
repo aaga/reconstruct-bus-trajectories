@@ -75,8 +75,10 @@ def _stop_table(city, shape_id: str, month: str) -> tuple[dict, set]:
             pos[sid] = float(x_hi) - float(st["off_m"])
             if st.get("signal_side") == "near_side":
                 near.add(sid)
-    _CACHE[key] = (pos, near)
-    return pos, near
+    bounds = sorted(([str(b[0]), float(b[1]), float(b[2])]
+                     for b in seg_bounds), key=lambda b: b[1])
+    _CACHE[key] = (pos, near, bounds)
+    return pos, near, bounds
 
 
 def _doors(city, bus_id: str, lo_ms: int, hi_ms: int) -> list[tuple]:
@@ -162,7 +164,8 @@ def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
         import pandas as pd
         month = pd.Timestamp(doors[0]["open"], unit="s",
                              tz="UTC").tz_convert(city.tz).strftime("%Y%m")
-    pos, near = _stop_table(city, shape_id, month or "") if shape_id else ({}, set())
+    pos, near, bounds = (_stop_table(city, shape_id, month or "")
+                         if shape_id else ({}, set(), []))
 
     # attribute each cycle to the nearest registered stop along the shape
     from scipy.spatial import cKDTree
@@ -224,6 +227,54 @@ def build_rows(obs: dict, city_id: str = "cta") -> tuple[list, set]:
                           stop_ids=[stop_ids[i] for i in keep],
                           stop_names=names, near_side=near,
                           emit_short_shoulders=True)
+
+        # Intersection cutoff (network parity, 2026-08-05 rule): a pre/post
+        # shoulder keeps its boarding class only when its trajectory-midpoint
+        # SEGMENT matches its door's segment. Slow time that spills past a
+        # signal into the next segment is a plain delay there, detached from
+        # the stop — delay_events reclassifies it nd; so do we.
+        import bisect
+        b_hi = [b[2] for b in bounds]
+
+        def seg_of(xm: float):
+            j = bisect.bisect_left(b_hi, xm)
+            if j < len(bounds) and bounds[j][1] <= xm <= bounds[j][2]:
+                return bounds[j][0]
+            return None
+
+        door_x = {}
+        for i in keep:
+            dc = doors[i]
+            q = [dc["lon"] * mlat, dc["lat"] * 111320.0]
+            _dd, vi = tree.query(q)
+            door_x[(round(dc["open"], 3), round(dc["close"], 3))] = float(
+                cumd[min(vi, len(cumd) - 1)])
+        opens = {round(doors[i]["open"], 3): k for k, i in enumerate(keep)}
+        closes = {round(doors[i]["close"], 3): k for k, i in enumerate(keep)}
+        kept_doors = [doors[i] for i in keep]
+
+        def door_for(piece):
+            if piece.cls == "pre":
+                k = opens.get(round(piece.t_end, 3))
+            else:
+                k = closes.get(round(piece.t_start, 3))
+            return kept_doors[k] if k is not None else None
+
+        if bounds:
+            from core.decompose.door_delay import Piece
+            fixed = []
+            for pc in pieces:
+                if pc.cls in ("pre", "post", "post2"):
+                    dc = door_for(pc)
+                    xm = float(np.interp((pc.t_start + pc.t_end) / 2, abs_t, x))
+                    sm = seg_of(xm)
+                    sd = (seg_of(door_x[(round(dc["open"], 3),
+                                        round(dc["close"], 3))])
+                          if dc else None)
+                    if sm is None or sd is None or sm != sd:
+                        pc = Piece("nd", pc.t_start, pc.t_end)
+                fixed.append(pc)
+            pieces = fixed
         items = [
             {"t_start": round(p.t_start - t0_ms / 1000.0, 1),
              "t_end": round(p.t_end - t0_ms / 1000.0, 1),

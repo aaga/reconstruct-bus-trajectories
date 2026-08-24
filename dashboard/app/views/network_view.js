@@ -754,7 +754,7 @@ export class NetworkView {
     // as purple over red rather than either alone.
     const COLORS = { nd: "#d63a2f", pre: "#1fb8b0",
                      post: "#8a4fc8", post2: "url(#post2hatch)",
-                     post_ns: "url(#nshatch)", post2_ns: "url(#ns2hatch)",
+                     post_ns: "#d63a2f", post2_ns: "#d63a2f",   // plain red for now
                      dw: "#2b6fd6", ping: "#3f3f3f" };
     let bars = `<defs><pattern id="post2hatch" width="6" height="6"
         patternUnits="userSpaceOnUse" patternTransform="rotate(45)">

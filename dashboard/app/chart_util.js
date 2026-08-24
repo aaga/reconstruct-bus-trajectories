@@ -60,7 +60,9 @@ export const CAT_COLOR = {
   // network distribution bars: red nd / teal pre / purple post / blue door.
   // *_ns = post at a NEAR-SIDE stop, drawn as a purple-red diagonal hatch.
   nd: "#d63a2f", pre: "#1fb8b0", post: "#8a4fc8", post2: "#8a4fc8",
-  post_ns: "url(#nsHatch)", post2_ns: "url(#ns2Hatch)", door: "#2b6fd6",
+  // *_ns kept as distinct classes but drawn plain nd-red for now
+  // (2026-08-24 user decision; hatches may return later)
+  post_ns: "#d63a2f", post2_ns: "#d63a2f", door: "#2b6fd6",
 };
 export const color = (c) => CAT_COLOR[c] || "#999";
 
