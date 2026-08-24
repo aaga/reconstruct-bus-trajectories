@@ -53,7 +53,9 @@ export const CAT_COLOR = {
   // web-app event types
   bus_stop: "#3a85d6", red_light: "#cc0000", congestion: "#e0a800",
   turn_delay: "#7b3fa0", driver_hold: "#5c6bc0", passenger: "#d81b60",
-  exit_wait: "#5c8ab8", other: "#757575", signal: "#cc0000",
+  // exit/enter waits mirror the inferred post (purple) / pre (teal)
+  exit_wait: "#8a4fc8", enter_wait: "#1fb8b0",
+  other: "#757575", signal: "#cc0000",
   // AVL stop layer: serviced stops vs other rows with dwell
   avl_stop: "#00897b", avl_other: "#e8710a",
   // door-aware delay classes (core.decompose.door_delay), matching the

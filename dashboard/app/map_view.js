@@ -197,6 +197,7 @@ export class MapView {
     const [lo, hi] = visibleRouteRange(this.map, this.data.shape.polyline_lonlat, this.data.shape.cumdist_m);
     if (this._lastLo === lo && this._lastHi === hi) return;
     this._lastLo = lo; this._lastHi = hi;
+    this._lastFitKey = null;   // user moved the map: chart may re-fit again
     this.state.publish("range:changed", { visibleDistRangeM: [lo, hi], source: "map" });
   }
 
@@ -206,6 +207,12 @@ export class MapView {
   // log2(desired/actual) so it fits exactly.
   _fitToRange([loM, hiM]) {
     if (!this.map.isStyleLoaded || !this.map.isStyleLoaded()) return;
+    // Same range as the last chart-driven fit -> no-op. Re-fitting an
+    // unchanged range is not perfectly idempotent (Mercator scale shifts
+    // with the recentre latitude), so every filter toggle was creeping the
+    // zoom in a little. A manual pan clears the memo (_publishRange).
+    const fitKey = `${loM.toFixed(1)}|${hiM.toFixed(1)}`;
+    if (this._lastFitKey === fitKey) return;
     const poly = this.data.shape.polyline_lonlat;
     const cum = this.data.shape.cumdist_m;
     const center = distToLonLat((loM + hiM) / 2, poly, cum);
@@ -224,6 +231,7 @@ export class MapView {
       found = true;
     }
     if (!found) return;
+    this._lastFitKey = fitKey;
     const canvas = this.map.getCanvas();
     const padding = 20;
     const factor = Math.min(
