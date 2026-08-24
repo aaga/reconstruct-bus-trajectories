@@ -225,3 +225,73 @@ def to_avl_csv_format(
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(out_csv, index=False)
     return out_csv
+
+
+def trip_archive_pings(
+    vehicle_id: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    city_id: str = "cta",
+    pad_s: float = 1800.0,
+) -> pd.DataFrame:
+    """Redshift AVL pings for one vehicle's window, in ``trip_avl_pings`` shape
+    plus ``speed_mps``.
+
+    The R2 GTFS-rt scrape carries position only, so a trip reconstructed from
+    it can never use VCHIP-ME. The archive is denser (20 s median vs 30 s
+    nominal) and reports a speed per ping, which is what the network pipeline
+    reconstructs from — so sourcing the single-trip view here makes the two
+    agree about the same bus on the same day.
+
+    The archive's ``trip_id`` is its own id space (not BusTime), so a run is
+    matched by vehicle and time window; the caller's ``ride_cluster`` then
+    isolates the contiguous run overlapping the ride.
+    """
+    import duckdb
+
+    from .cities import get_city
+
+    city = get_city(city_id)
+    if not city.avl_source_dir:
+        return pd.DataFrame()
+    lo = pd.Timestamp(start_ms, unit="ms", tz="UTC").tz_convert(city.tz)
+    hi = pd.Timestamp(end_ms, unit="ms", tz="UTC").tz_convert(city.tz)
+    days = pd.date_range((lo - pd.Timedelta(seconds=pad_s)).date(),
+                         (hi + pd.Timedelta(seconds=pad_s)).date(), freq="D")
+    src = Path(city.avl_source_dir)
+    files = [str(src / f"date={d.date()}.parquet") for d in days
+             if (src / f"date={d.date()}.parquet").exists()]
+    if not files:
+        return pd.DataFrame()
+    lst = ", ".join(f"'{f}'" for f in files)
+    df = duckdb.connect().execute(f"""
+        SELECT CAST(trip_id AS VARCHAR)  AS trip_id,
+               CAST(bus_id AS VARCHAR)   AS bus_id,
+               CAST(route_id AS VARCHAR) AS route_id,
+               avl_event_time AT TIME ZONE '{city.tz}' AS ts,
+               latitude, longitude, heading,
+               CASE WHEN speed IS NULL OR speed >= 255 THEN NULL
+                    ELSE speed * 0.3048 END AS speed_mps
+        FROM read_parquet([{lst}])
+        WHERE CAST(bus_id AS VARCHAR) = '{vehicle_id}'
+          AND onroute = 1 AND latitude IS NOT NULL
+        ORDER BY ts""").fetch_df()
+    if df.empty:
+        return df
+    ts = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(None)
+    out = pd.DataFrame({
+        "trip_id": df["trip_id"],
+        "bus_id": df["bus_id"],
+        "route_id": df["route_id"],
+        "avl_event_time": ts.dt.strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "latitude": df["latitude"].astype(float),
+        "longitude": df["longitude"].astype(float),
+        "heading": df.get("heading"),
+        "speed_mps": df["speed_mps"].astype(float),
+        "epoch_ms": (ts.astype("datetime64[ns]").astype("int64") // 1_000_000),
+    })
+    lo_ms = start_ms - pad_s * 1000
+    hi_ms = end_ms + pad_s * 1000
+    out = out[(out.epoch_ms >= lo_ms) & (out.epoch_ms <= hi_ms)]
+    return out.sort_values("epoch_ms").reset_index(drop=True)
