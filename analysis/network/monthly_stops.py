@@ -7,9 +7,16 @@ mis-place door events in 2024. This re-registers every month.
 The historical bus-state export carries no stop_id, so the AVL stamp that
 the 2026-only registration grouped on is unavailable. Instead:
 
-  1. assign each door event to the nearest stop POLE in that month's GTFS
-     era (within POLE_MAX_M) — poles are only a candidate list, never the
-     reported position;
+  1. assign each door event to the nearest stop ON ITS TRIP'S OWN PATTERN
+     (nearest along the pattern shape). The pattern comes from joining the
+     event's (bus_id, trip_id) to the AVL archive, whose shape is the era
+     GTFS shape with the matching id suffix. Globally-nearest-pole grouping
+     was wrong at Loop corners (2026-08-24, stop 18126): a stop's berth can
+     sit closer to the CROSS street's pole than its own — 70% of 18126's
+     service cluster fell nearest to Dearborn's pole 61 m away — and it
+     could land events on the opposite-direction stop across the street.
+     Pattern restriction excludes both by construction. Events whose trip
+     has no archive pattern (~7%) are dropped from registration;
   2. per stop, take the modal 10 ft cell of its door events and that cell's
      centre of mass — the registered location for that month;
   3. project the registered point onto each era shape that serves it to get
@@ -84,19 +91,38 @@ def _shape_stops(gtfs_zip: Path, shape_ids: set[str]) -> dict[str, list[str]]:
     return {s: [x[1] for x in sorted(v)] for s, v in seq.items()}
 
 
-def _door_points(city, month: str) -> np.ndarray:
-    """[[lat, lon], ...] for one month of active door cycles."""
+def _door_points(city, month: str, shape_of_pattern: dict) -> "pd.DataFrame":
+    """Active door cycles for one month, each labelled with its trip's era
+    SHAPE via the (bus_id, trip_id) -> pattern join against the AVL archive.
+    ~93% of trips resolve; the rest return shape_id None."""
     import duckdb
+    import pandas as pd  # noqa: F401
 
     f = Path(city.door_source_dir) / f"month={month}.parquet"
-    if not f.exists():
-        return np.empty((0, 2))
-    return duckdb.connect().execute(f"""
-        SELECT latitude, longitude FROM read_parquet('{f}')
-        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-          AND coalesce(ron,0)+coalesce(roff,0)
-              +coalesce(fon,0)+coalesce(foff,0) > 0
-    """).fetch_df().to_numpy(dtype=float)
+    if not f.exists() or not city.avl_source_dir:
+        import pandas as pd
+        return pd.DataFrame()
+    arch = f"{city.avl_source_dir}/date={month[:4]}-{month[4:]}-*.parquet"
+    con = duckdb.connect()
+    df = con.execute(f"""
+        WITH pat AS (
+          SELECT bus_id, trip_id,
+                 -- one pattern per bus-trip; mode() breaks the rare ties
+                 mode(pattern_id) AS pattern_id
+          FROM read_parquet('{arch}')
+          WHERE trip_id IS NOT NULL AND pattern_id IS NOT NULL
+          GROUP BY 1, 2)
+        SELECT d.latitude, d.longitude, pat.pattern_id
+        FROM read_parquet('{f}') d
+        LEFT JOIN pat ON pat.bus_id = d.bus_id AND pat.trip_id = d.trip_id
+        WHERE d.latitude IS NOT NULL AND d.longitude IS NOT NULL
+          AND coalesce(d.ron,0)+coalesce(d.roff,0)
+              +coalesce(d.fon,0)+coalesce(d.foff,0) > 0
+    """).fetch_df()
+    df["shape_id"] = df["pattern_id"].map(
+        lambda v: shape_of_pattern.get(int(v)) if v == v and v is not None
+        else None)
+    return df
 
 
 def build_month(city, month: str, canon: dict, out_dir: Path) -> dict:
@@ -115,42 +141,93 @@ def build_month(city, month: str, canon: dict, out_dir: Path) -> dict:
         return {}
     shapes = json.loads(era_shapes_p.read_text())
     poles = _stop_poles(Path(zpath))
-    pts = _door_points(city, month)
-    if not len(pts) or not poles:
+    # era shape per PATTERN: CTA shape ids are <3-digit era prefix><pattern>
+    shape_of_pattern: dict[int, str] = {}
+    for sid in shapes:
+        try:
+            shape_of_pattern[int(sid[3:])] = sid
+        except ValueError:
+            continue
+    pts = _door_points(city, month, shape_of_pattern)
+    if pts is None or not len(pts) or not poles:
         print(f"  {month}: no door points / poles")
         return {}
+    n_all = len(pts)
+    pts = pts[pts.shape_id.notna()].reset_index(drop=True)
 
-    pid = list(poles)
-    plat = np.array([poles[p]["lat"] for p in pid])
-    plon = np.array([poles[p]["lon"] for p in pid])
-    mlat = 111320.0 * np.cos(np.radians(float(plat.mean())))
-    pxy = np.column_stack([plon * mlat, plat * 111320.0])
-    dxy = np.column_stack([pts[:, 1] * mlat, pts[:, 0] * 111320.0])
-    d, j = cKDTree(pxy).query(dxy, distance_upper_bound=POLE_MAX_M)
-    ok = np.isfinite(d)
+    sstops = _shape_stops(Path(zpath), set(shapes))
+    mlat = 111320.0 * np.cos(np.radians(float(pts.latitude.mean())))
 
-    # modal 10 ft cell per stop, then that cell's centre of mass
+    # Per shape: snap its trips' door events onto the polyline, attribute each
+    # to the nearest of THAT PATTERN's stops (along-shape distance — the same
+    # rule delay_events uses for re-attribution), then pool per stop_id.
     cell = CELL_FT / FT_PER_M
-    reg: dict[str, tuple[float, float, int]] = {}
-    order = np.argsort(j[ok], kind="stable")
-    jj = j[ok][order]
-    xy = dxy[ok][order]
-    starts = np.searchsorted(jj, np.arange(len(pid)))
-    ends = np.append(starts[1:], len(jj))
-    for k, (a, b) in enumerate(zip(starts, ends)):
-        if b - a < MIN_EVENTS:
+    ev_xy: dict[str, list] = defaultdict(list)
+    for sid, grp in pts.groupby("shape_id"):
+        stop_ids = [st for st in sstops.get(sid, []) if st in poles]
+        if not stop_ids:
             continue
-        blk = xy[a:b]
+        try:
+            poly, dist = load_gtfs_shape_with_dist(Path(zpath), sid)
+        except Exception:
+            continue
+        poly = np.asarray(poly, float)
+        cum = (np.asarray(dist, float) if dist is not None else None)
+        if cum is None or len(poly) < 2:
+            continue
+        sxy = np.column_stack([poly[:, 1] * mlat, poly[:, 0] * 111320.0])
+        seg = np.hypot(*np.diff(sxy, axis=0).T)
+        dp, dd = [], []
+        for i in range(len(sxy) - 1):
+            n = max(1, int(seg[i] // 5.0))
+            t = np.linspace(0, 1, n, endpoint=False)
+            dp.append(sxy[i] + t[:, None] * (sxy[i + 1] - sxy[i]))
+            dd.append(cum[i] + t * (cum[i + 1] - cum[i]))
+        dp.append(sxy[-1:]); dd.append(cum[-1:])
+        dp = np.concatenate(dp); dd = np.concatenate(dd)
+        tree = cKDTree(dp)
+        # candidate positions: this pattern's poles projected on this shape
+        cand = np.array([[poles[st]["lon"] * mlat, poles[st]["lat"] * 111320.0]
+                         for st in stop_ids])
+        cd, ci = tree.query(cand, distance_upper_bound=SNAP_MAX_M * 2)
+        cok = np.isfinite(cd)
+        c_along = dd[np.clip(ci, 0, len(dd) - 1)][cok]
+        c_ids = np.array(stop_ids, dtype=object)[cok]
+        srt = np.argsort(c_along)
+        c_along, c_ids = c_along[srt], c_ids[srt]
+        if not len(c_ids):
+            continue
+        exy = np.column_stack([grp.longitude.to_numpy() * mlat,
+                               grp.latitude.to_numpy() * 111320.0])
+        ed, ei = tree.query(exy, distance_upper_bound=POLE_MAX_M)
+        eok = np.isfinite(ed)
+        e_along = dd[np.clip(ei, 0, len(dd) - 1)][eok]
+        exy = exy[eok]
+        idx = np.searchsorted(c_along, e_along)
+        lo = np.clip(idx - 1, 0, len(c_along) - 1)
+        hi = np.clip(idx, 0, len(c_along) - 1)
+        pick = np.where(np.abs(e_along - c_along[lo])
+                        <= np.abs(e_along - c_along[hi]), lo, hi)
+        for k, st in enumerate(c_ids[pick]):
+            ev_xy[st].append(exy[k])
+
+    reg: dict[str, tuple[float, float, int]] = {}
+    for st, rows in ev_xy.items():
+        if len(rows) < MIN_EVENTS:
+            continue
+        blk = np.asarray(rows)
         keys = np.floor(blk / cell).astype(np.int64)
         uniq, inv, cnt = np.unique(keys, axis=0, return_inverse=True,
                                    return_counts=True)
         top = int(np.argmax(cnt))
         sel = blk[inv == top]
         cx, cy = sel.mean(axis=0)
-        reg[pid[k]] = (cy / 111320.0, cx / mlat, int(b - a))
+        reg[st] = (cy / 111320.0, cx / mlat, len(rows))
+    print(f"    {month}: {n_all:,} events, {len(pts):,} with pattern "
+          f"({len(pts)/max(n_all,1):.0%}), {len(reg):,} stops registered",
+          flush=True)
 
     # project registered points onto each era shape -> segment offsets
-    sstops = _shape_stops(Path(zpath), set(shapes))
     per_seg: dict[str, dict] = defaultdict(dict)
     for sid, rec in shapes.items():
         stop_ids = sstops.get(sid) or []
