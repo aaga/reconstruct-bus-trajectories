@@ -698,8 +698,11 @@ export class NetworkView {
     // v2 classes; v1 files simply lack post2/dw (empty fallbacks keep them
     // working). dw (door events) is opt-in via the checkbox.
     this._showDoors ??= false;
+    // Stack order groups every red-rendered class together (nd + the *_ns
+    // classes, currently drawn nd-red) so they read as ONE red bar, with
+    // teal/purple above.
     const CLASSES = pingMode ? ["ping"]
-                   : ["nd", "pre", "post", "post_ns", "post2", "post2_ns",
+                   : ["nd", "post_ns", "post2_ns", "pre", "post", "post2",
                       ...(this._showDoors ? ["dw"] : [])];
     // Turn-movement filter (T/L/R/E through the downstream signal).
     // Selection resets when the popup moves to a different segment.
