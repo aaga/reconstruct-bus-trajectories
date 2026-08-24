@@ -141,7 +141,7 @@ export class SpeedView {
     const t = S.trip;
     const fmt = (tSec) => fmtClock(t, tSec);
     const distMode = S.speedX === "distance";
-    const M = { l: 56, r: 16, t: 14 };
+    const M = { l: 92, r: 16, t: 14 }; // left fits "Door events" row label
     const { svg, width, height } = makeSvg();
     const rowH = 26, rowGap = 6;
     const pT = getSource(t, "phone").curve.t;
@@ -151,7 +151,10 @@ export class SpeedView {
     const doorItems = doorRow ? doorRow.items || [] : [];
     const doorsOn = !!S.toggles.dAVL;
     const lossOn = doorsOn && !!S.toggles.dLoss;
-    const rows = t.delay_rows.map((dr) => {
+    const ROW_ORDER = { door: 0, r2: 1, observed: 2, phone: 3 };
+    const ordered = [...t.delay_rows].sort(
+      (a, b) => (ROW_ORDER[a.key] ?? 9) - (ROW_ORDER[b.key] ?? 9));
+    const rows = ordered.map((dr) => {
       const source = getSource(t, dr.source_key);
       const avl = dr.role === "avl" || dr.role === "door";
       let items = rowItems(dr, doorItems, doorsOn, lossOn);
