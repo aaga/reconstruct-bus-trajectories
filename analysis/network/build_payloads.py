@@ -102,21 +102,18 @@ def _aggregate(
     """
     if con is None:
         con = duckdb.connect()
-    # The event_sums join (20M+ rows) can blow past duckdb's default 80%-of-
-    # RAM ceiling on a loaded machine — cap it and let it spill to disk.
-    spill = REPO / "outputs" / "network" / "duckdb_spill"
-    spill.mkdir(parents=True, exist_ok=True)
-    con.execute(f"SET temp_directory='{spill}'")
-    # 12 GB by default; raise via PAYLOADS_MEMORY_LIMIT when the disk is too
-    # full to absorb the spill (duckdb caps max_temp_directory_size at the
-    # free space on the temp volume, so a full disk fails the query outright).
-    con.execute(
-        f"SET memory_limit='{os.environ.get('PAYLOADS_MEMORY_LIMIT', '12GB')}'")
-    con.execute("SET preserve_insertion_order=false")
-    # 2 threads: the event_sums hash join's per-thread build buffers OOM'd
-    # the 12 GB cap at 4 threads (MBTA writes sums for every trip in
-    # no-door mode — larger join than CTA's door-covered subset).
-    con.execute("SET threads=2")
+        # Configure ONLY on a fresh connection: duckdb cannot re-SET
+        # temp_directory once spill has been used, and the month-fold reuses
+        # one connection across calls (failed 22 months in, 2026-08-25).
+        spill = REPO / "outputs" / "network" / "duckdb_spill"
+        spill.mkdir(parents=True, exist_ok=True)
+        con.execute(f"SET temp_directory='{spill}'")
+        con.execute(
+            f"SET memory_limit='{os.environ.get('PAYLOADS_MEMORY_LIMIT', '12GB')}'")
+        con.execute("SET preserve_insertion_order=false")
+        # 2 threads: the event_sums hash join's per-thread build buffers
+        # OOM'd the 12 GB cap at 4 threads (MBTA no-door mode).
+        con.execute("SET threads=2")
     sc_pat = ("service_date=*.parquet" if month is None
               else f"service_date={month}-*.parquet")
     sidecar = str(
@@ -331,11 +328,11 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     # m2 is derived from the folded sums afterwards.
     import pandas as pd
     months = sorted({d[:7] for d in date_attrs["days"]})
-    con = duckdb.connect()
+    con = None   # first _aggregate call creates + configures it
     parts = []
     for ym in months:
-        _, rel = _aggregate(city, glob, freeflow, date_attrs, dims, registry,
-                            month=ym, con=con)
+        con, rel = _aggregate(city, glob, freeflow, date_attrs, dims, registry,
+                              month=ym, con=con)
         part = rel.df()
         if len(part):
             parts.append(part)
