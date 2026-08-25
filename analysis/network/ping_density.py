@@ -49,6 +49,7 @@ def build(city_id: str) -> None:
     registry = json.loads((base / "segment_registry.json").read_text())
     gtfs = city.resolve(city.gtfs_zip)
     cache = city.resolve(city.archive_cache_dir)
+    tz = city.tz
     # Direct-read cities (CTA since 2026-08-17) have no hour-file cache;
     # read the daily export in place, mapping columns/units exactly as
     # run_reconstruct._service_date_pings_direct does.
@@ -68,7 +69,6 @@ def build(city_id: str) -> None:
                    " union_by_name=true)")
     glob = str(cache / f"agency={city.r2_agency}__*.parquet")
     trav_glob = str(base / "traversals" / "service_date=*" / "*.parquet")
-    tz = city.tz
 
     con = duckdb.connect()
     con.execute(f"SET temp_directory='{base / 'duckdb_spill'}'")
