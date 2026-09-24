@@ -33,7 +33,9 @@ const HATCH_DEFS = `
   </pattern>`;
 
 // What an inferred row shows, given the Door events / stop loss toggles:
-//   doors off        -> every slow stretch is unlabelled red
+//   doors off        -> every slow stretch is unlabelled red, and the door
+//                       open-close spans themselves render as plain red too
+//                       (the dwell union stays one continuous bar, no gap)
 //   doors on         -> door cycles blue + named; the rest red
 //   + stop loss on   -> >10 s shoulders become teal (pre) / purple (post)
 function rowItems(row, doorItems, doorsOn, lossOn) {
@@ -50,6 +52,7 @@ function rowItems(row, doorItems, doorsOn, lossOn) {
     }
   }
   if (doorsOn) out.push(...doorItems);
+  else out.push(...doorItems.map((d) => ({ ...d, category: "nd", label: "" })));
   return out;
 }
 
@@ -253,6 +256,7 @@ export class SpeedView {
           .text((d) => {
             const w = x1(d) - x0(d);
             const lab = r.avl && d.category === "avl_other" ? d.event_desc : (d.label || d.category);
+            if (lab === "nd") return ""; // unclassified: box color says it, label is noise
             return w > 26 ? lab.slice(0, Math.floor(w / 6)) : "";
           });
       });

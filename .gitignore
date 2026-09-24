@@ -92,4 +92,4 @@ dashboard/data/
 dashboard/vendor/duckdb/
 
 # local valhalla routing containers (not part of the pipeline)
-routing-valhalla*/
+routing-valhalla*

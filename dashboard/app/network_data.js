@@ -13,6 +13,7 @@ const N_BUCKETS = 16;
 export const NETWORK_CITIES = {
   cta: { label: "Chicago", base: "../data/network" },
   mbta: { label: "Boston", base: "../data/network/mbta" },
+  translink: { label: "Vancouver", base: "../data/network/translink" },
 };
 
 // Strip raw OSM node ids from human-facing labels ("node 4332637067" adds

@@ -127,7 +127,7 @@ def build_sidecar(city: CityConfig, force: bool = False) -> None:
             f"""
             COPY (
               WITH ev AS (
-                SELECT bus_id,
+                SELECT CAST(bus_id AS VARCHAR) AS bus_id,
                        (event_time AT TIME ZONE '{city.tz}') AS t_utc,
                        -- layover guard (2026-08-24): dwell on a trip's
                        -- FIRST/LAST active event is the terminal layover;

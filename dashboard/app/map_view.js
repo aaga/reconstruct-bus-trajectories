@@ -27,15 +27,17 @@ export const TILE_STYLE = {
   sources: {
     "carto-positron": {
       type: "raster",
+      // Carto ended keyless basemap access (tiles watermark "API KEY
+      // REQUIRED", 2026-08); Stadia's Alidade Smooth is the same light
+      // style and is keyless for localhost development.
       tiles: [
-        "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        "https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}.png",
       ],
       tileSize: 256,
       attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
-        ' contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>' +
+        ' &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a>' +
+        ' &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     },
     "mapbox-satellite-streets": {
       type: "raster",
@@ -88,7 +90,10 @@ export class MapView {
     // chart above it.
     this._unsub = [
       state.subscribe("basemap:changed", ({ value }) => this._setBasemap(value)),
-      state.subscribe("range:changed", (e) => { if (e.source !== "map") this._fitToRange(e.visibleDistRangeM); }),
+      // Chart->map auto-fit disabled for now: even with the fitKey memo it
+      // still skipped around on filter toggles. Map->chart coupling
+      // (_publishRange) stays live; re-enable by restoring this line.
+      // state.subscribe("range:changed", (e) => { if (e.source !== "map") this._fitToRange(e.visibleDistRangeM); }),
       state.subscribe("hideUnattributed:changed", ({ value }) => this._setHideUnattributed(value)),
     ];
     // Aggregate (delay-per-segment) view has no bus markers, so the map shows a

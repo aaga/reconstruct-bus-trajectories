@@ -215,7 +215,38 @@ _CTA_HF = _dc_replace(
     show_in_ui=False,
 )
 
-CITIES: dict[str, CityConfig] = {c.city_id: c for c in (_CTA, _MBTA, _CTA_HF)}
+# TransLink onboarded 2026-08-26 on main (registry + 65-day traversal batch
+# live in main's outputs/network/translink, symlinked into this worktree).
+# Mirrors main's entry minus fields this branch doesn't have yet.
+_TRANSLINK = CityConfig(
+    city_id="translink",
+    r2_agency="translink",
+    tz="America/Vancouver",
+    gtfs_zip="data/gtfs/translink_gtfs.zip",
+    intersections_file="caches/translink/intersections.json",
+    way_cache_file="caches/translink/way_cache.json",
+    archive_cache_dir="caches/realtime_archive",
+    bandwidth=5,  # measured ~30 s deduped ping cadence (2026-08-26), same as CTA
+    max_perp_m=50.0,
+    service_day_cutover_h=3,
+    periods=(
+        ("am_peak", 6, 10),
+        ("midday", 10, 15),
+        ("pm_peak", 15, 19),
+        ("evening", 19, 22),
+        ("late_night", 22, 6),
+    ),
+    late_night=(22, 5),
+    late_night_wide=(20, 6),  # NightBus thins 02-04; fallback for thin segments
+    picks=(),  # picks dropped on main 2026-08-26; keep empty here
+    noaa_station="",  # no GHCN-D precip for Vancouver; weather skipped
+    has_door_data=False,  # no APC/door extract for TransLink
+    pbf_file="routing-valhalla-bc/british-columbia-260825.osm.pbf",
+    valhalla_url="http://localhost:8004",
+    gtfs_history_dir="caches/gtfs_history/translink",
+)
+
+CITIES: dict[str, CityConfig] = {c.city_id: c for c in (_CTA, _MBTA, _TRANSLINK, _CTA_HF)}
 
 
 def get_city(city_id: str) -> CityConfig:

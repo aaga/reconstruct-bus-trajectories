@@ -137,7 +137,8 @@ EVENTS_SCHEMA = pa.schema(
 # CTA frequent network from 2026-01-01, within its operating hours.
 CV_ROUTES = {"9", "12", "81", "72", "4", "J14", "20", "34", "47", "49", "53",
              "54", "55", "60", "63", "66", "77", "79", "82", "95"}
-CV_START = "2026-01-01"
+# frequent-network scope; override for targeted backfills
+CV_START = os.environ.get("CV_START_OVERRIDE", "2026-01-01")
 CV_MAX_HEADWAY_S = 3600.0
 CV_HOURS = {True: (6, 21), False: (9, 21)}   # weekday -> [6,21), weekend [9,21)
 
