@@ -52,6 +52,7 @@ from analysis.network.stats import (  # noqa: E402
 
 MAX_LOAD = 150  # clip APC glitches (crush load on an artic is ~110)
 from dataio.cities import CityConfig, get_city  # noqa: E402
+from dataio.gtfs import load_route_short_names  # noqa: E402
 
 MAGIC = b"NWSTATS1"
 MAX_SHARD_MB = 24  # Cloudflare Pages per-file limit is 25 MB
@@ -68,6 +69,7 @@ WEATHER_NAMES = ["dry", "rain", "snow", "unknown"]
 def _dims(city: CityConfig, registry: dict, date_attrs: dict) -> dict:
     seg_ids = sorted(registry["segments"])
     route_ids = sorted({r["route_id"] for s in registry["segments"].values() for r in s["routes"]})
+    names = load_route_short_names(str(city.resolve(city.gtfs_zip)))
     seasons = sorted({d["season"] for d in date_attrs["days"].values()})
     periods = [name for name, _, _ in city.periods]
     if len(route_ids) > 255 or len(seg_ids) > 65535:
@@ -75,6 +77,7 @@ def _dims(city: CityConfig, registry: dict, date_attrs: dict) -> dict:
     return {
         "seg_ids": seg_ids,
         "route_ids": route_ids,
+        "route_labels": [names.get(r, r) for r in route_ids],
         "seasons": seasons,
         "dows": DOW_NAMES,
         "weathers": WEATHER_NAMES,
@@ -154,13 +157,13 @@ def _aggregate(
     con.executemany("INSERT INTO ff VALUES (?, ?)", ff_rows)
 
     da_rows = [
-        (d, a["pick"] or "", a["season"], int(a["dow"]), a["weather"], a["daytype"])
+        (d, a["season"], int(a["dow"]), a["weather"], a["daytype"])
         for d, a in date_attrs["days"].items()
     ]
     con.execute(
-        "CREATE OR REPLACE TABLE da(date_iso TEXT, pick TEXT, season TEXT, dow INT, weather TEXT, daytype TEXT)"
+        "CREATE OR REPLACE TABLE da(date_iso TEXT, season TEXT, dow INT, weather TEXT, daytype TEXT)"
     )
-    con.executemany("INSERT INTO da VALUES (?, ?, ?, ?, ?, ?)", da_rows)
+    con.executemany("INSERT INTO da VALUES (?, ?, ?, ?, ?)", da_rows)
 
     def enc(col: str, names: list[str]) -> str:
         w = " ".join(
@@ -436,7 +439,7 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     )
 
     # ---- meta.json --------------------------------------------------------
-    # Date counts per (pick, season, dow, weather) — only dates that actually
+    # Date counts per (season, dow, weather) — only dates that actually
     # produced traversals, so buses/hour denominators are honest.
     # trav is scoped to the LAST month after the fold loop, so date presence
     # comes from the partition names instead.

@@ -1,18 +1,18 @@
-"""Per-service-date attributes: day-of-week, daytype, season, pick, weather.
+"""Per-service-date attributes: day-of-week, daytype, season, weather.
 
 One row per service date in the archive window. Weather comes from NOAA's
 NCEI daily-summaries API for the city's GHCN-D station (cached under
 ``caches/weather/``); holidays count as their own daytype so peak metrics
 aren't diluted by holiday service running on a weekday date.
 
-Also provides ``print_pick_report`` — scheduled-trips-per-service-date from
-GTFS calendar.txt — to confirm the configured pick boundaries against the
-feed's own service ramps.
+Also provides ``print_service_report`` — scheduled-trips-per-service-date
+from GTFS calendar.txt — to inspect the feed's service ramps (useful when
+choosing date filters or a feed vintage).
 
 Usage:
     PYTHONPATH=src uv run python analysis/network/date_attrs.py --city cta \
         --start 2026-04-27 --end 2026-07-21
-    PYTHONPATH=src uv run python analysis/network/date_attrs.py --city cta --pick-report
+    PYTHONPATH=src uv run python analysis/network/date_attrs.py --city cta --service-report
 Output:
     outputs/network/<city>/date_attrs.json
 """
@@ -48,22 +48,30 @@ NCEI_URL = (
     "&startDate={start}&endDate={end}&format=csv&units=metric"
 )
 
-# US federal holidays across the archive window (2024-01 → 2026-08 for the
-# historical CTA pass; extend as the archive grows). Holiday service runs a
-# Sunday-like schedule on a weekday date, so these get their own daytype.
+# Holidays in the archive window by region (extend as the archive grows).
+# US: federal, 2024-01 → 2026 for the historical CTA pass; CA-BC: British
+# Columbia statutory (TransLink). Holiday service runs a Sunday-like
+# schedule on a weekday date, so these get their own daytype.
 HOLIDAYS_2026 = {
-    # 2024
-    "2024-01-01", "2024-01-15", "2024-02-19", "2024-05-27",
-    "2024-06-19", "2024-07-04", "2024-09-02", "2024-11-28",
-    "2024-11-29", "2024-12-24", "2024-12-25",
-    # 2025
-    "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26",
-    "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27",
-    "2025-11-28", "2025-12-24", "2025-12-25",
-    # 2026
-    "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
-    "2026-06-19", "2026-07-03", "2026-07-04", "2026-09-07",
-    "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25",
+    "US": {
+        # 2024
+        "2024-01-01", "2024-01-15", "2024-02-19", "2024-05-27",
+        "2024-06-19", "2024-07-04", "2024-09-02", "2024-11-28",
+        "2024-11-29", "2024-12-24", "2024-12-25",
+        # 2025
+        "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26",
+        "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27",
+        "2025-11-28", "2025-12-24", "2025-12-25",
+        # 2026
+        "2026-01-01", "2026-01-19", "2026-02-16", "2026-05-25",
+        "2026-06-19", "2026-07-03", "2026-07-04", "2026-09-07",
+        "2026-11-26", "2026-11-27", "2026-12-24", "2026-12-25",
+    },
+    "CA-BC": {
+        "2026-01-01", "2026-02-16", "2026-04-03", "2026-05-18",
+        "2026-07-01", "2026-08-03", "2026-09-07", "2026-09-30",
+        "2026-10-12", "2026-11-11", "2026-12-25",
+    },
 }
 
 
@@ -86,14 +94,19 @@ def season_of(d: date) -> str:
             9: "fall", 10: "fall", 11: "fall"}[d.month]
 
 
-def daytype_of(d: date) -> str:
-    if d.isoformat() in HOLIDAYS_2026:
+def daytype_of(d: date, region: str = "US") -> str:
+    if d.isoformat() in HOLIDAYS_2026[region]:
         return "holiday"
     return {5: "sat", 6: "sun"}.get(d.weekday(), "weekday")
 
 
 def load_weather(city: CityConfig, start: str, end: str) -> dict[str, str]:
     """date_iso -> {dry|rain|snow} from GHCN-D daily summaries (cached)."""
+    if not city.noaa_station:
+        # No usable station (Vancouver GHCN-D has no 2026 precipitation);
+        # every day buckets "unknown" and the weather filter stays inert.
+        print("no noaa_station configured; all days bucketed 'unknown'")
+        return {}
     cache = REPO / "caches" / "weather" / f"{city.noaa_station}_{start}_{end}.csv"
     fetch(NCEI_URL.format(station=city.noaa_station, start=start, end=end), cache)
     out: dict[str, str] = {}
@@ -119,12 +132,12 @@ def build_date_attrs(city: CityConfig, start: str, end: str) -> dict:
         iso = d.isoformat()
         days[iso] = {
             "dow": d.weekday(),  # 0=Mon .. 6=Sun
-            "daytype": daytype_of(d),
+            "daytype": daytype_of(d, city.holiday_region),
             "season": season_of(d),
-            # Over the historical window the configured picks only cover
-            # 2026, so fall back to the GTFS era (feed version) live that
-            # day — which is the real service-change boundary anyway.
-            "pick": city.pick_for_date(iso) or _era_pick(city, iso),
+            # Pick config is gone (2026-08-26); the GTFS era (feed version)
+            # live that day is the real service-change boundary anyway, and
+            # build_facts still reads it under the "pick" key.
+            "pick": _era_pick(city, iso),
             "weather": weather.get(iso, "unknown"),
         }
         d += timedelta(days=1)
@@ -141,9 +154,9 @@ def build_date_attrs(city: CityConfig, start: str, end: str) -> dict:
     }
 
 
-def print_pick_report(city: CityConfig) -> None:
+def print_service_report(city: CityConfig) -> None:
     """Scheduled trips per service date from calendar.txt (+ calendar_dates),
-    so the user can see the feed's service ramps and confirm pick boundaries."""
+    so the user can see the feed's service ramps."""
     gtfs_zip = city.resolve(city.gtfs_zip)
     with zipfile.ZipFile(gtfs_zip) as z:
         with z.open("trips.txt") as f:
@@ -153,7 +166,6 @@ def print_pick_report(city: CityConfig) -> None:
         with z.open("calendar.txt") as f:
             cal = list(csv.DictReader(_io.TextIOWrapper(f, encoding="utf-8-sig")))
 
-    print(f"pick config: {[(p.pick_id, p.start_date) for p in city.picks]}\n")
     print("service_id ranges (calendar.txt) with scheduled trip counts:")
     for r in sorted(cal, key=lambda r: (r["start_date"], r["service_id"])):
         dows = "".join(
@@ -170,12 +182,12 @@ def main() -> None:
     ap.add_argument("--city", default="cta")
     ap.add_argument("--start", default="2026-04-27")
     ap.add_argument("--end", default=None, help="default: today")
-    ap.add_argument("--pick-report", action="store_true")
+    ap.add_argument("--service-report", action="store_true")
     args = ap.parse_args()
 
     city = get_city(args.city)
-    if args.pick_report:
-        print_pick_report(city)
+    if args.service_report:
+        print_service_report(city)
         return
 
     end = args.end or date.today().isoformat()

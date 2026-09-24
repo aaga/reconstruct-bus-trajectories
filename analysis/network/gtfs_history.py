@@ -42,7 +42,10 @@ sys.path.insert(0, str(REPO / "src"))
 from dataio.cities import get_city  # noqa: E402
 
 API = "https://transit.land/api/v2/rest"
-FEED_OSID = {"cta": "f-dp3-cta"}
+FEED_OSID = {
+    "cta": "f-dp3-cta",
+    "translink": "f-c28-nstranslinkca",  # Vancouver (c28 geohash), not Queensland
+}
 # Files the pipeline actually reads; the rest (license html, transfers,
 # frequencies) are dropped to keep the cache near 3 GB instead of 4 GB.
 KEEP = ("shapes.txt", "trips.txt", "routes.txt", "stops.txt",
