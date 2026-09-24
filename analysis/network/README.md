@@ -1,8 +1,33 @@
 # Network-wide segment-speed analysis
 
 Full-network (all routes, all segments, all corridors) speed/delay analysis
-for a city's bus network, driven by the R2 AVL archive. Chicago CTA is the
-first city; everything city-specific lives in `src/dataio/cities.py`.
+for a city's bus network. Chicago CTA is the first city; everything
+city-specific lives in `src/dataio/cities.py`.
+
+**CTA now runs off the local high-resolution AVL export, not the R2 scrape**
+(2026-08-15), and since 2026-08-17 covers **2024-01-01 → 2026-08** — 957
+service dates, ~3 billion pings. That history changes three things:
+
+* **No prefetch/ingest step.** `avl_direct_read` reads the daily export
+  parquet in place (`avl_source_dir`); materialising hour-files for 2.5
+  years would cost ~45 GB for no benefit.
+* **GTFS per service date.** Feed geometry genuinely moves — between the
+  2023-12 and 2026-06 feeds, 58% of shared routes changed shape count and
+  25% moved median shape length >10% — so `gtfs_history.py` caches every
+  Transitland feed version covering the window and each date resolves to
+  the one CTA was publishing that day. Segment ids stay era-independent
+  (they are OSM node pairs), so a segment charts continuously across all
+  2.5 years; only shape→segment mapping and stop positions are rebuilt.
+* **Monthly stop registration.** The historical bus-state export carries no
+  `stop_id`, and stops move over 2.5 years, so `monthly_stops.py`
+  re-registers positions every month from door events.
+
+⚠️ **Anything that joins on `shape_id` must span every era.** Historical
+traversals carry that era's shape_ids (CTA re-prefixes them per feed
+version), and these joins are inner: keying a lookup table off the
+canonical registry alone silently drops or blanks all pre-2026 rows with no
+error. This bit `segmap`, turn movements and ghost-zone adjacency. Prefer
+keys derived from OSM node ids, which are era-invariant.
 
 ## Outputs
 
@@ -37,8 +62,20 @@ cp <main-checkout>/dashboard/data/*.json dashboard/data/
 #    (corridors.py exists but is disabled/unwired for now — 2026-07 decision)
 PYTHONPATH=src uv run python analysis/network/registry.py --city cta
 
-# 2. Prefetch archive hour-files (idempotent, concurrent)
-PYTHONPATH=src uv run python analysis/network/prefetch.py --city cta
+# 2. Archive access
+#    CTA: nothing to do — avl_direct_read reads the daily export in place.
+#    Other cities still prefetch R2 hour-files (idempotent, concurrent):
+PYTHONPATH=src uv run python analysis/network/prefetch.py --city mbta
+
+# 2b. CTA history only: cache Transitland feed versions, map each era's
+#     shapes onto the canonical segments, register stops per month.
+PYTHONPATH=src uv run python analysis/network/gtfs_history.py --city cta \
+    --start 2024-01-01 --end 2026-08-14      # key: caches/transitland.env
+PYTHONPATH=src uv run python analysis/network/era_seg_bounds.py --city cta --all-eras
+PYTHONPATH=src uv run python analysis/network/monthly_stops.py --city cta \
+    --months 2024-01:2026-08
+#     …or the whole historical pass, resumable, with a disk floor:
+analysis/network/run_history.sh 2024-01-01 2026-08-14
 
 # 3. Batch reconstruction (resumable; skips existing (date,route) checkpoints)
 PYTHONPATH=src uv run python analysis/network/run_reconstruct.py --city cta --workers 8
@@ -48,7 +85,7 @@ PYTHONPATH=src uv run python analysis/network/run_reconstruct.py --city cta --wo
 # 4. Free-flow + date attributes
 PYTHONPATH=src uv run python analysis/network/freeflow.py --city cta
 PYTHONPATH=src uv run python analysis/network/date_attrs.py --city cta \
-    --start 2026-04-27 --end $(date +%F)
+    --start 2024-01-01 --end $(date +%F)
 
 # 4b. Door / APC data (optional but wanted: at-stop vs in-motion delay split)
 #     One-time CSV → parquet conversion (source CSVs on slow cloud storage):
@@ -148,6 +185,28 @@ what/why/evidence/date; the schema and per-type value contracts live in
 `dataio.intersections` (cluster_split at per-shape clustering),
 `analysis/network/registry.py` (cluster_split at global clustering;
 terminal_stop / door_peak_reject / stop_coord_override at stop location).
+
+## Querying (Explore tab)
+
+`build_facts.py` emits a date-grain fact table for in-browser querying:
+
+```
+dashboard/data/network/facts/
+  year=YYYY/month=MM/part-0.parquet   grain (seg, route, service_date,
+                                      period, mvm, dir); measures are all
+                                      ADDITIVE so a coarser slice is a SUM
+  dim_segments.parquet   + n_near_side / n_far_side for side filtering
+  dim_dates.parquet      dow, daytype, season, weather, pick
+```
+
+The dashboard's **Network → Explore** tab loads DuckDB-WASM lazily and runs
+SQL against these over HTTP range requests, so a slice reads only the row
+groups it touches instead of downloading the packed shards whole. Serve the
+dashboard with a Range-capable server or every query refetches whole files:
+
+```bash
+uv run python dashboard/serve.py --port 8931     # NOT python -m http.server
+```
 
 ## Adding a city
 

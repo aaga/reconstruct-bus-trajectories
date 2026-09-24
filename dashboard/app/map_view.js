@@ -27,15 +27,17 @@ export const TILE_STYLE = {
   sources: {
     "carto-positron": {
       type: "raster",
+      // Carto ended keyless basemap access (tiles watermark "API KEY
+      // REQUIRED", 2026-08); Stadia's Alidade Smooth is the same light
+      // style and is keyless for localhost development.
       tiles: [
-        "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        "https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}.png",
       ],
       tileSize: 256,
       attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' +
-        ' contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>' +
+        ' &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a>' +
+        ' &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     },
     "mapbox-satellite-streets": {
       type: "raster",
@@ -88,7 +90,10 @@ export class MapView {
     // chart above it.
     this._unsub = [
       state.subscribe("basemap:changed", ({ value }) => this._setBasemap(value)),
-      state.subscribe("range:changed", (e) => { if (e.source !== "map") this._fitToRange(e.visibleDistRangeM); }),
+      // Chart->map auto-fit disabled for now: even with the fitKey memo it
+      // still skipped around on filter toggles. Map->chart coupling
+      // (_publishRange) stays live; re-enable by restoring this line.
+      // state.subscribe("range:changed", (e) => { if (e.source !== "map") this._fitToRange(e.visibleDistRangeM); }),
       state.subscribe("hideUnattributed:changed", ({ value }) => this._setHideUnattributed(value)),
     ];
     // Aggregate (delay-per-segment) view has no bus markers, so the map shows a
@@ -197,6 +202,7 @@ export class MapView {
     const [lo, hi] = visibleRouteRange(this.map, this.data.shape.polyline_lonlat, this.data.shape.cumdist_m);
     if (this._lastLo === lo && this._lastHi === hi) return;
     this._lastLo = lo; this._lastHi = hi;
+    this._lastFitKey = null;   // user moved the map: chart may re-fit again
     this.state.publish("range:changed", { visibleDistRangeM: [lo, hi], source: "map" });
   }
 
@@ -206,6 +212,12 @@ export class MapView {
   // log2(desired/actual) so it fits exactly.
   _fitToRange([loM, hiM]) {
     if (!this.map.isStyleLoaded || !this.map.isStyleLoaded()) return;
+    // Same range as the last chart-driven fit -> no-op. Re-fitting an
+    // unchanged range is not perfectly idempotent (Mercator scale shifts
+    // with the recentre latitude), so every filter toggle was creeping the
+    // zoom in a little. A manual pan clears the memo (_publishRange).
+    const fitKey = `${loM.toFixed(1)}|${hiM.toFixed(1)}`;
+    if (this._lastFitKey === fitKey) return;
     const poly = this.data.shape.polyline_lonlat;
     const cum = this.data.shape.cumdist_m;
     const center = distToLonLat((loM + hiM) / 2, poly, cum);
@@ -224,6 +236,7 @@ export class MapView {
       found = true;
     }
     if (!found) return;
+    this._lastFitKey = fitKey;
     const canvas = this.map.getCanvas();
     const padding = 20;
     const factor = Math.min(

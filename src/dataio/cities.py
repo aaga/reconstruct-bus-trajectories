@@ -72,6 +72,22 @@ class CityConfig:
     # to the shape (2026-08-05 default); "door_mid" = trajectory position at
     # the door-interval time-midpoint (cta-hf investigation).
     door_anchor: str = "raw"
+    # Local high-resolution AVL export to ingest instead of the R2 scrape
+    # (avl_ingest.py converts it into archive hour-files under r2_agency).
+    # Speeds present -> VCHIP-ME reconstruction; absent -> plain PCHIP.
+    avl_source_dir: str | None = None
+    # Read avl_source_dir's daily parquet directly instead of ingesting it
+    # into hour-files (2026-08-17): the 2.5-year archive is already date-
+    # partitioned, so hour-files would cost ~45 GB for no benefit.
+    avl_direct_read: bool = False
+    # Monthly bus-state export covering the full history. Unlike the 3-month
+    # cache it carries no stop_id/stop_sequence — harmless since door events
+    # are re-attributed by location (delay_events, 2026-08-16) — and names
+    # its dwell column dwell_time rather than dwell_s.
+    door_source_dir: str | None = None
+    # Historical GTFS: when set, shapes come from the Transitland feed cache
+    # valid for each service date rather than the single gtfs_zip snapshot.
+    gtfs_history_dir: str | None = None
     # Hidden from the dashboard city tabs (investigation-only cities).
     show_in_ui: bool = True
 
@@ -105,7 +121,19 @@ class CityConfig:
 
 _CTA = CityConfig(
     city_id="cta",
-    r2_agency="cta",
+    # 2026-08-15: CTA reads the redshift AVL export (ingested locally under
+    # agency=cta-rs) instead of the R2 GTFS-rt scrape — denser pings + speeds.
+    r2_agency="cta-rs",
+    # 2026-08-17: the OneDrive archive supersedes the local redshift export —
+    # same schema and units, but 958 days (2024-01-01 → 2026-08) instead of 93.
+    avl_source_dir=(
+        "/Users/ashwinagarwal/Library/CloudStorage/"
+        "OneDrive-ChicagoTransitAuthority/CTA AVL Archive/avl_archive"),
+    avl_direct_read=True,
+    door_source_dir=(
+        "/Users/ashwinagarwal/Library/CloudStorage/"
+        "OneDrive-ChicagoTransitAuthority/Bus State History/bus_state_hist"),
+    gtfs_history_dir="caches/gtfs_history/cta",
     tz="America/Chicago",
     gtfs_zip="data/gtfs/cta_gtfs.zip",
     intersections_file="caches/cta/intersections.json",
@@ -182,11 +210,43 @@ _CTA_HF = _dc_replace(
     _CTA,
     city_id="cta-hf",
     r2_agency="cta-hf",
+    avl_source_dir=None,  # keeps its own R2 scrape; no redshift export
     door_anchor="door_mid",
     show_in_ui=False,
 )
 
-CITIES: dict[str, CityConfig] = {c.city_id: c for c in (_CTA, _MBTA, _CTA_HF)}
+# TransLink onboarded 2026-08-26 on main (registry + 65-day traversal batch
+# live in main's outputs/network/translink, symlinked into this worktree).
+# Mirrors main's entry minus fields this branch doesn't have yet.
+_TRANSLINK = CityConfig(
+    city_id="translink",
+    r2_agency="translink",
+    tz="America/Vancouver",
+    gtfs_zip="data/gtfs/translink_gtfs.zip",
+    intersections_file="caches/translink/intersections.json",
+    way_cache_file="caches/translink/way_cache.json",
+    archive_cache_dir="caches/realtime_archive",
+    bandwidth=5,  # measured ~30 s deduped ping cadence (2026-08-26), same as CTA
+    max_perp_m=50.0,
+    service_day_cutover_h=3,
+    periods=(
+        ("am_peak", 6, 10),
+        ("midday", 10, 15),
+        ("pm_peak", 15, 19),
+        ("evening", 19, 22),
+        ("late_night", 22, 6),
+    ),
+    late_night=(22, 5),
+    late_night_wide=(20, 6),  # NightBus thins 02-04; fallback for thin segments
+    picks=(),  # picks dropped on main 2026-08-26; keep empty here
+    noaa_station="",  # no GHCN-D precip for Vancouver; weather skipped
+    has_door_data=False,  # no APC/door extract for TransLink
+    pbf_file="routing-valhalla-bc/british-columbia-260825.osm.pbf",
+    valhalla_url="http://localhost:8004",
+    gtfs_history_dir="caches/gtfs_history/translink",
+)
+
+CITIES: dict[str, CityConfig] = {c.city_id: c for c in (_CTA, _MBTA, _TRANSLINK, _CTA_HF)}
 
 
 def get_city(city_id: str) -> CityConfig:

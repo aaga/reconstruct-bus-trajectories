@@ -40,7 +40,8 @@ from analysis.prep.geometry import (  # noqa: E402
     bearing_from_polyline as _bearing_from_polyline,
     cumulative_route_dist_m as _cumdist_geodesic,
 )
-from dataio.realtime import load_manifest, trip_avl_pings  # noqa: E402
+from dataio.realtime import (  # noqa: E402
+    load_manifest, trip_archive_pings, trip_avl_pings)
 from core.decompose.decompose import decompose_trip  # noqa: E402
 from core.decompose.segments import build_segments_from_records  # noqa: E402
 from dataio.intersections import (  # noqa: E402
@@ -55,7 +56,7 @@ from core.serialize import to_pchip_record  # noqa: E402
 
 GTFS = REPO / "data" / "gtfs" / "cta_gtfs.zip"
 INTERSECTIONS = REPO / "caches" / "cta" / "intersections.json"
-PAGES = "https://cta-observation-tool.pages.dev/api/trips"
+PAGES = "https://bus-observation-tool.pages.dev/api/trips"
 CHICAGO = ZoneInfo("America/Chicago")
 MPS_TO_MPH = 2.23694
 OUT = REPO / "outputs" / "obs_trips"
@@ -437,8 +438,17 @@ def build_trip(key: str, token: str, manifest: pd.DataFrame, route_shapes: dict)
             print(f"  SKIP: phone reconstruct failed ({e})")
             return None
 
-        # --- R2 @ bw=5 on the same shape, isolated to the ride's time-cluster ---
-        r2_raw = trip_avl_pings(route, bus_id, trip_id, start_ms, end_ms, manifest=manifest)
+        # --- Low-freq layer on the same shape, isolated to the ride's
+        # time-cluster. Prefer the redshift AVL archive (denser, and it
+        # reports a speed per ping so reconstruction can use VCHIP-ME —
+        # matching the network pipeline for the same bus on the same day);
+        # fall back to the R2 GTFS-rt scrape, which is position-only and so
+        # can only ever get plain PCHIP.
+        r2_raw = trip_archive_pings(bus_id, start_ms, end_ms)
+        if r2_raw.empty:
+            print("  note: no archive pings; falling back to the R2 scrape")
+            r2_raw = trip_avl_pings(route, bus_id, trip_id, start_ms, end_ms,
+                                    manifest=manifest)
 
         def recon_r2(pad_b, pad_a):
             rc = ride_cluster(r2_raw, start_ms, end_ms, pad_b, pad_a)
@@ -448,7 +458,11 @@ def build_trip(key: str, token: str, manifest: pd.DataFrame, route_shapes: dict)
             rc["pattern_id"] = pattern
             rc.to_csv(td / "r2.csv", index=False)
             try:
-                return reconstruct_trip(load_avl_csv(td / "r2.csv"), matcher, bandwidth=5)
+                low = load_avl_csv(td / "r2.csv")
+                if "speed_mps" in rc.columns:      # survive load_avl_csv's schema
+                    low = low.copy()
+                    low["speed_mps"] = rc["speed_mps"].to_numpy()[: len(low)]
+                return reconstruct_trip(low, matcher, bandwidth=5)
             except ValueError:
                 return None
 

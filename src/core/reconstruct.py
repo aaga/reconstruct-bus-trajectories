@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .mapmatch import MapMatcher, MatchResult
-from .smooth import LocregPchipResult, locreg_pchip
+from .smooth import LocregPchipResult, fit_trajectory, locreg_pchip
 
 
 @dataclass
@@ -38,8 +38,17 @@ def reconstruct_trip(
     matcher: MapMatcher,
     bandwidth: int = 20,
     degree: int = 3,
+    use_speeds: bool = True,
 ) -> TripReconstruction:
-    """Reconstruct one trip's smooth trajectory."""
+    """Reconstruct one trip's smooth trajectory.
+
+    With ``use_speeds`` and a ``speed_mps`` column present, this routes
+    through ``fit_trajectory`` — VCHIP-ME, seeding each knot tangent with
+    the reported speed (Fritsch-Carlson clamps where monotonicity demands),
+    the same reconstruction the network pipeline uses. Without speeds it
+    falls back to plain PCHIP; ``use_speeds=False`` forces the historical
+    LOCREG-PCHIP path.
+    """
     if trip_df.empty:
         raise ValueError("trip_df is empty")
 
@@ -59,7 +68,16 @@ def reconstruct_trip(
     t = t_full[on]
     d = match.dist_along_m[on]
 
-    smoothed = locreg_pchip(t, d, bandwidth=bandwidth, degree=degree)
+    v = None
+    if use_speeds and "speed_mps" in trip_df.columns:
+        v_full = trip_df["speed_mps"].to_numpy(dtype=float)
+        v = v_full[on]
+    if v is not None and np.isfinite(v).mean() >= 0.5:
+        smoothed = fit_trajectory(t, d, v)
+    elif use_speeds:
+        smoothed = fit_trajectory(t, d, None)
+    else:
+        smoothed = locreg_pchip(t, d, bandwidth=bandwidth, degree=degree)
 
     meta = TripMeta(
         trip_id=str(trip_df["trip_id"].iloc[0]),

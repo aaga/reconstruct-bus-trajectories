@@ -62,29 +62,33 @@ def trip_payload(obs: dict, label: str) -> dict:
     if obs.get("r2"):
         sources.append(_source("r2", obs["r2"]))
 
-    # delay_rows generalise phone.delays / webapp_delays / avl_delays. role drives
-    # rendering (avl → rich passenger tooltip; observed/inferred → standard tip).
-    delay_rows = [
-        {"key": "avl", "label": "AVL", "role": "avl", "source_key": "phone",
-         "items": obs.get("avl_delays", [])},
-        {"key": "observed", "label": "Observed", "role": "observed", "source_key": "phone",
-         "items": obs.get("webapp_delays", [])},
-        {"key": "phone", "label": "High-Freq", "role": "inferred", "source_key": "phone",
-         "items": obs["phone"]["delays"]},
-    ]
-    if obs.get("r2"):
-        delay_rows.append(
-            {"key": "r2", "label": "Low-Freq", "role": "inferred", "source_key": "r2",
-             "items": obs["r2"]["delays"]})
+    # Inferred rows come from the NETWORK pipeline's rules now (2026-08-21):
+    # 5 mph events classified against door cycles into nd/pre/post/post2,
+    # near-side posts flagged. The old proximity decomposition
+    # (dwell_near_signal / signal_uniform / ...) is no longer consumed here;
+    # run_decomposition.py still produces it and is flagged for deprecation.
+    from analysis.trip_delay_rows import build_rows
+
+    try:
+        new_rows, referenced_stops = build_rows(obs)
+    except Exception as exc:  # noqa: BLE001 — never lose a payload over this
+        print(f"[dashboard-data] {obs.get('key')}: door rows unavailable ({exc})")
+        new_rows, referenced_stops = [], set()
+
+    door_row = [r for r in new_rows if r["key"] == "door"]
+    inferred = [r for r in new_rows if r["key"] != "door"]
+    delay_rows = door_row + [
+        {"key": "observed", "label": "Observed", "role": "observed",
+         "source_key": "phone", "items": obs.get("webapp_delays", [])},
+    ] + inferred
 
     # A feature "has delay" this trip if an inferred delay references it (matched
     # by trailing id digits — feature ids like sig_<node>/stop_<sid> vs facility
     # ids like SIG_<node>/<sid>). Overrides the obs bundle's blanket attributed=True.
-    referenced = {
-        _trailing_digits(it.get("facility_id"))
-        for row in delay_rows if row["role"] == "inferred"
-        for it in row["items"] if it.get("facility_id")
-    }
+    # Stops the new rows attributed a door cycle or shoulder to. Signals are
+    # deliberately NOT marked: nd events are no longer assigned to a nearest
+    # signal (2026-08-21 decision), so only bus_stop features light up.
+    referenced = {_trailing_digits(s) for s in referenced_stops}
     referenced.discard(None)
     features = [{**f, "attributed": _trailing_digits(f["id"]) in referenced}
                 for f in obs["features"]]

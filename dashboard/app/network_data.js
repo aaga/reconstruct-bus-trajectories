@@ -13,6 +13,7 @@ const N_BUCKETS = 16;
 export const NETWORK_CITIES = {
   cta: { label: "Chicago", base: "../data/network" },
   mbta: { label: "Boston", base: "../data/network/mbta" },
+  translink: { label: "Vancouver", base: "../data/network/translink" },
 };
 
 // Strip raw OSM node ids from human-facing labels ("node 4332637067" adds
@@ -32,8 +33,8 @@ export class NetworkData {
 
   async init() {
     const [meta, segments] = await Promise.all([
-      fetch(`${this.base}/meta.json`).then((r) => r.json()),
-      fetch(`${this.base}/segments.json`).then((r) => r.json()),
+      fetch(`${this.base}/meta.json`, { cache: "no-cache" }).then((r) => r.json()),
+      fetch(`${this.base}/segments.json`, { cache: "no-cache" }).then((r) => r.json()),
     ]);
     this.meta = meta;
     this.segments = segments;
@@ -66,14 +67,14 @@ export class NetworkData {
     let buf = null;
     // Prefer the pre-gzipped twin (~3x smaller; Pages won't compress .bin).
     if (typeof DecompressionStream === "function") {
-      const r = await fetch(`${this.base}/${name}.gz`);
+      const r = await fetch(`${this.base}/${name}.gz`, { cache: "no-cache" });
       if (r.ok) {
         const ds = r.body.pipeThrough(new DecompressionStream("gzip"));
         buf = await new Response(ds).arrayBuffer();
       }
     }
     if (!buf) {
-      buf = await fetch(`${this.base}/${name}`).then((r) => {
+      buf = await fetch(`${this.base}/${name}`, { cache: "no-cache" }).then((r) => {
         if (!r.ok) throw new Error(`shard part ${name}: HTTP ${r.status}`);
         return r.arrayBuffer();
       });
@@ -83,7 +84,7 @@ export class NetworkData {
 
   // ---- filter combination ------------------------------------------------
 
-  // filters: {periods: [..], routes: [rid ints]|null, pick, season, weather,
+  // filters: {periods: [..], routes: [rid ints]|null, season, weather,
   //           dow (0-6)|null, daytype: "weekday"|"sat"|"sun"|null}
   // Returns Map<sid, {n, sum, m2, hist: Float64Array}>
   async combine(filters) {
@@ -94,7 +95,6 @@ export class NetworkData {
       for (const c of blocks) {
       for (let i = 0; i < c.n_rows; i++) {
         if (routeSet && !routeSet.has(c.rid[i])) continue;
-        if (filters.pick != null && c.pick[i] !== filters.pick) continue;
         if (filters.season != null && c.season[i] !== filters.season) continue;
         if (filters.weather != null && c.weather[i] !== filters.weather) continue;
         if (filters.dow != null) {
@@ -155,13 +155,12 @@ export class NetworkData {
     return out;
   }
 
-  // Service-date count matching the (pick, season, weather, dow/daytype)
+  // Service-date count matching the (season, weather, dow/daytype)
   // parts of a filter — the buses/hour denominator.
   dateCount(filters) {
     let total = 0;
     for (const [key, count] of Object.entries(this.meta.date_counts)) {
-      const [pick, season, dow, weather] = key.split("|").map(Number);
-      if (filters.pick != null && pick !== filters.pick) continue;
+      const [season, dow, weather] = key.split("|").map(Number);
       if (filters.season != null && season !== filters.season) continue;
       if (filters.weather != null && weather !== filters.weather) continue;
       if (filters.dow != null) {
@@ -185,8 +184,7 @@ export class NetworkData {
   doorDateCount(filters) {
     let total = 0;
     for (const [key, count] of Object.entries(this.meta.door_date_counts ?? {})) {
-      const [pick, season, dow, weather] = key.split("|").map(Number);
-      if (filters.pick != null && pick !== filters.pick) continue;
+      const [season, dow, weather] = key.split("|").map(Number);
       if (filters.season != null && season !== filters.season) continue;
       if (filters.weather != null && weather !== filters.weather) continue;
       if (filters.dow != null) {
@@ -344,7 +342,7 @@ export function deriveMetrics(acc, tFf, meta) {
 // --------------------------------------------------------------------------
 
 export async function selfTestGolden(baseUrl = "../data/network") {
-  const g = await fetch(`${baseUrl}/golden.json`).then((r) => r.json());
+  const g = await fetch(`${baseUrl}/golden.json`, { cache: "no-cache" }).then((r) => r.json());
   const meta = { hist_families: g.families };
   const failures = [];
   for (const c of g.cases) {

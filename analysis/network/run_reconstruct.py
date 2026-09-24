@@ -40,6 +40,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
+from analysis.network import gtfs_history  # noqa: E402
 from analysis.network.assign_shapes import (  # noqa: E402
     LOW_CONFIDENCE_SCORE,
     Assignment,
@@ -48,7 +49,7 @@ from analysis.network.assign_shapes import (  # noqa: E402
 )
 from core.decompose.travel_time import last_times_at_boundaries  # noqa: E402
 from core.mapmatch.shape_snap import SnapToShapeMatcher  # noqa: E402
-from core.smooth import locreg_pchip  # noqa: E402
+from core.smooth import fit_trajectory  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 from dataio.gtfs import load_gtfs_shape_with_dist  # noqa: E402
 
@@ -92,26 +93,106 @@ TRAVERSAL_SCHEMA = pa.schema(
 _G: dict = {}
 
 
+def _set_era(date_iso: str) -> None:
+    """Point the worker's shape tables at the GTFS era live on ``date_iso``.
+
+    Segment ids are era-independent (OSM node pairs), so only the shape
+    table, the geometry source and the matcher cache swap. Workers process
+    dates in order, so this fires a few dozen times per run, not per date.
+    """
+    city: CityConfig = _G["city"]
+    era = gtfs_history.era_id(city, date_iso)
+    if era == _G.get("era") and "shapes" in _G:
+        return
+    if era is None:
+        _G["shapes"] = _G["canonical_shapes"]
+        _G["gtfs_zip"] = city.resolve(city.gtfs_zip)
+    else:
+        p = (REPO / "outputs" / "network" / city.city_id / "era_shapes"
+             / f"{era}.json")
+        if not p.exists():
+            _G["shapes"] = _G["canonical_shapes"]
+            _G["gtfs_zip"] = city.resolve(city.gtfs_zip)
+            era = None
+        else:
+            _G["shapes"] = json.loads(p.read_text())
+            _G["gtfs_zip"] = city.resolve(city.gtfs_history_dir) / f"{era}.zip"
+    _G["era"] = era
+    by_route: dict[str, list[str]] = {}
+    for sid, rec in _G["shapes"].items():
+        by_route.setdefault(rec["route_id"], []).append(sid)
+    _G["shapes_by_route"] = by_route
+    _G["matchers"] = {}
+    _G.pop("pattern_stops", None)
+    _set_month(date_iso)
+
+
+def _set_month(date_iso: str) -> None:
+    """Load the month's registered stop locations for door re-attribution.
+
+    Stops move over 2.5 years, so registration is redone monthly
+    (monthly_stops.py). Falls back to the canonical registry's stops_off
+    when a month hasn't been registered.
+    """
+    city: CityConfig = _G["city"]
+    month = date_iso[:4] + date_iso[5:7]
+    if _G.get("stops_month") == month:
+        return
+    p = (REPO / "outputs" / "network" / city.city_id / "monthly_stops"
+         / f"{month}.json")
+    if p.exists():
+        raw = json.loads(p.read_text())
+        _G["seg_stops"] = {
+            seg_id: [(float(s["off_m"]), str(s["id"])) for s in stops]
+            for seg_id, stops in raw.items()
+        }
+        _G["near_side_stops"] = {
+            str(s["id"]) for stops in raw.values() for s in stops
+            if s.get("signal_side") == "near_side"
+        }
+    elif "canonical_seg_stops" in _G:
+        _G["seg_stops"] = _G["canonical_seg_stops"]
+    _G["stops_month"] = month
+    # delay_events._pattern_stops memoises (shape -> stop offsets), which
+    # depends on both the era's seg_bounds and this month's stop positions.
+    _G.pop("pattern_stops", None)
+
+
 def _init_worker(city_id: str) -> None:
     city = get_city(city_id)
     reg_path = REPO / "outputs" / "network" / city.city_id / "segment_registry.json"
     reg = json.loads(reg_path.read_text())
     _G["city"] = city
     _G["registry_meta"] = reg["meta"]
+    _G["canonical_shapes"] = reg["shapes"]
     _G["shapes"] = reg["shapes"]  # shape_id -> {route_id, direction, seg_bounds}
+    _G["gtfs_zip"] = city.resolve(city.gtfs_zip)
     # route_id -> [shape_id, ...]
     by_route: dict[str, list[str]] = {}
     for sid, rec in reg["shapes"].items():
         by_route.setdefault(rec["route_id"], []).append(sid)
     _G["shapes_by_route"] = by_route
     _G["matchers"] = {}  # shape_id -> (matcher, shape_len_m)
+    # seg_id -> [(off_m_from_seg_end, stop_id), ...] — powers the
+    # location-based door re-attribution in delay_events (2026-08-16).
+    _G["seg_stops"] = {
+        seg_id: [(float(st["off_m"]), str(st["id"]))
+                 for st in rec.get("stops_off", [])]
+        for seg_id, rec in reg["segments"].items()
+    }
+    _G["canonical_seg_stops"] = _G["seg_stops"]
+    _G["near_side_stops"] = {
+        str(st["id"]) for rec in reg["segments"].values()
+        for st in rec.get("stops_off", [])
+        if st.get("signal_side") == "near_side"
+    }
 
 
 def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:
     if shape_id not in _G["matchers"]:
         city: CityConfig = _G["city"]
         polyline, dist_m = load_gtfs_shape_with_dist(
-            city.resolve(city.gtfs_zip), shape_id
+            _G.get("gtfs_zip") or city.resolve(city.gtfs_zip), shape_id
         )
         m = SnapToShapeMatcher(
             polyline, max_perp_m=city.max_perp_m, dist_along_m_per_vertex=dist_m
@@ -125,12 +206,62 @@ def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:
 # Hour-file loading for one service date
 # --------------------------------------------------------------------------
 
+AVL_FPS_TO_MPS = 0.3048
+AVL_SPEED_SENTINEL = 255.0
+
+
+def _service_date_pings_direct(city: CityConfig, date_iso: str) -> pd.DataFrame:
+    """Read a service date straight from the daily AVL export.
+
+    The 2.5-year archive is already partitioned by calendar date, which is
+    the grain the batch iterates over, so materialising hour-files would
+    cost ~45 GB and an extra pass for nothing (2026-08-17 decision). A
+    service date spans two calendar files under the 03:00 cutover.
+
+    Column/unit mapping matches avl_ingest.ingest exactly: naive LOCAL
+    avl_event_time, speeds in feet per second with 255 as the u8 sentinel.
+    """
+    import duckdb
+
+    src = Path(city.avl_source_dir)
+    d0 = pd.Timestamp(date_iso).date()
+    files = [src / f"date={d0}.parquet",
+             src / f"date={d0 + pd.Timedelta(days=1)}.parquet"]
+    files = [f for f in files if f.exists()]
+    if not files:
+        return pd.DataFrame()
+    lst = ", ".join(f"'{f}'" for f in files)
+    df = duckdb.connect().execute(f"""
+        SELECT avl_event_time AT TIME ZONE '{city.tz}' AS timestamp,
+               CAST(trip_id AS VARCHAR)  AS trip_id,
+               CAST(route_id AS VARCHAR) AS route_id,
+               CAST(bus_id AS VARCHAR)   AS vehicle_id,
+               latitude, longitude,
+               CASE WHEN speed IS NULL OR speed >= {AVL_SPEED_SENTINEL}
+                    THEN NULL ELSE speed * {AVL_FPS_TO_MPS} END AS speed_mps
+        FROM read_parquet([{lst}], union_by_name=true)
+        WHERE onroute = 1 AND route_id IS NOT NULL AND trip_id IS NOT NULL
+          AND latitude IS NOT NULL AND longitude IS NOT NULL
+    """).fetch_df()
+    if df.empty:
+        return df
+    df = df[~df.route_id.isin(city.deadhead_route_ids)].copy()
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    df["ts_utc"] = ts
+    local = ts.dt.tz_convert(city.tz)
+    df["service_date"] = (
+        local - pd.Timedelta(hours=city.service_day_cutover_h)).dt.date
+    return df[df.service_date == d0]
+
+
 def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
     """All pings whose Chicago service date == date_iso (03:00 cutover).
 
     Loads the UTC hour-files spanning [date 03:00, date+1 03:00] local with
     1 h pad on both sides, from the local cache only (run prefetch first).
     """
+    if getattr(city, "avl_direct_read", False) and city.avl_source_dir:
+        return _service_date_pings_direct(city, date_iso)
     cache_dir = city.resolve(city.archive_cache_dir)
     lo_local = pd.Timestamp(f"{date_iso} 0{city.service_day_cutover_h}:00", tz=city.tz)
     hi_local = lo_local + pd.Timedelta(days=1)
@@ -205,6 +336,8 @@ def _process_trip(
 
     lats = trip["latitude"].to_numpy(dtype=float)
     lons = trip["longitude"].to_numpy(dtype=float)
+    v_all = (trip["speed_mps"].to_numpy(dtype=float)
+             if "speed_mps" in trip.columns else None)
     matchers = {sid: _matcher(sid)[0] for sid in candidates}
     lens = {sid: _matcher(sid)[1] for sid in candidates}
 
@@ -218,6 +351,7 @@ def _process_trip(
     d_all = asg.match.dist_along_m
     t_on = t_sec_all[on]
     d_on = d_all[on]
+    v_on = v_all[on] if v_all is not None else None
 
     if monotone_frac(d_on) < MIN_MONOTONE:
         rejects["not_monotone"] += 1
@@ -231,12 +365,14 @@ def _process_trip(
         touched_terminal = True
         cut = at_term[0] + 1
         t_on, d_on = t_on[:cut], d_on[:cut]
+        if v_on is not None:
+            v_on = v_on[:cut]
         if len(t_on) < MIN_PINGS:
             rejects["few_pings_after_truncate"] += 1
             return None
 
     try:
-        sm = locreg_pchip(t_on, d_on, bandwidth=city.bandwidth)
+        sm = fit_trajectory(t_on, d_on, v_on)
     except Exception:
         rejects["smooth_failed"] += 1
         return None
@@ -342,6 +478,7 @@ def _process_date_inner(args) -> list[dict]:
     if "city" not in _G:
         _init_worker(city_id)
     city: CityConfig = _G["city"]
+    _set_era(date_iso)
 
     date_dir = _out_dir(city) / f"service_date={date_iso}"
     stats: list[dict] = []
@@ -395,7 +532,18 @@ def _process_date_inner(args) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def _dates_in_archive(city: CityConfig) -> list[str]:
-    """Service dates covered by the local hour-file cache."""
+    """Service dates covered by the archive.
+
+    Direct-read cities enumerate the daily export itself; the last calendar
+    date is dropped because a service date needs the following day's file
+    to cover its post-midnight tail.
+    """
+    if getattr(city, "avl_direct_read", False) and city.avl_source_dir:
+        days = sorted(
+            p.stem.split("=", 1)[1]
+            for p in Path(city.avl_source_dir).glob("date=*.parquet")
+        )
+        return days[:-1] if len(days) > 1 else days
     cache_dir = city.resolve(city.archive_cache_dir)
     hours = []
     for p in cache_dir.glob(f"agency={city.r2_agency}__*.parquet"):

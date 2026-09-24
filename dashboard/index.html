@@ -53,9 +53,12 @@
   <!-- Network sub-tabs (Areas of interest hidden 2026-07 pending rework) -->
   <nav id="ntabs" class="subtabs hidden" data-main="network">
     <button data-ntab="map" class="active">Map</button>
+    <button data-ntab="explore">Explore</button>
     <span class="ntab-city">
       <button data-ncity="cta" class="active">Chicago</button>
-      <button data-ncity="mbta">Boston</button>
+      <button data-ncity="translink">Vancouver</button>
+      <!-- Boston hidden 2026-08-24 (its payloads lag the CTA pipeline);
+           restore the button to bring it back -->
     </span>
   </nav>
 
@@ -79,7 +82,8 @@
       <label><input type="checkbox" id="s-phoneSpeed" checked> <span class="legend phone">High-Freq</span></label>
       <label><input type="checkbox" id="s-r2Speed" checked> <span class="legend r2">Low-Freq</span></label>
       <span class="sep">Delays:</span>
-      <label><input type="checkbox" id="s-dAVL" checked> AVL</label>
+      <label><input type="checkbox" id="s-dAVL" checked> Door events</label>
+      <label title="Split the slow time either side of a door into pre/post stop loss (needs Door events)"><input type="checkbox" id="s-dLoss"> show stop loss</label>
       <label><input type="checkbox" id="s-dWeb" checked> observed</label>
     </div>
     <button id="reset-zoom" title="Reset zoom">⤢ reset</button>
@@ -94,6 +98,7 @@
     drag = pan. Speed: scroll/drag = time. On the speed tab, hover the chart to
     move the bus on the map; click for Street View; M/S toggle the basemap.</p>
 
+  <div id="explore-panel" class="hidden"></div>
   <script type="module" src="./app/main.js"></script>
 </body>
 </html>

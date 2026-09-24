@@ -25,6 +25,9 @@ hour_local are re-derived from the merged t_enter in the city's timezone.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import duckdb
 
 from dataio.cities import CityConfig
@@ -60,8 +63,21 @@ def create_canonical_view(
     # seg_id since the 2026-07 regen. k = occurrences of the segment within
     # the shape (loop routes can cross one canonical segment twice; the
     # coverage filter then requires both parts present before merging).
+    # Shape tables from EVERY GTFS era, not just the canonical snapshot:
+    # historical traversals carry that era's shape_ids (CTA re-prefixes them
+    # per feed version), and segmap is an inner join — omitting them would
+    # silently drop all pre-2026 rows from every aggregate.
+    shape_recs: dict[str, dict] = dict(registry["shapes"])
+    era_dir = (Path(__file__).resolve().parents[2] / "outputs" / "network"
+               / city.city_id / "era_shapes")
+    if era_dir.is_dir():
+        for p in sorted(era_dir.glob("*.json")):
+            try:
+                shape_recs.update(json.loads(p.read_text()))
+            except Exception:  # noqa: BLE001 — a bad era file must not
+                continue       # take out the whole view
     rows = []
-    for shape_id, rec in registry["shapes"].items():
+    for shape_id, rec in shape_recs.items():
         k_by_seg: dict[str, int] = {}
         for seg_id, _, _ in rec["seg_bounds"]:
             k_by_seg[seg_id] = k_by_seg.get(seg_id, 0) + 1

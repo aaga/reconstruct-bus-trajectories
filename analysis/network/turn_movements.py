@@ -74,6 +74,12 @@ def build(city_id: str) -> None:
         polyline, dist_m = load_gtfs_shape_with_dist(gtfs, shape_id)
         pts = np.asarray(polyline, dtype=float)
         lats, lons = pts[:, 0], pts[:, 1]
+        if dist_m is None:
+            # Feeds without shape_dist_traveled (MBTA) — same equirect
+            # ruler every SnapToShapeMatcher fallback uses, so x_hi values
+            # from seg_bounds line up.
+            from core.mapmatch.shape_snap import equirect_cumulative_m
+            dist_m = equirect_cumulative_m(pts)
         dist_m = np.asarray(dist_m, dtype=float)
         for seg_id, _x_lo, x_hi in rec["seg_bounds"]:
             mv = classify(dist_m, lats, lons, float(x_hi))
@@ -97,3 +103,53 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def movement_rows(city, registry: dict) -> list[tuple]:
+    """(shape_id, seg_id, movement) for EVERY GTFS era's shapes.
+
+    movements.json is keyed by canonical shape_id, so historical traversals
+    — which carry that era's shape_ids — would all fall through to '?' and
+    lose the straight/turn filter. The movement is really a property of the
+    pair (segment, next segment along the shape), which is era-independent
+    because segment ids are OSM node pairs. So re-key the canonical result
+    by that pair, then replay it over every era's seg_seq.
+    """
+    import json as _json
+    from collections import Counter as _Counter
+    from pathlib import Path as _Path
+
+    base = _Path(__file__).resolve().parents[2] / "outputs" / "network" / city.city_id
+    mv_path = base / "movements.json"
+    if not mv_path.exists():
+        return []
+    per_seg_shape = _json.loads(mv_path.read_text())
+
+    shape_recs: dict[str, dict] = dict(registry["shapes"])
+    era_dir = base / "era_shapes"
+    if era_dir.is_dir():
+        for p in sorted(era_dir.glob("*.json")):
+            try:
+                shape_recs.update(_json.loads(p.read_text()))
+            except Exception:  # noqa: BLE001
+                continue
+
+    # (seg, next_seg) -> movement, voted across the canonical shapes that
+    # already carry a classification for that turn.
+    votes: dict[tuple[str, str], _Counter] = {}
+    for sid, rec in registry["shapes"].items():
+        seq = rec.get("seg_seq") or [b[0] for b in rec["seg_bounds"]]
+        for a, b in zip(seq, seq[1:]):
+            m = per_seg_shape.get(a, {}).get(sid)
+            if m:
+                votes.setdefault((a, b), _Counter())[m] += 1
+    pair_m = {k: c.most_common(1)[0][0] for k, c in votes.items()}
+
+    rows: list[tuple] = []
+    for sid, rec in shape_recs.items():
+        seq = rec.get("seg_seq") or [b[0] for b in rec["seg_bounds"]]
+        for a, b in zip(seq, seq[1:]):
+            m = pair_m.get((a, b))
+            if m:
+                rows.append((sid, a, m))
+    return rows

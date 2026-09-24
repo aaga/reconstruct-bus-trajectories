@@ -20,6 +20,7 @@ import { DelayView } from "./views/delay_view.js";
 import { NetworkData, NETWORK_CITIES } from "./network_data.js";
 import { NetworkView, METRICS } from "./views/network_view.js";
 import { AreasView } from "./views/areas_view.js";
+import { ExploreView } from "./views/explore_view.js";
 
 const S = {
   main: "single",          // "single" | "average"
@@ -33,7 +34,7 @@ const S = {
   view: { trajectory: null, speed: null },
   toggles: {
     phoneCurve: true, phoneRaw: false, r2Curve: true, r2Raw: false, stops: false,
-    phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true,
+    phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true, dLoss: false,
   },
   // map (speed tab): pub/sub + ported views, rebuilt per trip
   mapState: null, mapView: null, streetView: null,
@@ -67,19 +68,21 @@ const speedView = new SpeedView(S);
 const overallView = new OverallDelayView(S);
 const networkView = new NetworkView(S);
 const areasView = new AreasView(S);
+const exploreView = new ExploreView(S);
 
 // Display modes. Rich = every source + delay row; Lite = the primary source +
 // its inferred delays only (emulating the single-trip route dashboard). Modes
 // are just preset toggle states over the shared views — no separate chart code.
 const MODE_PRESETS = {
   rich: { phoneCurve: true, phoneRaw: false, r2Curve: true, r2Raw: false, stops: false,
-          phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true },
+          phoneSpeed: true, r2Speed: true, dAVL: true, dWeb: true, dLoss: false },
   lite: { phoneCurve: true, phoneRaw: false, r2Curve: false, r2Raw: false, stops: false,
-          phoneSpeed: true, r2Speed: false, dAVL: false, dWeb: false },
+          phoneSpeed: true, r2Speed: false, dAVL: false, dWeb: false, dLoss: false },
 };
 const TOGGLE_IDS = {
   "t-phoneCurve": "phoneCurve", "t-phoneRaw": "phoneRaw", "t-r2Curve": "r2Curve", "t-r2Raw": "r2Raw", "t-stops": "stops",
   "s-phoneSpeed": "phoneSpeed", "s-r2Speed": "r2Speed", "s-dAVL": "dAVL", "s-dWeb": "dWeb",
+  "s-dLoss": "dLoss",
 };
 
 function setMode(mode) {
@@ -173,6 +176,15 @@ async function renderNetwork() {
   teardownMap();
   teardownAggViews();
   $("trip-meta").textContent = ""; // trip info is irrelevant on this tab
+  const xp = document.getElementById("explore-panel");
+  if (S.ntab === "explore") {
+    // Fact-table querying stands alone: no map, no payload download.
+    document.body.classList.remove("show-map", "network-mode", "network-areas");
+    xp.classList.remove("hidden");
+    exploreView.render(xp);
+    return;
+  }
+  xp.classList.add("hidden");
   document.body.classList.add("show-map", "network-mode");
   document.body.classList.remove("network-areas"); // areas sub-tab hidden
   S.network.syncHash = syncHash;
@@ -323,7 +335,6 @@ function currentHash() {
     if (F.periods.join(".") !== defPeriods.join(".")) q.set("periods", F.periods.join("."));
     if (F.dow != null) q.set("days", `dow${F.dow}`);
     else if (F.daytype !== "weekday") q.set("days", F.daytype ?? "everyday");
-    if (F.pick != null) q.set("pick", F.pick);
     if (F.weather != null) q.set("weather", F.weather);
     const rids = N.data?.meta?.dims?.route_ids;
     if (rids) {
@@ -361,7 +372,7 @@ function applyHash() {
   S._applyingHash = true;
   if (main === "single" && ["trajectory", "speed"].includes(sub)) S.tab = sub;
   if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
-  if (main === "network") S.ntab = "map"; // areas sub-tab hidden (2026-07)
+  if (main === "network" && S.ntab !== "explore") S.ntab = "map";
   const params = new URLSearchParams(query || "");
   if (main === "network") {
     const N = S.network;
@@ -397,7 +408,6 @@ function applyHash() {
       else if (days === "everyday") { F.daytype = null; F.dow = null; }
       else if (["weekday", "weekend"].includes(days)) { F.daytype = days; F.dow = null; }
     }
-    F.pick = params.has("pick") ? Number(params.get("pick")) : F.pick;
     F.weather = params.has("weather") ? Number(params.get("weather")) : F.weather;
     // Route ids can't map to indices until NetworkData's meta is loaded —
     // stash names; NetworkView resolves them on first render.
@@ -502,7 +512,15 @@ async function init() {
   bind("t-phoneCurve", "phoneCurve"); bind("t-phoneRaw", "phoneRaw");
   bind("t-r2Curve", "r2Curve"); bind("t-r2Raw", "r2Raw"); bind("t-stops", "stops");
   bind("s-phoneSpeed", "phoneSpeed"); bind("s-r2Speed", "r2Speed");
-  bind("s-dAVL", "dAVL"); bind("s-dWeb", "dWeb");
+  bind("s-dAVL", "dAVL"); bind("s-dWeb", "dWeb"); bind("s-dLoss", "dLoss");
+  // stop loss is meaningless without the door cycles that define it
+  const syncLoss = () => {
+    const el = $("s-dLoss"); if (!el) return;
+    el.disabled = !S.toggles.dAVL;
+    el.parentElement.style.opacity = S.toggles.dAVL ? "" : "0.45";
+  };
+  $("s-dAVL")?.addEventListener("change", syncLoss);
+  syncLoss();
   document.querySelectorAll("#modes button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
   document.querySelectorAll('input[name="speedx"]').forEach((r) =>
     r.onchange = (e) => {

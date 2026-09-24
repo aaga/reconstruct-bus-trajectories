@@ -36,34 +36,51 @@ def build(city_id: str) -> None:
     city = get_city(city_id)
     base = REPO / "outputs" / "network" / city.city_id
     ev_glob = str(base / "events" / "service_date=*" / "route=*.parquet")
-    door_glob = str(city.resolve("caches/door_events") / city.city_id / "*.parquet")
+    # Door source must span the same window as the events, or the per-stop
+    # ratios silently mix scales: the 3-month cache against 2.5 years of
+    # pre/post pieces made n_door look 10x too small (2026-08-18).
+    if city.door_source_dir:
+        door_glob = str(Path(city.door_source_dir) / "month=*.parquet")
+    else:
+        door_glob = str(city.resolve("caches/door_events") / city.city_id / "*.parquet")
     out = base / "stop_stats.parquet"
 
     # stop names from the registry (union across segments)
     reg = json.loads((base / "segment_registry.json").read_text())
-    names: dict[str, str] = {}
+    # name + signal-side classification (registry.py): near_side is within
+    # SIDE_WINDOW_FT before the light (signal_dist_ft > 0), far_side within
+    # that distance after it (signal_dist_ft < 0), else other (null distance).
+    names: dict[str, tuple] = {}
     for rec in reg["segments"].values():
         for s in rec.get("stops_off", []):
-            names.setdefault(str(s["id"]), s["name"])
+            names.setdefault(str(s["id"]), (
+                s["name"], s.get("signal_side"), s.get("signal_dist_ft")))
 
     con = duckdb.connect()
-    con.execute("CREATE TABLE names(stop_id TEXT, stop_name TEXT)")
+    con.execute("CREATE TABLE names(stop_id TEXT, stop_name TEXT, "
+                "signal_side TEXT, signal_dist_ft DOUBLE)")
     if names:
-        con.executemany("INSERT INTO names VALUES (?, ?)", list(names.items()))
+        con.executemany("INSERT INTO names VALUES (?, ?, ?, ?)",
+                        [(k, *v) for k, v in names.items()])
 
     con.execute(
         f"""
         COPY (
+          -- Dwell per stop comes from the events table's dw rows, not the raw
+          -- door export: the historical months carry no stop_id at all, and
+          -- dw rows are the same cycles after location-based re-attribution
+          -- (delay_events), so they attribute correctly at bays/stations where
+          -- the AVL stamp lags. dur_s is the dwell BLOB (door cycle ∪ any
+          -- overlapping slow events), matching the dashboard's dwell metric;
+          -- a cycle straddling a segment boundary contributes one row a side.
           WITH door AS (
             SELECT stop_id::VARCHAR AS stop_id,
                    count(*) AS n_door,
-                   round(sum(dwell_s), 1) AS door_s_total,
-                   round(quantile_cont(dwell_s, 0.5), 1) AS door_s_p50,
-                   round(quantile_cont(dwell_s, 0.9), 1) AS door_s_p90
-            FROM read_parquet('{door_glob}')
-            WHERE stop_id IS NOT NULL
-              AND coalesce(ron,0)+coalesce(roff,0)
-                  +coalesce(fon,0)+coalesce(foff,0) > 0
+                   round(sum(dur_s), 1) AS door_s_total,
+                   round(quantile_cont(dur_s, 0.5), 1) AS door_s_p50,
+                   round(quantile_cont(dur_s, 0.9), 1) AS door_s_p90
+            FROM read_parquet('{ev_glob}')
+            WHERE cls = 'dw' AND stop_id IS NOT NULL
             GROUP BY 1
           ),
           pre AS (
@@ -83,6 +100,7 @@ def build(city_id: str) -> None:
             WHERE cls IN ('post', 'post2') AND stop_id IS NOT NULL GROUP BY 1
           )
           SELECT door.stop_id, names.stop_name,
+                 names.signal_side, names.signal_dist_ft,
                  n_door, door_s_total, door_s_p50, door_s_p90,
                  coalesce(n_pre, 0) AS n_pre, pre_s_total, pre_s_p50, pre_s_p90,
                  coalesce(n_post, 0) AS n_post, post_s_total, post_s_p50, post_s_p90

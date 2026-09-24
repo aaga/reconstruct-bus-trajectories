@@ -24,6 +24,7 @@ export const METRICS = {
   nondwell:         { label: "Non-dwell delay",        kind: "delay", unit: "s" },
   dwell:            { label: "Dwell delay",            kind: "delay", unit: "s" },
   freeflow_speed:   { label: "Free flow speed",        kind: "static", unit: "mph" },
+  avg_speed:        { label: "Average speed",          kind: "speed",  unit: "mph" },
   buses_per_hr:     { label: "Bus / hour",             kind: "rate", unit: "/hr" },
   boardings_per_hr: { label: "Boardings / hour",       kind: "rate", unit: "/hr" },
 };
@@ -166,6 +167,7 @@ export class NetworkView {
           </optgroup>
           <optgroup label="Other">
             <option value="freeflow_speed">Free flow speed</option>
+            <option value="avg_speed">Average speed</option>
             <option value="buses_per_hr">Bus / hour</option>
             <option value="boardings_per_hr" ${this.hasDoor ? "" : "disabled"}>Boardings / hour${this.hasDoor ? "" : " (needs door data)"}</option>
           </optgroup>
@@ -195,10 +197,8 @@ export class NetworkView {
             `<option value="dow${i}">${d} only</option>`).join("")}
         </select>
       </div>
-      <div class="nw-group"><b>Pick / Weather</b>
+      <div class="nw-group"><b>Weather</b>
         <div class="nw-inline">
-          <select id="nw-pick"><option value="">pick: all</option>
-            ${dims.picks.map((p, i) => `<option value="${i}">${p}</option>`).join("")}</select>
           <select id="nw-weather"><option value="">weather: any</option>
             ${dims.weathers.filter((w) => w !== "unknown").map((w) =>
               `<option value="${dims.weathers.indexOf(w)}">${w}</option>`).join("")}</select>
@@ -238,9 +238,14 @@ export class NetworkView {
       host.innerHTML = "";
       const selection = this._selectedRouteIdx();
       const single = selection.length === 1 ? selection[0] : null;
-      dims.route_ids.forEach((r, i) => {
+      const order = dims.route_ids.map((_, i) => i).sort((a, b) =>
+        this._routeLabel(dims.route_ids[a]).localeCompare(
+          this._routeLabel(dims.route_ids[b]), undefined, { numeric: true }));
+      order.forEach((i) => {
+        const r = dims.route_ids[i];
         if (this._showSelectedOnly && !checked.has(i)) return;
-        if (this._routeQuery && !r.toLowerCase().includes(this._routeQuery)) return;
+        if (this._routeQuery && !r.toLowerCase().includes(this._routeQuery)
+            && !this._routeLabel(r).toLowerCase().includes(this._routeQuery)) return;
         const row = document.createElement("div");
         row.className = "nw-routerow" + (active === i ? " active" : "");
         // Direction lives IN the row, only while this route is the single
@@ -253,7 +258,7 @@ export class NetworkView {
               `<button data-d="${d}" class="${(this.F.direction ?? "") === d ? "on" : ""}">` +
               `${d || "Both"}</button>`).join("") + `</span>`;
         }
-        row.innerHTML = `<span>${r}</span>${dirBtns}<input type="checkbox" ${checked.has(i) ? "checked" : ""}>`;
+        row.innerHTML = `<span>${this._routeLabel(r)}</span>${dirBtns}<input type="checkbox" ${checked.has(i) ? "checked" : ""}>`;
         row.querySelectorAll(".nw-dirbtns button").forEach((b) => {
           b.onclick = (e) => {
             e.stopPropagation();
@@ -344,7 +349,7 @@ export class NetworkView {
       else { this.F.daytype = v || null; this.F.dow = null; }
       this.refresh();
     };
-    for (const [id, key] of [["nw-pick", "pick"], ["nw-weather", "weather"]]) {
+    for (const [id, key] of [["nw-weather", "weather"]]) {
       el.querySelector(`#${id}`).onchange = (e) => {
         this.F[key] = e.target.value === "" ? null : Number(e.target.value);
         this.refresh();
@@ -357,6 +362,13 @@ export class NetworkView {
 
     this._panelBuilt = true;
     this._syncMetricControls();
+  }
+
+  _routeLabel(rid) {
+    const dims = this.data.meta.dims;
+    this._rlabels ??= new Map(
+      dims.route_ids.map((r, i) => [r, dims.route_labels?.[i] ?? r]));
+    return this._rlabels.get(rid) ?? rid;
   }
 
   _routeDirs(i) {
@@ -420,8 +432,6 @@ export class NetworkView {
     if (days) {
       days.value = this.F.dow != null ? `dow${this.F.dow}` : (this.F.daytype ?? "");
     }
-    const pick = el.querySelector("#nw-pick");
-    if (pick) pick.value = this.F.pick == null ? "" : String(this.F.pick);
     const weather = el.querySelector("#nw-weather");
     if (weather) weather.value = this.F.weather == null ? "" : String(this.F.weather);
     el.querySelector("#nw-cmp-peak").checked = this.N.compare === "peak";
@@ -468,7 +478,7 @@ export class NetworkView {
   _minCount(acc) {
     // door-derived families gate on the door-covered subset
     const fam = this.N.metric;
-    if (fam === "overall" || fam === "buses_per_hr") return acc.n;
+    if (fam === "overall" || fam === "buses_per_hr" || fam === "avg_speed") return acc.n;
     return acc.nDoor ?? 0;
   }
 
@@ -487,6 +497,18 @@ export class NetworkView {
       return values;
     }
     const combined = await this.data.combine(filters);
+    if (metric === "avg_speed") {
+      // observed speed: len / (t_ff + mean delay) — traversal-only, no door data
+      this._lenM ??= new Map(
+        this.data.segments.features.map((f) => [f.properties.sid, f.properties.len_m]));
+      for (const [sid, acc] of combined) {
+        if (this._minCount(acc) < this.N.minN) continue;
+        const tObs = (tFf.get(sid) ?? 0) + acc.sum / acc.n;
+        const len = this._lenM.get(sid);
+        if (len > 0 && tObs > 0) values.set(sid, (len / tObs) * 2.23694);
+      }
+      return values;
+    }
     if (metric === "buses_per_hr" || metric === "boardings_per_hr") {
       const dates = metric === "buses_per_hr"
         ? this.data.dateCount(filters) : this.data.doorDateCount(filters);
@@ -582,10 +604,12 @@ export class NetworkView {
     let colorOf, gradient;
     if (diverging) {
       const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
-      const sc = d3.scaleSequential(d3.interpolateRdBu).domain([m, -m]); // red = worse
+      // red = worse: for delay, + is worse; for speed, − (slower) is worse
+      const worse = METRICS[metric].unit === "mph" ? -1 : 1;
+      const sc = d3.scaleSequential(d3.interpolateRdBu).domain([worse * m, -worse * m]);
       colorOf = (v) => sc(v);
       gradient = d3.range(0, 1.01, 0.1).map((t) => sc.interpolator()(1 - t));
-    } else if (metric === "freeflow_speed") {
+    } else if (METRICS[metric].unit === "mph") {
       const sc = d3.scaleSequential(d3.interpolateViridis).domain([lo, hi]);
       colorOf = (v) => sc(v);
       gradient = d3.range(0, 1.01, 0.1).map((t) => d3.interpolateViridis(t));
@@ -651,12 +675,33 @@ export class NetworkView {
   // the same as the (time-subtraction) map metrics until the event batch
   // redefines them.
   async _renderDistribution(host, props, coords) {
+    this._distThresh ??= "5";   // slow-event threshold pass: "5" | "3" mph
+    const distDir = this._distThresh === "3" ? "dist3mph" : "dist";
     let d;
     try {
-      const r = await fetch(`${this.data.base}/dist/${props.sid}.json`);
+      const r = await fetch(`${this.data.base}/${distDir}/${props.sid}.json`, { cache: "no-cache" });
       if (!r.ok) throw new Error();
       d = await r.json();
+      // headway CV (frequent network only): absent file just greys the box
+      if (this._cvSeg !== props.sid) {
+        this._cvSeg = props.sid;
+        this._cv = null;
+        try {
+          const rc = await fetch(`${this.data.base}/cv/${props.sid}.json`, { cache: "no-cache" });
+          if (rc.ok) this._cv = await rc.json();
+        } catch { /* keep null */ }
+      }
     } catch {
+      if (this._distThresh === "3") {
+        host.innerHTML = `<div class="nw-note">no 3 mph pass built for this city/segment —
+          <a href="#" class="dist-back5">back to 5 mph</a></div>`;
+        host.querySelector(".dist-back5").onclick = (e) => {
+          e.preventDefault();
+          this._distThresh = "5";
+          this._renderDistribution(host, props, coords);
+        };
+        return;
+      }
       host.innerHTML = `<div class="nw-note">no delay-event data for this segment yet</div>`;
       return;
     }
@@ -670,17 +715,22 @@ export class NetworkView {
       host.innerHTML = `<div class="nw-note">data version mismatch — reload the page</div>`;
       return;
     }
-    this._distMode ??= "events"; // "events" | "seconds" | "queue" | "pings"
-    if (this._distMode === "pings" && !d.ping) this._distMode = "events";
+    this._distMode ??= "seconds"; // "seconds" | "pax" | "events" | "queue"
+    if (this._distMode === "pings") this._distMode = "seconds"; // tab removed 2026-08-25
+    if (this._distMode === "pax" && !d.nd_p) this._distMode = "seconds";
     const pingMode = this._distMode === "pings";
     const secondsMode = this._distMode === "seconds";
+    const paxMode = this._distMode === "pax";
     const queueMode = this._distMode === "queue";
-    const suffix = secondsMode ? "_s" : queueMode ? "_q" : "";
+    const suffix = secondsMode ? "_s" : paxMode ? "_p" : queueMode ? "_q" : "";
     // v2 classes; v1 files simply lack post2/dw (empty fallbacks keep them
     // working). dw (door events) is opt-in via the checkbox.
     this._showDoors ??= false;
+    // Stack order groups every red-rendered class together (nd + the *_ns
+    // classes, currently drawn nd-red) so they read as ONE red bar, with
+    // teal/purple above.
     const CLASSES = pingMode ? ["ping"]
-                   : ["nd", "pre", "post", "post2",
+                   : ["nd", "post_ns", "post2_ns", "pre", "post", "post2",
                       ...(this._showDoors ? ["dw"] : [])];
     // Turn-movement filter (T/L/R/E through the downstream signal).
     // Selection resets when the popup moves to a different segment.
@@ -697,7 +747,7 @@ export class NetworkView {
     const selTrips = mvmtFiltered
       ? [...this._mvmtSel].reduce((a, m) => a + (d.mvmt[m] ?? 0), 0)
       : (d.n_trips ?? 1);
-    const denom = secondsMode ? Math.max(1, selTrips) : 1;
+    const denom = (secondsMode || paxMode) ? Math.max(1, selTrips) : 1;
     const zeros = d.nd.map(() => 0);
     const pick = (c) => {
       if (mvmtFiltered) {
@@ -711,7 +761,7 @@ export class NetworkView {
       return (d[c + suffix] ?? d[c] ?? zeros).map((v) => v / denom);
     };
     const src = Object.fromEntries(CLASSES.map((c) => [c, pick(c)]));
-    const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 58, padR = 28;
+    const W = 990, chartH = 270, roadH = 64, axisH = 30, padL = 28, padR = 58;
     const H = chartH + roadH + axisH + 52;
     const lenFt = d.len_ft;
     const nB = d.nd.length;
@@ -722,7 +772,8 @@ export class NetworkView {
     const ghB = (d.ghost_buckets && (d.gh_lo || d.gh_hi)) ? d.ghost_buckets : 0;
     const ghFt = ghB * d.bucket_ft;
     const domFt = lenFt + 2 * ghFt;
-    const xOf = (ft) => padL + ((ft + ghFt) / domFt) * innerW;
+    // Mirrored 2026-08-16: signal (0 ft) on the RIGHT, travel rightward.
+    const xOf = (ft) => W - padR - ((ft + ghFt) / domFt) * innerW;
     const bw = Math.max(1, (d.bucket_ft / domFt) * innerW);
 
     const totals = src[CLASSES[0]].map((_, i) =>
@@ -730,13 +781,27 @@ export class NetworkView {
     const yMax = Math.max(1, ...totals);
     const yOf = (n) => chartH - (n / yMax) * (chartH - 6);
 
+    // *_ns = post at a NEAR-SIDE stop: a stop-then-signal compound, drawn
+    // as purple over red rather than either alone.
     const COLORS = { nd: "#d63a2f", pre: "#1fb8b0",
                      post: "#8a4fc8", post2: "url(#post2hatch)",
+                     post_ns: "#d63a2f", post2_ns: "#d63a2f",   // plain red for now
                      dw: "#2b6fd6", ping: "#3f3f3f" };
     let bars = `<defs><pattern id="post2hatch" width="6" height="6"
         patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
         <rect width="6" height="6" fill="#8a4fc8"/>
         <line x1="0" y1="0" x2="0" y2="6" stroke="#fff" stroke-width="2.2"/>
+      </pattern>
+      <pattern id="nshatch" width="7" height="7"
+        patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="7" height="7" fill="#8a4fc8"/>
+        <rect width="3.4" height="7" fill="#d63a2f"/>
+      </pattern>
+      <pattern id="ns2hatch" width="7" height="7"
+        patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="7" height="7" fill="#8a4fc8"/>
+        <rect width="3.4" height="7" fill="#d63a2f"/>
+        <line x1="0" y1="0" x2="0" y2="7" stroke="#fff" stroke-width="1.6"/>
       </pattern></defs>`;
     for (let i = 0; i < nB; i++) {
       let y = chartH;
@@ -745,7 +810,7 @@ export class NetworkView {
         if (!v) continue;
         const h = ((v / yMax) * (chartH - 6));
         y -= h;
-        bars += `<rect x="${xOf(i * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
+        bars += `<rect x="${xOf((i + 1) * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
                  width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[cls]}"/>`;
       }
     }
@@ -778,7 +843,7 @@ export class NetworkView {
             if (y - h < 8) h = y - 8;          // clip the stack at the top
             if (h <= 0) break;
             y -= h;
-            ghost += `<rect x="${xOf(base + i * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
+            ghost += `<rect x="${xOf(base + (i + 1) * d.bucket_ft).toFixed(1)}" y="${y.toFixed(1)}"
                      width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[cls]}"/>`;
           }
         }
@@ -786,38 +851,128 @@ export class NetworkView {
       if (ghost) bars += `<g opacity="0.5">${ghost}</g>`;
     }
 
-    // y axis: 0, mid, max
+    // y axis: 0, mid, max (+ unit label so the two axes read apart)
     const fmtY = (v) => secondsMode
       ? (v >= 60 ? `${(v / 60).toFixed(1)}m` : `${v.toFixed(1)}s`)
       : String(Math.round(v));
-    const yAxis = `
-      <line x1="${padL - 4}" y1="8" x2="${padL - 4}" y2="${chartH}" stroke="#999"/>
-      <text x="${padL - 8}" y="16" text-anchor="end" class="dist-tick">${fmtY(yMax)}</text>
-      <text x="${padL - 8}" y="${(chartH + 16) / 2}" text-anchor="end" class="dist-tick">${fmtY(yMax / 2)}</text>
-      <text x="${padL - 8}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>`;
+    const countUnit = pingMode ? "pings"
+      : secondsMode ? "s/trip" : paxMode ? "pax·s/trip"
+      : queueMode ? "events" : "events";
+    const crx = W - padR + 4;
+    let yAxis = `
+      <line x1="${crx}" y1="8" x2="${crx}" y2="${chartH}" stroke="#999"/>
+      <text x="${crx + 4}" y="16" class="dist-tick">${fmtY(yMax)}</text>
+      <text x="${crx + 4}" y="${(chartH + 16) / 2}" class="dist-tick">${fmtY(yMax / 2)}</text>
+      <text x="${crx + 4}" y="${chartH}" class="dist-tick">0</text>
+      <text x="${crx + 4}" y="6" class="dist-tick" style="font-style:italic">${countUnit}</text>`;
+
+    // Average-speed overlay (raw ping speeds per 10 ft bucket): join-the-
+    // dots line + right-hand mph axis, opposite end from the traffic light.
+    this._showSpeed ??= false;
+    const MPH = 2.23694;
+    const spd = (this._showSpeed && d.ping_v) ? d.ping_v : null;
+    let vMaxMph = 0, ySpd = null, speedLine = "";
+    if (spd) {
+      vMaxMph = Math.max(...spd.filter((v) => v != null)) * MPH * 1.15 || 1;
+      ySpd = (mph) => chartH - (mph / vMaxMph) * (chartH - 6);
+      const mkPts = (arr, ftOf) => {
+        const out = [];
+        (arr ?? []).forEach((v, i) => {
+          if (v != null) out.push([xOf(ftOf(i)), ySpd(v * MPH)]);
+        });
+        return out;
+      };
+      const pts = mkPts(spd, (i) => (i + 0.5) * d.bucket_ft);
+      const drawLine = (pp, op) => pp.length > 1
+        ? `<g opacity="${op}"><polyline points="${pp.map((p2) => p2.map((c) => c.toFixed(1)).join(",")).join(" ")}"
+             fill="none" stroke="#0a0a0a" stroke-width="1.6"/>` +
+          pp.map((p2) => `<circle cx="${p2[0].toFixed(1)}" cy="${p2[1].toFixed(1)}" r="1.6" fill="#0a0a0a"/>`).join("") + "</g>"
+        : "";
+      speedLine = drawLine(pts, 0.85);
+      if (ghB) {
+        // buffer extensions: neighbors' speeds at ghost opacity, stitched
+        // to the main line's ends so the curve reads continuously
+        const lo = mkPts(d.ping_v_lo, (i) => -(i + 0.5) * d.bucket_ft);
+        const hi = mkPts(d.ping_v_hi, (i) => lenFt + (i + 0.5) * d.bucket_ft);
+        if (lo.length && pts.length) lo.unshift(pts[0]);
+        if (hi.length && pts.length) hi.unshift(pts[pts.length - 1]);
+        speedLine += drawLine(lo, 0.42) + drawLine(hi, 0.42);
+      }
+      yAxis += `
+        <line x1="${padL - 4}" y1="8" x2="${padL - 4}" y2="${chartH}" stroke="#999"/>
+        <text x="${padL - 8}" y="16" text-anchor="end" class="dist-tick">${vMaxMph.toFixed(0)}</text>
+        <text x="${padL - 8}" y="${(chartH + 16) / 2}" text-anchor="end" class="dist-tick">${(vMaxMph / 2).toFixed(0)}</text>
+        <text x="${padL - 8}" y="${chartH}" text-anchor="end" class="dist-tick">0</text>
+        <text x="${padL - 8}" y="6" text-anchor="end" class="dist-tick" style="font-style:italic">mph</text>`;
+    }
+
+    // headway CV overlay: one line per frequent route through the segment.
+    // Dimensionless, own scale: a fixed 0.05-wide window centered on the
+    // segment's CV range (widened only if the data spans more), so small
+    // within-segment changes stay visible. The dashed rule marks CV = 0.5,
+    // a common bunching threshold, when it falls inside the window.
+    let cvLines = "";
+    const cvOn = this._showCV && this._cv;
+    if (cvOn) {
+      const CV_COLORS = ["#b8860b", "#7b3fa0", "#00838f", "#c2185b", "#5d4037"];
+      const routes = Object.keys(this._cv.routes);
+      let cvLo = Infinity, cvHi = -Infinity;
+      for (const r of routes)
+        for (const v of this._cv.routes[r].cv) if (v != null) {
+          cvLo = Math.min(cvLo, v); cvHi = Math.max(cvHi, v);
+        }
+      if (!isFinite(cvLo)) { cvLo = 0; cvHi = 1; }
+      const cvMid = (cvLo + cvHi) / 2;
+      const cvSpan = Math.max(0.05, (cvHi - cvLo) * 1.08);
+      const winLo = cvMid - cvSpan / 2, winHi = cvMid + cvSpan / 2;
+      const yCv = (v) => 6 + (1 - (v - winLo) / cvSpan) * (chartH - 6);
+      if (winLo <= 0.5 && 0.5 <= winHi)
+        cvLines = `<line x1="${padL}" y1="${yCv(0.5).toFixed(1)}" x2="${W - padR}" y2="${yCv(0.5).toFixed(1)}"
+          stroke="#b8860b" stroke-width="0.7" stroke-dasharray="5,4" opacity="0.5"/>`;
+      routes.forEach((r, ri) => {
+        const rec = this._cv.routes[r];
+        const col = CV_COLORS[ri % CV_COLORS.length];
+        const pts = [];
+        rec.cv.forEach((v, i) => {
+          if (v != null) pts.push([xOf((i + 0.5) * this._cv.bucket_ft), yCv(v)]);
+        });
+        if (pts.length > 1) {
+          cvLines += `<polyline points="${pts.map((q) => q.map((c) => c.toFixed(1)).join(",")).join(" ")}"
+            fill="none" stroke="${col}" stroke-width="1.8" opacity="0.9"/>`;
+          const [lx, ly] = pts[pts.length - 1];
+          cvLines += `<text x="${(lx - 4).toFixed(1)}" y="${(ly - 5).toFixed(1)}" font-size="10"
+            fill="${col}" text-anchor="end">rt ${r}</text>`;
+        }
+      });
+      yAxis += `
+        <text x="${padL + 4}" y="16" class="dist-tick" fill="#b8860b">CV ${winHi.toFixed(3)}</text>
+        <text x="${padL + 4}" y="${(chartH - 4).toFixed(1)}" class="dist-tick" fill="#b8860b">CV ${winLo.toFixed(3)}</text>`;
+      if (winLo <= 0.5 && 0.5 <= winHi)
+        yAxis += `
+        <text x="${padL + 4}" y="${yCv(0.5) - 3}" class="dist-tick" fill="#b8860b" opacity="0.7">0.5</text>`;
+    }
 
     // road strip
     const roadY = chartH + 8;
     const roadBodyH = roadH - 18;
     const axisY = roadY + roadBodyH + 52;
-    const sideY = axisY - 2;   // sideways labels: leading edge at the x-axis
     // Break the roadway (12 px gaps) at NAMED junctions — non-signalized
     // by definition (signals are segment boundaries); label each gap.
     const namedJcts = (props.junctions_off ?? [])
       .filter((j) => j.cross)
       .map((j) => ({ x: xOf(j.off_m * 3.28084), cross: j.cross }))
-      .filter((j) => j.x > xOf(0) + 18 && j.x < xOf(lenFt) - 18)
+      .filter((j) => j.x > xOf(lenFt) + 18 && j.x < xOf(0) - 18)
       .sort((a, b) => a.x - b.x);
     let road = "";
     {
       const cy = roadY + roadBodyH / 2;
-      let cursor = xOf(0);
+      let cursor = xOf(lenFt);
       const spans = [];
       for (const j of namedJcts) {
         spans.push([cursor, j.x - 6]);
         cursor = j.x + 6;
       }
-      spans.push([cursor, xOf(lenFt)]);
+      spans.push([cursor, xOf(0)]);
       for (const [a, b] of spans) {
         if (b - a < 2) continue;
         road += `<rect x="${a.toFixed(1)}" y="${roadY}" width="${(b - a).toFixed(1)}"
@@ -827,8 +982,8 @@ export class NetworkView {
       }
       for (const j of namedJcts) {
         const nm = j.cross.replace(/^(North|South|East|West) /, "");
-        road += `<text transform="rotate(-90 ${j.x.toFixed(1)} ${sideY})" x="${j.x.toFixed(1)}"
-                 y="${sideY}" text-anchor="start"
+        road += `<text transform="rotate(-90 ${j.x.toFixed(1)} ${roadY})" x="${j.x.toFixed(1)}"
+                 y="${roadY}" text-anchor="end"
                  style="font-size:8px;fill:#555" dominant-baseline="middle">${nm}</text>`;
       }
     }
@@ -837,8 +992,8 @@ export class NetworkView {
       const cy = roadY + roadBodyH / 2;
       for (const frac of [0.22, 0.5, 0.78]) {
         const ax = xOf(lenFt * frac);
-        road += `<path d="M ${(ax + 7).toFixed(1)} ${cy - 6} L ${(ax - 5).toFixed(1)} ${cy}
-                 L ${(ax + 7).toFixed(1)} ${cy + 6}" fill="none" stroke="#fff"
+        road += `<path d="M ${(ax - 7).toFixed(1)} ${cy - 6} L ${(ax + 5).toFixed(1)} ${cy}
+                 L ${(ax - 7).toFixed(1)} ${cy + 6}" fill="none" stroke="#fff"
                  stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>`;
       }
       // street name on the roadway: pick the position that avoids bus-stop
@@ -866,7 +1021,7 @@ export class NetworkView {
     }
     // traffic light pictogram at the segment's left edge (0 ft)
     const ly = roadY + roadBodyH / 2;
-    road += `<g transform="translate(${(xOf(0) - 34).toFixed(1)}, ${ly - 22})">
+    road += `<g transform="translate(${(xOf(0) + 15).toFixed(1)}, ${ly - 22})">
         <rect x="0" y="0" width="19" height="44" rx="4" fill="#222"/>
         <circle cx="9.5" cy="9" r="5" fill="#e33"/>
         <circle cx="9.5" cy="22" r="5" fill="#fb3"/>
@@ -882,10 +1037,10 @@ export class NetworkView {
       const downName = cname(ends[1]);
       const upName = cname(ends[0]);
       const sideLabel = (tx, name, fill = "#555") =>
-        `<text transform="rotate(-90 ${tx} ${sideY})" x="${tx}" y="${sideY}"
-         text-anchor="start" style="font-size:8px;fill:${fill}">${name}</text>`;
-      if (downName) road += sideLabel((xOf(0) - 42).toFixed(1), downName);
-      if (upName) road += sideLabel((xOf(lenFt) + 14).toFixed(1), upName);
+        `<text transform="rotate(-90 ${tx} ${roadY})" x="${tx}" y="${roadY}"
+         text-anchor="end" style="font-size:8px;fill:${fill}">${name}</text>`;
+      if (downName) road += sideLabel((xOf(0) + 46).toFixed(1), downName);
+      if (upName) road += sideLabel((xOf(lenFt) - 14).toFixed(1), upName);
     }
     // NB (2026-07-30): junction boxes removed from this view — the way-split
     // fallback produced nameless phantom boxes (alley splits, splits at
@@ -930,9 +1085,9 @@ export class NetworkView {
                 style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">BUS</text>
           <text x="${x.toFixed(1)}" y="${top + 31}" text-anchor="middle"
                 style="font-size:5.6px;fill:#fff;font-weight:700;letter-spacing:.04em">STOP</text>
-          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 37 : 14)}"
+          <text x="${x.toFixed(1)}" y="${top + bh + 13}"
                 text-anchor="middle" style="font-size:9.5px;fill:#333;font-weight:600">${st.id}</text>
-          <text x="${x.toFixed(1)}" y="${roadY + roadBodyH + (si % 2 ? 48 : 25)}"
+          <text x="${x.toFixed(1)}" y="${top + bh + 24}"
                 text-anchor="middle" style="font-size:9.5px;fill:#333">${st.name}</text>
         </g>`;
       });
@@ -953,6 +1108,8 @@ export class NetworkView {
         <rect y="${axisY + 8}" width="58" height="16" rx="4" fill="#333"/>
         <text y="${axisY + 20}" text-anchor="middle" class="dist-tick"
               style="fill:#fff;font-weight:600"></text>
+        <text class="dist-cursor-spd" style="font-size:10px;font-weight:700;
+              paint-order:stroke;stroke:#fff;stroke-width:3px;fill:#0a0a0a"></text>
       </g>`;
 
     host.innerHTML = `
@@ -961,11 +1118,16 @@ export class NetworkView {
           ? "Distribution of non-boarding delays"
           : "Distribution of delay locations"}
         <span class="dist-toggle">
-          <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">delay events</button>
-          <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">avg delay seconds</button>
+          <button data-m="seconds" class="${this._distMode === "seconds" ? "on" : ""}">time</button>
+          ${d.nd_p ? `<button data-m="pax" class="${this._distMode === "pax" ? "on" : ""}">pax</button>` : ""}
+          <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
           ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
-          ${d.ping ? `<button data-m="pings" class="${pingMode ? "on" : ""}">raw pings</button>` : ""}
         </span>
+        ${d.ping_v ? `<label class="dist-speed" style="font-size:11px;margin-left:10px;cursor:pointer">
+          <input type="checkbox" class="dist-speed-cb" ${this._showSpeed ? "checked" : ""}> avg speed</label>` : ""}
+        <label class="dist-cv" style="font-size:11px;margin-left:10px;cursor:pointer;${this._cv ? "" : "opacity:.4"}"
+          title="${this._cv ? "coefficient of variation of headways, frequent network" : "no frequent route through this segment"}">
+          <input type="checkbox" class="dist-cv-cb" ${this._cv ? "" : "disabled"} ${this._showCV && this._cv ? "checked" : ""}> headway CV</label>
         ${this.hasDoor && d.dw && !pingMode ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-doors-cb" ${this._showDoors ? "checked" : ""}> door events</label>` : ""}
         ${mvmtAll.length && !pingMode ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
@@ -989,7 +1151,7 @@ export class NetworkView {
           ? `(${totals.reduce((a, v) => a + v, 0).toLocaleString()} raw AVL pings, pre-reconstruction)`
           : `(${d.n_events} events · ${d.n_trips ?? "?"} trips)`}</span>
       </div>
-      <svg viewBox="0 0 ${W} ${H}" class="dist-svg">${yAxis}${bars}${road}${axis}</svg>
+      <svg viewBox="0 -12 ${W} ${H + 12}" class="dist-svg">${yAxis}${bars}${speedLine}${cvLines}${road}${axis}</svg>
       ${this.hasDoor && !pingMode ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
@@ -998,8 +1160,22 @@ export class NetworkView {
         ${this._showDoors ? `<span><i style="background:#2b6fd6"></i>door events</span>` : ""}
       </div>` : ""}`;
     host.querySelectorAll(".dist-toggle button").forEach((b) => {
-      b.onclick = () => { this._distMode = b.dataset.m; this._renderDistribution(host, props, coords); };
+      b.onclick = () => {
+        if (b.dataset.th) this._distThresh = b.dataset.th;
+        else this._distMode = b.dataset.m;
+        this._renderDistribution(host, props, coords);
+      };
     });
+    const cvCb = host.querySelector(".dist-cv-cb");
+    if (cvCb) cvCb.onchange = () => {
+      this._showCV = cvCb.checked;
+      this._renderDistribution(host, props, coords);
+    };
+    const speedCb = host.querySelector(".dist-speed-cb");
+    if (speedCb) speedCb.onchange = () => {
+      this._showSpeed = speedCb.checked;
+      this._renderDistribution(host, props, coords);
+    };
     const doorsCb = host.querySelector(".dist-doors-cb");
     if (doorsCb) doorsCb.onchange = () => {
       this._showDoors = doorsCb.checked;
@@ -1028,7 +1204,7 @@ export class NetworkView {
         const rect = svg.getBoundingClientRect();
         // CSS may scale the svg; convert client px -> viewBox units.
         const px = (e.clientX - rect.left) * (W / rect.width);
-        const ft = ((px - padL) / innerW) * domFt - ghFt;
+        const ft = ((W - padR - px) / innerW) * domFt - ghFt;
         if (ft < 0 || ft > lenFt) { cur.style.display = "none"; return; }
         cur.style.display = "";
         curLine.setAttribute("x1", px.toFixed(1));
@@ -1036,6 +1212,17 @@ export class NetworkView {
         curBox.setAttribute("x", (px - 29).toFixed(1));
         curText.setAttribute("x", px.toFixed(1));
         curText.textContent = `${Math.round(ft)} ft`;
+        const spdEl = cur.querySelector(".dist-cursor-spd");
+        if (spd && ySpd) {
+          const bi = Math.floor(ft / d.bucket_ft);
+          const v = spd[bi];
+          if (v != null) {
+            const mph = v * MPH;
+            spdEl.setAttribute("x", (px + 7).toFixed(1));
+            spdEl.setAttribute("y", (ySpd(mph) - 7).toFixed(1));
+            spdEl.textContent = `${mph.toFixed(1)} mph`;
+          } else spdEl.textContent = "";
+        } else if (spdEl) spdEl.textContent = "";
       });
       svg.addEventListener("mouseleave", () => { cur.style.display = "none"; });
     }
@@ -1044,8 +1231,8 @@ export class NetworkView {
     svg.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       const rect = svg.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const ft = ((px - padL) / innerW) * lenFt;
+      const px = (e.clientX - rect.left) * (W / rect.width);
+      const ft = ((W - padR - px) / innerW) * domFt - ghFt;
       if (ft < 0 || ft > lenFt || !coords || coords.length < 2) return;
       const offM = ft / 3.28084;                 // upstream of the light
       const fromStartM = Math.max(0, props.len_m - offM);
@@ -1111,7 +1298,7 @@ export class NetworkView {
     const statBit = spec.kind === "delay" ? ` (${STATS[this.N.stat]})` : "";
     this._tooltip.innerHTML = `
       <b>${cleanLabel(p.label)}</b><br>
-      routes: ${routes.map((r) => `${r.r} ${r.dir}`).join(", ")}<br>
+      routes: ${routes.map((r) => `${this._routeLabel(r.r)} ${r.dir}`).join(", ")}<br>
       ${spec.label}${statBit}: ${v == null ? "—" : fmtValue(this.N.metric, v)} · ${Math.round(p.len_m)} m`;
     const mapRect = $("map").getBoundingClientRect();
     this._tooltip.style.left = `${mapRect.left + point.x + 12}px`;
@@ -1157,7 +1344,7 @@ export class NetworkView {
     el.innerHTML = `
       <button class="nw-close">×</button>
       <h3>${cleanLabel(p.label)}</h3>
-      <div class="nw-chips">${p.routes.map((r) => `<span class="chip">${r.r} ${r.dir}</span>`).join("")}</div>
+      <div class="nw-chips">${p.routes.map((r) => `<span class="chip">${this._routeLabel(r.r)} ${r.dir}</span>`).join("")}</div>
       <div class="nw-facts">
         ${Math.round(p.len_m)} m · ${p.n_stops} stop${p.n_stops === 1 ? "" : "s"} ·
         free-flow ${ffMph} mph
