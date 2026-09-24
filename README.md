@@ -68,6 +68,9 @@ src/                         ① importable packages (pythonpath=src; the tested
   └─ cli/                    `bus-trajectories reconstruct | compare | build-*`
 
 analysis/                    ② results & dashboard payloads
+  ├─ network/                full-network segment-speed pipeline — all routes,
+  │                          all signal-to-signal segments, multi-city
+  │                          (CTA · TransLink · MBTA); see its README
   ├─ run_decomposition.py    per-trip decomposition → trip_*.json + aggregate.csv
   ├─ build_dashboard_data.py unified dashboard payload builder (+ prep/ helpers)
   ├─ comparison.py           phone + R2 + AVL fusion → outputs/obs_trips/
@@ -78,9 +81,17 @@ figures/                     ③ visualization
   └─ <family>.png            rendered figures, families A1..H7 (see below)
 
 dashboard/                   ④ one merged MapLibre + D3 dashboard
-  ├─ app/  views/            Single trip (Trajectory · Speed) + Average trip (Overall · Segment)
-  └─ data/                   catalog index.json + per-view payloads (trips + aggregates)
+  ├─ app/  views/            Single trip (Trajectory · Speed) + Average trip
+  │                          (Overall · Segment) + Network (Map · Explore)
+  ├─ data/                   catalog index.json + per-view payloads (trips + aggregates)
+  └─ serve.py                Range-capable static server (required by Explore's
+                             DuckDB-WASM; plain http.server refetches whole files)
 record-a-ride/               field-data collection web app + Cloudflare Pages API
+clustering/                  trajectory-typing exploration (TransLink R99) — see MEMO.md
+scripts/                     standalone studies (frequency_analysis: what GPS ping
+                             rate suffices for faithful reconstruction?)
+routing-valhalla/            gitignored local Valhalla containers, one subfolder
+                             per area (chicago/ · bc/ · boston/)
 tests/                       pytest suite (mirrors src/)
 data/ outputs/ caches/       gitignored — regenerable inputs, bundles, and caches
                              (incl. caches/cta/intersections.json, the all-CTA intersection cache)
@@ -122,7 +133,10 @@ serving `/trace_attributes` (e.g. at `http://localhost:8002`). Standing that up
 is standard Valhalla — build tiles from an `.osm.pbf`, then run the server; see
 the [Valhalla docs](https://valhalla.github.io/valhalla/) or the
 [gis-ops Docker image](https://github.com/gis-ops/docker-valhalla) (the quickest
-path — mount an `.osm.pbf` and it builds tiles + serves on `:8002`).
+path — mount an `.osm.pbf` and it builds tiles + serves on `:8002`). By
+convention each area's extract + tiles live under `routing-valhalla/<area>/`
+(`chicago/`, `bc/`, `boston/` — gitignored), matching the `pbf_file` /
+`valhalla_url` fields in `src/dataio/cities.py`.
 
 **Then run the build** (stage 1 Valhalla + stage 2 Overpass — both resumable and
 chunked; re-run the same command to pick up after any failure):
@@ -228,6 +242,12 @@ repository** — it depends on agency API keys and an R2 bucket the analyst woul
 need to provide. This repo reads from its public R2 bucket
 (`pub-777d0904efb449dc838791645b9e2e0f.r2.dev`), treating the archive as a
 read-only data source.
+
+For the network pipeline, **CTA no longer uses the R2 scrape**: since
+2026-08 it reads a local high-resolution AVL export directly
+(`avl_source_dir` + `avl_direct_read` in `cities.py`, 2024-01 → present,
+with speeds enabling VCHIP-ME reconstruction). Other agencies (TransLink,
+MBTA) still reconstruct from the R2 archive.
 
 ## What's reproduced vs. what's new
 
