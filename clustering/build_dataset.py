@@ -60,8 +60,8 @@ def select_trips(
     pings = pings.sort_values(["trip_id", "start_date", "timestamp"])
 
     stats = dict.fromkeys(
-        ["too_few_pings", "not_at_origin", "no_terminal_reach", "gap_too_long",
-         "too_long", "span_too_small", "kept"], 0)
+        ["too_few_pings", "not_at_origin", "no_terminal_reach",
+         "gap_while_moving", "too_long", "span_too_small", "kept"], 0)
     kept: list[tuple[str, pd.DataFrame]] = []
     for (tid, sdate), g in pings.groupby(["trip_id", "start_date"]):
         if len(g) < C.MIN_PINGS:
@@ -76,20 +76,31 @@ def select_trips(
         if not at_term.any():
             stats["no_terminal_reach"] += 1
             continue
-        trunc = g.iloc[: int(np.argmax(at_term)) + 1]
+        end = int(np.argmax(at_term)) + 1
+        trunc, d_tr = g.iloc[:end], d[:end]
+        # Trim the leading origin dwell: vehicles broadcast the next trip_id
+        # while parked on layover at the origin terminal and go silent while
+        # stationary, so pre-departure silence would otherwise fail the gap
+        # gate for data the profiles (which start at GRID_D0_M) never use.
+        # Start the trip at the LAST ping still within 200 m of the shape start.
+        pre = np.where(d_tr < 200.0)[0]
+        s0 = int(pre[-1]) if len(pre) else 0
+        trunc, d_tr = trunc.iloc[s0:], d_tr[s0:]
         if len(trunc) < C.MIN_PINGS:
             stats["too_few_pings"] += 1
             continue
-        gaps = trunc.timestamp.diff().dt.total_seconds().fillna(0)
-        if (gaps > C.GAP_MAX_S).any():
-            stats["gap_too_long"] += 1
+        # Gap gate: only silence while MOVING is disqualifying. A stationary
+        # gap (bus advanced < GAP_MOVE_M across it) is a hold, not data loss.
+        gaps = trunc.timestamp.diff().dt.total_seconds().fillna(0).to_numpy()
+        moved = np.abs(np.diff(d_tr, prepend=d_tr[0]))
+        if ((gaps > C.GAP_MAX_S) & (moved > C.GAP_MOVE_M)).any():
+            stats["gap_while_moving"] += 1
             continue
         dur_s = (trunc.timestamp.iloc[-1] - trunc.timestamp.iloc[0]).total_seconds()
         if not (0 < dur_s <= C.MAX_TRIP_H * 3600):
             stats["too_long"] += 1
             continue
-        dt = d[: len(trunc)]
-        if (dt.max() - dt.min()) < C.MIN_SPAN_FRAC * shape_len_m:
+        if (d_tr.max() - d_tr.min()) < C.MIN_SPAN_FRAC * shape_len_m:
             stats["span_too_small"] += 1
             continue
         kept.append((f"{tid}_{sdate}", trunc))

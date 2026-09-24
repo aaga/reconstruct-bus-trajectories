@@ -50,7 +50,9 @@ ORIGIN_TOL_M = 500.0        # first ping within this of shape start
 TERM_TOL_M = 300.0          # truncate at first ping within this of shape end
                             # (the 317528 shape overshoots the UBC Exchange bay
                             # where WB buses actually stop reporting by ~150-280 m)
-GAP_MAX_S = 240.0           # max inter-ping gap on the truncated series
+GAP_MAX_S = 240.0           # max inter-ping gap while moving (see GAP_MOVE_M)
+GAP_MOVE_M = 100.0          # gaps with less movement than this are holds, not
+                            # data loss (TransLink vehicles go silent when parked)
 MAX_TRIP_H = 2.5
 MIN_SPAN_FRAC = 0.90        # truncated trip must cover >= 90% of shape length
 
