@@ -66,6 +66,7 @@ figures/*_copy.png
 
 # --- Externally-managed subprojects ---------------------------------------
 routing-valhalla/
+routing-valhalla-bc/
 
 # --- Reference material (not redistributable) -----------------------------
 docs/

@@ -50,19 +50,80 @@ def _read_shapes(gtfs_zip_path: str) -> dict[str, dict]:
                         row.get("shape_dist_traveled", "") or "",
                     )
                 )
-    out: dict[str, dict] = {}
+    parsed: dict[str, tuple[np.ndarray, list[str]]] = {}
     for sid, pts in shapes.items():
         pts.sort(key=lambda x: x[0])
         polyline = np.array([(lat, lon) for _, lat, lon, _ in pts], dtype=float)
-        sdt_strs = [s for _, _, _, s in pts]
+        parsed[sid] = (polyline, [s for _, _, _, s in pts])
+    scale = _infer_dist_scale(gtfs_zip_path, parsed)
+    out: dict[str, dict] = {}
+    for sid, (polyline, sdt_strs) in parsed.items():
         if all(s != "" for s in sdt_strs):
-            # CTA stores shape_dist_traveled in feet.
-            dist_m = np.array([float(s) / 3.28084 for s in sdt_strs], dtype=float)
+            dist_m = np.array([float(s) * scale for s in sdt_strs], dtype=float)
             dist_m = _repair_dist(polyline, dist_m)
         else:
             dist_m = None
         out[sid] = {"polyline": polyline, "dist_along_m": dist_m}
     return out
+
+
+def _arc_length_m(polyline: np.ndarray) -> float:
+    """Equirectangular arc length of a (lat, lon) polyline, in meters."""
+    if len(polyline) < 2:
+        return 0.0
+    lat0 = float(polyline[:, 0].mean())
+    dx = np.diff(polyline[:, 1]) * 111320.0 * np.cos(np.radians(lat0))
+    dy = np.diff(polyline[:, 0]) * 111320.0
+    return float(np.hypot(dx, dy).sum())
+
+
+# (lo, hi) bands for median(shape_dist_span / arc_length_m) per unit. The
+# units are ~3 orders of magnitude apart, so the bands are unambiguous;
+# anything outside every band keeps the legacy feet assumption (CTA).
+_DIST_UNIT_BANDS: tuple[tuple[str, float, float, float], ...] = (
+    ("ft", 2.3, 4.6, 1 / 3.28084),
+    ("m", 0.7, 1.4, 1.0),
+    ("km", 0.00085, 0.00115, 1000.0),
+    ("mi", 0.00050, 0.00075, 1609.344),
+)
+
+
+def _infer_dist_scale(gtfs_zip_path: str, parsed: dict) -> float:
+    """Meters-per-unit for this feed's ``shape_dist_traveled`` column.
+
+    Feeds differ (CTA: feet, TransLink: km, MBTA: unpopulated); the ratio of
+    the reported distance span to the polyline's physical arc length
+    identifies the unit feed-wide. Shapes shorter than 500 m or without a
+    fully populated column are skipped; the median ratio is compared against
+    ``_DIST_UNIT_BANDS``. No match (or no usable shapes) falls back to feet,
+    the historical assumption.
+    """
+    ratios = []
+    for polyline, sdt_strs in parsed.values():
+        if any(s == "" for s in sdt_strs) or len(sdt_strs) < 2:
+            continue
+        arc = _arc_length_m(polyline)
+        if arc < 500.0:
+            continue
+        vals = [float(s) for s in sdt_strs]
+        span = max(vals) - min(vals)
+        if span > 0:
+            ratios.append(span / arc)
+    name, scale = "ft (fallback)", 1 / 3.28084
+    if ratios:
+        med = float(np.median(ratios))
+        for unit, lo, hi, sc in _DIST_UNIT_BANDS:
+            if lo <= med <= hi:
+                name, scale = unit, sc
+                break
+        else:
+            print(
+                f"WARNING: {gtfs_zip_path}: shape_dist_traveled/arc ratio "
+                f"{med:.5g} matches no known unit; assuming feet"
+            )
+    if not name.startswith("ft"):
+        print(f"{gtfs_zip_path}: shape_dist_traveled unit inferred: {name}")
+    return scale
 
 
 # CTA's shapes.txt is riddled with ruler glitches (2026-07 survey: 761/816
@@ -141,6 +202,26 @@ def shape_id_for_pattern(pattern_id: str) -> str:
 
 
 GTFS_ROUTE_TYPE_BUS = "3"
+
+
+@lru_cache(maxsize=8)
+def load_route_short_names(gtfs_zip_path: str) -> dict[str, str]:
+    """route_id -> rider-facing route name.
+
+    ``route_short_name`` with numeric zero-padding stripped (TransLink files
+    "033" for the 33), falling back to the route_id itself — CTA/MBTA ids
+    are already rider-facing, so those pass through unchanged.
+    """
+    out: dict[str, str] = {}
+    with zipfile.ZipFile(gtfs_zip_path) as z:
+        with z.open("routes.txt") as f:
+            text = _io.TextIOWrapper(f, encoding="utf-8-sig")
+            for r in csv.DictReader(text):
+                name = (r.get("route_short_name") or "").strip() or r["route_id"]
+                if name.isdigit():
+                    name = str(int(name))
+                out[r["route_id"]] = name
+    return out
 
 
 @lru_cache(maxsize=8)

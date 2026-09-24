@@ -1,4 +1,4 @@
-"""CityConfig period/pick helpers."""
+"""CityConfig period helpers."""
 
 from __future__ import annotations
 
@@ -22,15 +22,6 @@ def test_cta_period_boundaries():
     assert cta.period_for_hour(19) == "evening"
     assert cta.period_for_hour(22) == "late_night"
     assert cta.period_for_hour(2) == "late_night"  # wraps midnight
-
-
-def test_pick_for_date():
-    cta = get_city("cta")
-    assert cta.pick_for_date("2026-04-14") is None
-    assert cta.pick_for_date("2026-04-15") == "spring26"
-    assert cta.pick_for_date("2026-06-30") == "spring26"
-    assert cta.pick_for_date("2026-07-01") == "summer26"
-    assert cta.pick_for_date("2026-12-31") == "summer26"
 
 
 def test_unknown_city_raises():

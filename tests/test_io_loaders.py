@@ -75,6 +75,26 @@ def test_load_gtfs_shape_with_dist_converts_feet_to_meters(tmp_path):
     np.testing.assert_allclose(dist_m, [0.0, 100.0], atol=1e-6)
 
 
+def test_load_gtfs_shape_with_dist_infers_feet_from_ratio(tmp_path):
+    # 0.009 deg lat ~= 1002 m arc; 3280.84 ft over it gives ratio ~3.27 -> ft.
+    z = _gtfs_zip_with_shape(
+        tmp_path / "gtfs.zip", "67803936",
+        [(1, 42.020, -87.67, "0"), (2, 42.029, -87.67, "3280.84")],
+    )
+    _poly, dist_m = load_gtfs_shape_with_dist(z, "67803936")
+    np.testing.assert_allclose(dist_m, [0.0, 1000.0], atol=1e-6)
+
+
+def test_load_gtfs_shape_with_dist_infers_km_from_ratio(tmp_path):
+    # Same ~1002 m arc reported as 1.0 -> ratio ~0.001 -> km (TransLink).
+    z = _gtfs_zip_with_shape(
+        tmp_path / "gtfs.zip", "317528",
+        [(1, 49.260, -123.13, "0"), (2, 49.269, -123.13, "1.0")],
+    )
+    _poly, dist_m = load_gtfs_shape_with_dist(z, "317528")
+    np.testing.assert_allclose(dist_m, [0.0, 1000.0], atol=1e-6)
+
+
 def test_load_gtfs_shape_with_dist_none_when_dist_absent(tmp_path):
     z = _gtfs_zip_with_shape(
         tmp_path / "gtfs.zip", "67803936",

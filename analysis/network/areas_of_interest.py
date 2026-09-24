@@ -45,6 +45,7 @@ sys.path.insert(0, str(REPO))
 
 from analysis.network.traversals_view import create_canonical_view  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
+from dataio.gtfs import load_route_short_names  # noqa: E402
 
 N0_SHRINKAGE = 25
 TOP_K = 50
@@ -89,7 +90,7 @@ def _filter_sql(daytype_weather: str, period: str | None) -> str:
     elif daytype == "weekend":
         conds.append("da.daytype IN ('sat', 'sun')")
     else:
-        conds.append(f"da.pick = '{daytype}'")
+        raise ValueError(f"unknown daytype filter {daytype!r}")
     if len(parts) > 1:
         conds.append(f"da.weather = '{parts[1]}'")
     if period:
@@ -140,11 +141,11 @@ def build_areas(city: CityConfig) -> dict:
         "INSERT INTO ff VALUES (?, ?)",
         [(k, v["t_ff_s"]) for k, v in freeflow["freeflow"].items()],
     )
-    con.execute("CREATE TABLE da(date_iso TEXT, pick TEXT, season TEXT, dow INT, weather TEXT, daytype TEXT)")
+    con.execute("CREATE TABLE da(date_iso TEXT, season TEXT, dow INT, weather TEXT, daytype TEXT)")
     con.executemany(
-        "INSERT INTO da VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO da VALUES (?, ?, ?, ?, ?)",
         [
-            (d, a["pick"] or "", a["season"], int(a["dow"]), a["weather"], a["daytype"])
+            (d, a["season"], int(a["dow"]), a["weather"], a["daytype"])
             for d, a in date_attrs["days"].items()
         ],
     )
@@ -174,7 +175,8 @@ def build_areas(city: CityConfig) -> dict:
     def label_of(kind: str, eid: str) -> str:
         if kind == "segment":
             return seg_label.get(eid, eid)
-        return f"Route {eid}"
+        names = load_route_short_names(str(city.resolve(city.gtfs_zip)))
+        return f"Route {names.get(eid, eid)}"
 
     def sids_of(kind: str, eid: str) -> list[str]:
         if kind == "segment":
