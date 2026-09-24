@@ -1,18 +1,22 @@
-"""Build the trip index: AVL door-event trips -> dense highfreq ping slices.
+"""Build the trip index: R2 trip windows -> complete VTRAK trips -> cache.
 
-The dense VTRAK parquet stream has no trip/route labels. The door-events CSV
-(``bus_state_hist_highfreq-VTRAK_*.csv``) does: every AVL event row carries
-``(bus_id, trip_id, trip_start_time, route_id)``. We use those to cut the
-continuous per-vehicle ping stream into revenue trips, then pick the GTFS
-shape each trip actually follows (reusing ``analysis.comparison.choose_shape``)
-and QC the result.
+Trip windows come from the R2 BusTime archive (``agency=cta``): per vehicle,
+a window is the span of consecutive archive rows carrying the same
+``(trip_id, route_id, start_date)``. A trip is **complete** when the VTRAK
+2 s stream fully covers the window — first/last ping within
+``MAX_VTRAK_GAP_S`` of the window edges and no internal gap larger than that.
+(Chosen per 2026-08-11 discussion: "R2 span + VTRAK only".)
 
-Everything is kept in **naive America/Chicago wall time** — the native clock
-of both the VTRAK ``dtime`` field and the AVL ``event_time`` field (June has
-no DST transition).
+Each kept trip is map-matched once at 2 s to its GTFS shape
+(``analysis.comparison``), giving every ping a distance-along-route ``x_m``
+(cleaned to be monotone, paper section 3.1 style) and a measured speed
+``v_mps``. Downsampled feeds are row-subsets of the cached pings, selected by
+``stream_idx % stride == 0`` where ``stream_idx`` indexes the vehicle's full
+continuous 2 s stream — so "downsample the stream, then trim to trips" is
+reproduced exactly.
 
 Run standalone to (re)build the cache:
-    PYTHONPATH=src uv run python scripts/frequency_analysis/trip_index.py
+    uv run python scripts/frequency_analysis/trip_index.py
 """
 
 from __future__ import annotations
@@ -27,63 +31,35 @@ import config as C  # noqa: E402  (sys.path set up in config)
 
 from analysis.comparison import choose_shape, route_shape_map  # noqa: E402
 
-DOOR_EVENT_TYPES = {"3", "4", "5"}  # Serviced / UnServiced / Unknown Stop
+MPH = 1.0 / C.MPS_TO_MPH  # m/s per mph
+
+# Paper section 3.1 outlier rules. The paper's 500 ft forward-jump bound
+# encodes "implied speed > 45 mph" at their cadence, so we apply the speed
+# form directly (cadence-independent — the R2 reference feed is ~25 s).
+MAX_FWD_MPS = 45.0 / 2.23694   # forward jump beyond this implied speed -> drop
+MAX_BACK_M = 61.0              # 200 ft: larger backward jumps -> drop; smaller -> clamp
 
 
-# ------------------------------------------------------------- door events
+# ------------------------------------------------------------- VTRAK stream
 
-def load_door_csv() -> pd.DataFrame:
-    """The full AVL dump for the three vehicles, with parsed times."""
-    df = pd.read_csv(C.DOOR_CSV, dtype=str, keep_default_na=False)
-    df["event_dt"] = pd.to_datetime(df["event_time"], format="%Y-%m-%d %H:%M:%S.%f")
-    df["dwell_s"] = pd.to_numeric(df["dwell_time"], errors="coerce").fillna(0.0).clip(lower=0)
-    return df
+def load_vtrak_stream() -> pd.DataFrame:
+    """Deduped continuous 2 s stream for the study vehicles.
 
-
-def trip_table(avl: pd.DataFrame) -> pd.DataFrame:
-    """One row per (bus_id, trip_id, trip_start_time) revenue trip.
-
-    The window spans every AVL event the trip produced (door events and
-    otherwise); route_id is the modal route among its rows.
+    ``dtime`` is the device wall clock (naive Chicago); the parquet
+    ``timestamp`` is only the scraper poll time. ``stream_idx`` numbers each
+    vehicle's pings 0..n-1 in time order — the downsampling index.
     """
-    ok = (
-        (avl["trip_id"] != "") & (avl["trip_id"] != "None")
-        & (avl["trip_start_time"] != "") & (avl["trip_start_time"] != "None")
-        & avl["route_id"].map(C.is_revenue_route)
-    )
-    sub = avl[ok]
-    rows = []
-    for (bus, trip, start), g in sub.groupby(["bus_id", "trip_id", "trip_start_time"]):
-        rows.append({
-            "bus_id": bus,
-            "trip_id": trip,
-            "trip_start_time": start,
-            "route_id": g["route_id"].mode().iloc[0],
-            "t_lo": g["event_dt"].min(),
-            "t_hi": g["event_dt"].max(),
-            "n_events": len(g),
-            "n_door": int(g["event_type"].isin(DOOR_EVENT_TYPES).sum()),
-        })
-    t = pd.DataFrame(rows).sort_values(["bus_id", "t_lo"]).reset_index(drop=True)
-    t["trip_key"] = (
-        t["bus_id"] + "_" + t["trip_id"] + "_"
-        + t["t_lo"].dt.strftime("%Y%m%d%H%M%S")
-    )
-    t["duration_s"] = (t["t_hi"] - t["t_lo"]).dt.total_seconds()
-    return t
-
-
-# ------------------------------------------------------------- dense pings
-
-def load_highfreq_pings() -> pd.DataFrame:
-    """All dense VTRAK pings, deduped per vehicle on device time (``dtime``).
-
-    ``dtime`` is the device-report wall clock (1 s resolution, ~2 s cadence);
-    the parquet ``timestamp`` is merely the scraper's poll time and would add
-    up to ~2 s of sampling jitter, so ``dtime`` is the ping timestamp.
-    """
-    files = sorted(C.HIGHFREQ_DIR.glob("*/*.parquet"))
-    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    cache = C.CACHE_DIR / "vtrak_stream.parquet"
+    if cache.exists():
+        return pd.read_parquet(cache)
+    frames = []
+    for f in sorted(C.HIGHFREQ_DIR.glob("*/*.parquet")):
+        df = pd.read_parquet(
+            f, columns=["veH_ID", "dtime", "latitude", "longitude", "speed"])
+        df = df[df["veH_ID"].astype(str).isin(C.VEHICLES)]
+        if len(df):
+            frames.append(df)
+    df = pd.concat(frames, ignore_index=True)
     df["veh_id"] = df["veH_ID"].astype(int).astype(str)
     df["ping_dt"] = pd.to_datetime(df["dtime"], format="%m-%d-%Y %H:%M:%S")
     df = (
@@ -91,54 +67,145 @@ def load_highfreq_pings() -> pd.DataFrame:
         .sort_values(["veh_id", "ping_dt"])
         .reset_index(drop=True)
     )
-    return df[["veh_id", "ping_dt", "latitude", "longitude", "heading", "speed"]]
+    df["v_mps"] = pd.to_numeric(df["speed"], errors="coerce") * MPH
+    df["stream_idx"] = df.groupby("veh_id").cumcount()
+    out = df[["veh_id", "stream_idx", "ping_dt", "latitude", "longitude", "v_mps"]]
+    C.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(cache)
+    return out
 
 
-# ------------------------------------------------------------- trip slicing
+# ------------------------------------------------------------- R2 windows
+
+def load_r2_rows() -> pd.DataFrame:
+    """R2 archive rows for the study vehicles, in naive Chicago time."""
+    cache = C.CACHE_DIR / "r2_rows.parquet"
+    if cache.exists():
+        return pd.read_parquet(cache)
+    files = sorted(C.R2_DIR.glob(f"agency={C.R2_AGENCY}__year=*.parquet"))
+    frames = []
+    for f in files:
+        df = pd.read_parquet(
+            f, columns=["vehicle_id", "trip_id", "route_id", "start_date", "timestamp"])
+        df = df[df["vehicle_id"].astype(str).isin(C.VEHICLES)]
+        if len(df):
+            frames.append(df)
+    df = pd.concat(frames, ignore_index=True)
+    df["vehicle_id"] = df["vehicle_id"].astype(str)
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    df["ts"] = ts.dt.tz_convert(C.LOCAL_TZ).dt.tz_localize(None)
+    df = (
+        df.drop_duplicates(["vehicle_id", "ts"])
+        .sort_values(["vehicle_id", "ts"])
+        .reset_index(drop=True)
+    )
+    out = df[["vehicle_id", "trip_id", "route_id", "start_date", "ts"]]
+    C.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(cache)
+    return out
+
+
+def r2_trip_windows(r2: pd.DataFrame, max_r2_gap_s: float = 1800.0) -> pd.DataFrame:
+    """One row per consecutive same-trip run of R2 observations."""
+    r2 = r2.dropna(subset=["trip_id", "route_id"]).copy()
+    r2["trip_id"] = r2["trip_id"].astype(str)
+    r2["route_id"] = r2["route_id"].astype(str)
+    r2 = r2[(r2["trip_id"] != "") & (r2["route_id"] != "")]
+
+    rows = []
+    for veh, g in r2.groupby("vehicle_id"):
+        g = g.sort_values("ts")
+        key = g["trip_id"] + "|" + g["route_id"] + "|" + g["start_date"].astype(str)
+        gap = g["ts"].diff().dt.total_seconds().fillna(0)
+        new_run = (key != key.shift()) | (gap > max_r2_gap_s)
+        for _, run in g.groupby(new_run.cumsum()):
+            rows.append({
+                "veh_id": veh,
+                "trip_id": run["trip_id"].iloc[0],
+                "route_id": run["route_id"].iloc[0],
+                "start_date": str(run["start_date"].iloc[0]),
+                "t_lo": run["ts"].iloc[0],
+                "t_hi": run["ts"].iloc[-1],
+                "n_r2": len(run),
+            })
+    w = pd.DataFrame(rows)
+    w["duration_s"] = (w["t_hi"] - w["t_lo"]).dt.total_seconds()
+    w["trip_key"] = (
+        w["veh_id"] + "_" + w["trip_id"].str.replace(r"\W", "", regex=True)
+        + "_" + w["t_lo"].dt.strftime("%Y%m%d%H%M%S")
+    )
+    return w.sort_values(["veh_id", "t_lo"]).reset_index(drop=True)
+
+
+# ------------------------------------------------------------- x cleaning
+
+def clean_dist_along(t_s: np.ndarray, x: np.ndarray,
+                     on_route: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Paper-style outlier pass on matched distance-along-route.
+
+    Returns (monotone x, keep mask). Points that are off-route, imply a
+    forward speed beyond MAX_FWD_MPS vs the running front, or backtrack
+    more than MAX_BACK_M are dropped; remaining small backtracks are
+    clamped forward (running max) so x is non-decreasing. ``t_s`` are the
+    ping times in seconds (any epoch), used for the implied-speed rule.
+    """
+    n = len(x)
+    keep = np.zeros(n, dtype=bool)
+    front = -np.inf
+    t_front = 0.0
+    for i in range(n):
+        if not on_route[i] or not np.isfinite(x[i]):
+            continue
+        if front == -np.inf:
+            keep[i] = True
+            front, t_front = x[i], t_s[i]
+            continue
+        dt = max(t_s[i] - t_front, 1.0)
+        if x[i] - front > MAX_FWD_MPS * dt or front - x[i] > MAX_BACK_M:
+            continue
+        keep[i] = True
+        if x[i] > front:
+            front, t_front = x[i], t_s[i]
+    xk = np.maximum.accumulate(x[keep])
+    return xk, keep
+
+
+# ------------------------------------------------------------- build
 
 @dataclass
 class Trip:
     trip_key: str
-    bus_id: str
+    veh_id: str
     trip_id: str
     route_id: str
     shape_id: str
-    t0: pd.Timestamp            # wall clock of first kept ping (naive Chicago)
-    pings: pd.DataFrame         # columns: ping_dt, latitude, longitude
-    door_events: pd.DataFrame   # this trip's AVL rows (door events, parsed)
+    pings: pd.DataFrame          # stream_idx, ping_dt, x_m, v_mps, latitude, longitude
+    doors: pd.DataFrame          # event_dt, dwell_s, stop_id, event_type, x_door_m
+    signal_x: np.ndarray = field(default_factory=lambda: np.array([]))
     qc: dict = field(default_factory=dict)
 
 
-def _trim_stationary_ends(g: pd.DataFrame, move_m: float = 30.0,
-                          keep_s: float = 20.0) -> pd.DataFrame:
-    """Trim terminal layover: drop leading/trailing spans where the bus hasn't
-    moved more than ``move_m`` from its resting point, keeping ``keep_s`` of
-    lead-in/out so the reconstruction still sees the stationary edge."""
-    lat = np.radians(g["latitude"].to_numpy())
-    lon = np.radians(g["longitude"].to_numpy())
-    # meters from first / last position (equirectangular; fine at city scale)
-    def dist_from(i0: int) -> np.ndarray:
-        dlat = lat - lat[i0]
-        dlon = (lon - lon[i0]) * np.cos(lat[i0])
-        return 6_371_000.0 * np.hypot(dlat, dlon)
-
-    moved = np.where(dist_from(0) > move_m)[0]
-    i_lo = int(moved[0]) if len(moved) else 0
-    moved = np.where(dist_from(len(g) - 1) > move_m)[0]
-    i_hi = int(moved[-1]) if len(moved) else len(g) - 1
-
-    t = g["ping_dt"]
-    lo_t = t.iloc[i_lo] - pd.Timedelta(seconds=keep_s)
-    hi_t = t.iloc[i_hi] + pd.Timedelta(seconds=keep_s)
-    return g[(t >= lo_t) & (t <= hi_t)].reset_index(drop=True)
+def load_door_csv() -> pd.DataFrame:
+    df = pd.read_csv(C.DOOR_CSV, dtype=str, keep_default_na=False)
+    df["event_dt"] = pd.to_datetime(df["event_time"], format="%Y-%m-%d %H:%M:%S.%f")
+    df["dwell_s"] = pd.to_numeric(df["dwell_time"], errors="coerce").fillna(0.0).clip(lower=0)
+    df["bus_id"] = df["bus_id"].astype(str)
+    # AVL-reported door location; 0.0 means "no fix" -> NaN
+    for c in ("latitude", "longitude"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+        df.loc[df[c] == 0.0, c] = np.nan
+    return df
 
 
 def build_trips(verbose: bool = True) -> list[Trip]:
-    """Slice the dense stream into QC'd revenue trips with chosen shapes."""
+    stream = load_vtrak_stream()
+    windows = r2_trip_windows(load_r2_rows())
     avl = load_door_csv()
-    trips = trip_table(avl)
-    pings = load_highfreq_pings()
     route_shapes = route_shape_map(C.GTFS)
+    from analysis.comparison import matcher_for
+    from dataio.intersections import load_intersections
+    from core.control_points import SIGNALIZED_CONTROL_TYPES
+    intersections = load_intersections(C.INTERSECTIONS)
 
     out: list[Trip] = []
     skipped: dict[str, int] = {}
@@ -146,78 +213,97 @@ def build_trips(verbose: bool = True) -> list[Trip]:
     def skip(reason: str):
         skipped[reason] = skipped.get(reason, 0) + 1
 
-    for row in trips.itertuples(index=False):
-        if row.duration_s > C.MAX_TRIP_H * 3600 or row.duration_s < 300:
+    for w in windows.itertuples(index=False):
+        if not (C.MIN_TRIP_S <= w.duration_s <= C.MAX_TRIP_S):
             skip("bad_duration")
             continue
-        pad = pd.Timedelta(seconds=C.WINDOW_PAD_S)
-        g = pings[
-            (pings["veh_id"] == row.bus_id)
-            & (pings["ping_dt"] >= row.t_lo - pad)
-            & (pings["ping_dt"] <= row.t_hi + pad)
-        ].reset_index(drop=True)
+        s = stream[stream["veh_id"] == w.veh_id]
+        g = s[(s["ping_dt"] >= w.t_lo) & (s["ping_dt"] <= w.t_hi)].reset_index(drop=True)
         if len(g) < C.MIN_PINGS:
             skip("too_few_pings")
             continue
 
-        dt = g["ping_dt"].diff().dt.total_seconds().iloc[1:]
-        if dt.median() > C.MAX_MEDIAN_CADENCE_S or dt.max() > C.MAX_GAP_S:
-            skip("cadence_gap")
+        # completeness: full VTRAK coverage of the R2 window
+        t = g["ping_dt"]
+        edge_lo = (t.iloc[0] - w.t_lo).total_seconds()
+        edge_hi = (w.t_hi - t.iloc[-1]).total_seconds()
+        max_gap = t.diff().dt.total_seconds().iloc[1:].max()
+        if edge_lo > C.MAX_VTRAK_GAP_S or edge_hi > C.MAX_VTRAK_GAP_S \
+                or max_gap > C.MAX_VTRAK_GAP_S:
+            skip("incomplete_vtrak")
             continue
 
-        g = _trim_stationary_ends(g)
-        if len(g) < C.MIN_PINGS:
-            skip("too_few_pings_after_trim")
-            continue
-
-        # Shape the pings actually follow (handles direction + GTFS variants).
-        df_ll = pd.DataFrame({"latitude": g["latitude"], "longitude": g["longitude"]})
-        shape_id = choose_shape(df_ll, row.route_id, route_shapes, hint_shape="")
+        shape_id = choose_shape(
+            g[["latitude", "longitude"]], w.route_id, route_shapes, hint_shape="")
         if not shape_id:
             skip("no_shape")
             continue
-
-        # QC the match on the chosen shape.
-        from analysis.comparison import matcher_for  # cached import
         try:
             res = matcher_for(shape_id).match(
                 g["latitude"].to_numpy(), g["longitude"].to_numpy())
         except KeyError:
             skip("shape_not_in_gtfs")
             continue
-        on = res.on_route
-        frac = float(on.mean())
-        net = float(res.dist_along_m[on][-1] - res.dist_along_m[on][0]) if on.sum() >= 2 else 0.0
-        if frac < C.MIN_ON_ROUTE_FRAC or net < C.MIN_FORWARD_M:
+        frac = float(res.on_route.mean())
+        if frac < C.MIN_ON_ROUTE_FRAC:
             skip("poor_match")
             continue
 
-        door = avl[
-            (avl["bus_id"] == row.bus_id)
-            & (avl["trip_id"] == row.trip_id)
-            & (avl["trip_start_time"] == row.trip_start_time)
-            & avl["event_type"].isin(DOOR_EVENT_TYPES)
-        ].copy()
+        t_s = g["ping_dt"].astype("datetime64[ns]").astype("int64").to_numpy() / 1e9
+        x_clean, keep = clean_dist_along(t_s, res.dist_along_m, res.on_route)
+        g = g[keep].reset_index(drop=True)
+        g["x_m"] = x_clean
+        if len(g) < C.MIN_PINGS:
+            skip("too_few_pings_after_clean")
+            continue
+        net = float(g["x_m"].iloc[-1] - g["x_m"].iloc[0])
+        if net < C.MIN_FORWARD_M:
+            skip("short_forward")
+            continue
+
+        doors = avl[
+            (avl["bus_id"] == w.veh_id)
+            & avl["event_type"].isin(C.DOOR_EVENT_TYPES)
+            & (avl["event_dt"] >= w.t_lo)
+            & (avl["event_dt"] <= w.t_hi)
+        ][["event_dt", "dwell_s", "stop_id", "event_type",
+           "latitude", "longitude"]].reset_index(drop=True)
+
+        # AVL door location -> distance along the same shape (M3b)
+        doors["x_door_m"] = np.nan
+        has_ll = doors["latitude"].notna() & doors["longitude"].notna()
+        if has_ll.any():
+            dres = matcher_for(shape_id).match(
+                doors.loc[has_ll, "latitude"].to_numpy(),
+                doors.loc[has_ll, "longitude"].to_numpy())
+            xd = np.where(dres.on_route, dres.dist_along_m, np.nan)
+            doors.loc[has_ll, "x_door_m"] = xd
+
+        # signalized control points within the trip's traversed x range (M5)
+        x_lo, x_hi = float(g["x_m"].iloc[0]), float(g["x_m"].iloc[-1])
+        sig = np.array(sorted(
+            cp.dist_along_route_m for cp in intersections.get(shape_id, [])
+            if cp.control_type in SIGNALIZED_CONTROL_TYPES
+            and x_lo + C.SIGNAL_ZONE_M <= cp.dist_along_route_m <= x_hi
+        ))
 
         out.append(Trip(
-            trip_key=row.trip_key,
-            bus_id=row.bus_id,
-            trip_id=row.trip_id,
-            route_id=row.route_id,
-            shape_id=shape_id,
-            t0=g["ping_dt"].iloc[0],
-            pings=g,
-            door_events=door,
+            trip_key=w.trip_key, veh_id=w.veh_id, trip_id=w.trip_id,
+            route_id=w.route_id, shape_id=shape_id,
+            pings=g[["stream_idx", "ping_dt", "x_m", "v_mps", "latitude", "longitude"]],
+            doors=doors,
+            signal_x=sig,
             qc={"n_pings": len(g), "on_route_frac": round(frac, 3),
                 "net_forward_m": round(net, 1),
-                "median_cadence_s": float(dt.median())},
+                "duration_s": round(w.duration_s, 0),
+                "n_door_events": len(doors),
+                "kept_frac": round(float(keep.mean()), 3)},
         ))
-        if verbose:
-            print(f"  ✓ {row.trip_key}: rt {row.route_id} shape {shape_id} "
-                  f"{len(g)} pings, {frac:.0%} on-route, {net/1000:.1f} km")
+        if verbose and len(out) % 50 == 0:
+            print(f"  ... {len(out)} trips kept so far")
 
     if verbose:
-        print(f"\n{len(out)} trips kept; skipped: {skipped}")
+        print(f"\n{len(out)} complete trips kept; skipped: {skipped}")
     return out
 
 
@@ -225,24 +311,24 @@ def build_trips(verbose: bool = True) -> list[Trip]:
 
 def cache_trips(trips: list[Trip]) -> None:
     C.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    meta = []
-    ping_frames = []
-    door_frames = []
+    meta, ping_frames, door_frames, sig_frames = [], [], [], []
     for tr in trips:
         meta.append({
-            "trip_key": tr.trip_key, "bus_id": tr.bus_id, "trip_id": tr.trip_id,
-            "route_id": tr.route_id, "shape_id": tr.shape_id,
-            "t0": tr.t0.isoformat(), **tr.qc,
+            "trip_key": tr.trip_key, "veh_id": tr.veh_id, "trip_id": tr.trip_id,
+            "route_id": tr.route_id, "shape_id": tr.shape_id, **tr.qc,
         })
         p = tr.pings.copy()
         p["trip_key"] = tr.trip_key
         ping_frames.append(p)
-        d = tr.door_events.copy()
+        d = tr.doors.copy()
         d["trip_key"] = tr.trip_key
         door_frames.append(d)
+        sig_frames.append(pd.DataFrame(
+            {"trip_key": tr.trip_key, "x_sig_m": tr.signal_x}))
     (C.CACHE_DIR / "trips.json").write_text(json.dumps(meta, indent=1))
     pd.concat(ping_frames, ignore_index=True).to_parquet(C.CACHE_DIR / "trip_pings.parquet")
     pd.concat(door_frames, ignore_index=True).to_parquet(C.CACHE_DIR / "trip_doors.parquet")
+    pd.concat(sig_frames, ignore_index=True).to_parquet(C.CACHE_DIR / "trip_signals.parquet")
     print(f"cached {len(trips)} trips -> {C.CACHE_DIR}")
 
 
@@ -250,16 +336,19 @@ def load_cached_trips() -> list[Trip]:
     meta = json.loads((C.CACHE_DIR / "trips.json").read_text())
     pings = pd.read_parquet(C.CACHE_DIR / "trip_pings.parquet")
     doors = pd.read_parquet(C.CACHE_DIR / "trip_doors.parquet")
+    sigs = pd.read_parquet(C.CACHE_DIR / "trip_signals.parquet")
+    qc_keys = ("n_pings", "on_route_frac", "net_forward_m", "duration_s",
+               "n_door_events", "kept_frac")
     out = []
     for m in meta:
         k = m["trip_key"]
         out.append(Trip(
-            trip_key=k, bus_id=m["bus_id"], trip_id=m["trip_id"],
+            trip_key=k, veh_id=m["veh_id"], trip_id=m["trip_id"],
             route_id=m["route_id"], shape_id=m["shape_id"],
-            t0=pd.Timestamp(m["t0"]),
             pings=pings[pings["trip_key"] == k].drop(columns="trip_key").reset_index(drop=True),
-            door_events=doors[doors["trip_key"] == k].drop(columns="trip_key").reset_index(drop=True),
-            qc={x: m[x] for x in ("n_pings", "on_route_frac", "net_forward_m", "median_cadence_s")},
+            doors=doors[doors["trip_key"] == k].drop(columns="trip_key").reset_index(drop=True),
+            signal_x=sigs.loc[sigs["trip_key"] == k, "x_sig_m"].to_numpy(),
+            qc={x: m[x] for x in qc_keys},
         ))
     return out
 
