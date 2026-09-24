@@ -131,7 +131,7 @@ _CTA = CityConfig(
     noaa_station="USW00094846",  # Chicago O'Hare GHCN-D
     deadhead_route_ids=("992",),
     has_door_data=True,
-    pbf_file="routing-valhalla/illinois-260728.osm.pbf",
+    pbf_file="routing-valhalla/chicago/illinois-260728.osm.pbf",
     valhalla_url="http://localhost:8002",
 )
 
@@ -163,7 +163,7 @@ _MBTA = CityConfig(
     noaa_station="USW00014739",  # Boston Logan GHCN-D
     exclude_route_prefixes=("Shuttle",),
     has_door_data=False,  # no bus-state extract for MBTA
-    pbf_file="routing-valhalla-ma/massachusetts-latest.osm.pbf",
+    pbf_file="routing-valhalla/boston/massachusetts-latest.osm.pbf",
     valhalla_url="http://localhost:8003",
 )
 
@@ -192,7 +192,7 @@ _TRANSLINK = CityConfig(
     noaa_station="",
     holiday_region="CA-BC",
     has_door_data=False,  # no APC/door extract for TransLink
-    pbf_file="routing-valhalla-bc/british-columbia-260825.osm.pbf",
+    pbf_file="routing-valhalla/bc/british-columbia-260825.osm.pbf",
     valhalla_url="http://localhost:8004",
     gtfs_history_dir="caches/gtfs_history/translink",
 )

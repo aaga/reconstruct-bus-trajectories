@@ -1,8 +1,11 @@
 # Network-wide segment-speed analysis
 
 Full-network (all routes, all segments, all corridors) speed/delay analysis
-for a city's bus network. Chicago CTA is the first city; everything
-city-specific lives in `src/dataio/cities.py`.
+for a city's bus network. Chicago CTA is the primary city (2024-01 →
+present); TransLink Vancouver is fully onboarded (2026, R2-fed, no door
+data), and MBTA Boston has partial payloads (city tab hidden 2026-08-24
+while its pipeline lags CTA's). Everything city-specific lives in
+`src/dataio/cities.py`.
 
 **CTA now runs off the local high-resolution AVL export, not the R2 scrape**
 (2026-08-15), and since 2026-08-17 covers **2024-01-01 → 2026-08** — 957
@@ -39,7 +42,9 @@ outputs/network/<city>/
 │   └── service_date=YYYY-MM-DD/route=<id>.parquet
 ├── traversals_index.jsonl  per-unit stats + reject accounting
 ├── freeflow.json           per-segment p5 late-night free-flow (+fallbacks)
-├── date_attrs.json         per-date dow/daytype/season/pick/weather
+├── date_attrs.json         per-date dow/daytype/season/weather (+ "pick" =
+│                           GTFS-era label; the schedule-pick config was
+│                           dropped 2026-08 — eras are the real boundaries)
 └── areas.json              ranked areas-of-interest contexts
 
 dashboard/data/network/     payloads for the dashboard "Network" tab
@@ -50,13 +55,9 @@ dashboard/data/network/     payloads for the dashboard "Network" tab
 ## Pipeline (run in order)
 
 ```bash
-# 0. One-time setup in a worktree: caches/ and data/ are gitignored, symlink
-#    them from the main checkout (registry + archive cache live there):
-ln -sfn <main-checkout>/caches caches
-ln -sfn <main-checkout>/data data
-#    and, if you want the Single/Average trip tabs working in the worktree's
-#    dashboard, copy their gitignored payloads too:
-cp <main-checkout>/dashboard/data/*.json dashboard/data/
+# (If running from a git worktree: caches/ and data/ are gitignored — symlink
+#  them from the main checkout with `ln -sfn <main-checkout>/caches caches`
+#  etc., and copy dashboard/data/*.json for the Single/Average trip tabs.)
 
 # 1. Segment registry (rebuild after any intersections-cache change)
 #    (corridors.py exists but is disabled/unwired for now — 2026-07 decision)
@@ -104,8 +105,8 @@ PYTHONPATH=src uv run python analysis/network/build_payloads.py --city cta
 PYTHONPATH=src uv run python analysis/network/areas_of_interest.py --city cta
 cp outputs/network/cta/areas.json dashboard/data/network/areas.json
 
-# 6. Serve
-cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
+# 6. Serve (Range-capable — required by the Explore tab; see below)
+uv run python dashboard/serve.py --port 8931   # open http://localhost:8931
 ```
 
 ## Key design points
@@ -130,8 +131,8 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
   trip_ids (BusTime tatripid) do NOT join GTFS trips.txt. Trips are matched
   against all candidate shapes of their route and scored
   `frac_on_route × frac_monotone`; short-turns tie-break to the shortest
-  containing shape. This also survives GTFS pick changes: new-pick trips still
-  match old-pick shape geometry unless the street routing itself changed.
+  containing shape. This also survives GTFS schedule changes: new-feed trips
+  still match old-feed shape geometry unless the street routing itself changed.
 - **Traversals** (`run_reconstruct.py`) are the core intermediate: one row per
   (trip, segment) with enter/exit times from full LOCREG-PCHIP reconstruction
   (Eq 3.3 "last time at x", vectorized in
@@ -159,7 +160,7 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
   segment; thin segments fall back p10 → road-class prior (`freeflow.json`
   records the method per segment).
 - **Aggregation** (`stats.py` + `build_payloads.py`): per
-  (seg, route, pick, season, dow, weather, period) bin we store n / Σdelay /
+  (seg, route, season, dow, weather, period) bin we store n / Σdelay /
   M2 / 16-bucket delay-ratio histogram. Means/variances merge exactly
   (Welford); medians/p90s come from summed histograms (±~4%). The JS decoder
   (`dashboard/app/network_data.js`) mirrors `stats.py`; `golden.json` keeps
@@ -167,9 +168,13 @@ cd dashboard && python3 -m http.server 8931   # open http://localhost:8931
 - **AOI rankings** (`areas_of_interest.py`) use EXACT duckdb quantiles over
   raw traversals — never the histogram approximation. Priority =
   shrunk robust z × (1 + 0.5·log1p(buses/hour)); unweighted also emitted.
-- **Pick boundaries** are configured in `cities.py` (CTA: service_id prefix
-  "678" = pick number; spring26 = 2026-04-15, summer26 = 2026-07-01).
-  Verify with `date_attrs.py --pick-report` whenever the GTFS zip updates.
+- **Schedule picks were dropped** (2026-08): 36 GTFS eras over the 2.5-year
+  window made a hand-configured pick list useless as a filter, so payloads
+  aggregate without a pick dimension and `date_attrs` labels each date with
+  its GTFS era instead. `date_attrs.py --service-report` prints
+  scheduled-trips-per-date service ramps when choosing date filters or a
+  feed vintage. Holiday daytypes are region-keyed (`holiday_region`: US
+  federal / CA-BC statutory).
 - **seg_id stability**: every artifact embeds the sha256 of
   `intersections.json`; `build_payloads.py` refuses mismatched inputs. If the
   intersections cache is regenerated, rebuild EVERYTHING from step 1.
@@ -196,7 +201,7 @@ dashboard/data/network/facts/
                                       period, mvm, dir); measures are all
                                       ADDITIVE so a coarser slice is a SUM
   dim_segments.parquet   + n_near_side / n_far_side for side filtering
-  dim_dates.parquet      dow, daytype, season, weather, pick
+  dim_dates.parquet      dow, daytype, season, weather, pick (GTFS-era label)
 ```
 
 The dashboard's **Network → Explore** tab loads DuckDB-WASM lazily and runs
@@ -211,8 +216,11 @@ uv run python dashboard/serve.py --port 8931     # NOT python -m http.server
 ## Adding a city
 
 1. Add a `CityConfig` in `src/dataio/cities.py` (R2 agency name, tz, GTFS
-   zip path, bandwidth for the feed's ping cadence, periods, picks, NOAA
-   station).
+   zip path, bandwidth for the feed's ping cadence, periods, NOAA station,
+   `holiday_region`).
 2. Build the intersections + way caches for its GTFS shapes
    (`record-a-ride/scripts/build_all_intersections.py`, needs Valhalla).
+   Local Valhalla containers live under `routing-valhalla/<city>/`
+   (`chicago/`, `bc/`, `boston/`) — one OSM extract + tile set per area,
+   pointed at by the city's `pbf_file` / `valhalla_url`.
 3. Run the pipeline above with `--city <id>`.
