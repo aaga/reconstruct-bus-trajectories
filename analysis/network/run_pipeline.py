@@ -14,6 +14,7 @@ Stages (door stages auto-skip when ``city.has_door_data`` is False):
     intersections   PBF walk → control points          (stage 2)
     way_geoms       PBF → OSM way geometries
     registry        canonical signal-to-signal segments
+    head_trim_check whether shape choice drops pre-departure pings
     traversals      86-day reconstruction batch
     door_join       APC sidecar                        [door cities only]
     delay_events    event extraction batch             [door cities only]
@@ -23,6 +24,7 @@ Stages (door stages auto-skip when ``city.has_door_data`` is False):
     movements       THRU/LEFT/RIGHT per (segment, shape)
     ping_density    raw archive pings per 10 ft bucket
     distributions   per-segment delay-location files   [door cities only]
+    headway_cv      per-segment headway-CV payloads    [cities with cv_routes]
     areas           areas-of-interest rankings
 
 Usage:
@@ -77,6 +79,10 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
             *((["--pbf", str(pbf)]) if pbf else []),
         ]),
         ("registry", ["uv", "run", "python", f"{NET}/registry.py", "--city", c]),
+        # Measures whether the pre-departure head trim helps this feed and
+        # writes the verdict run_reconstruct reads (no-op verdict for CTA).
+        ("head_trim_check", ["uv", "run", "python",
+                             f"{NET}/head_trim_check.py", "--city", c]),
         ("traversals", [
             "uv", "run", "python", f"{NET}/run_reconstruct.py", "--city", c,
             "--workers", str(workers),
@@ -90,7 +96,11 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
     # events (all 'nd') powering the "delay locations" distribution view.
     stages.append(
         ("delay_events", ["uv", "run", "python", f"{NET}/delay_events.py",
-                          "--city", c, "--workers", str(workers)]))
+                          "--city", c, "--workers", str(workers),
+                          # traj-speed powers the avg-speed overlay and is
+                          # where headway-CV crossings come from
+                          "--traj-speed",
+                          *(["--headway-cv"] if city.cv_routes else [])]))
     stages += [
         ("freeflow", ["uv", "run", "python", f"{NET}/freeflow.py", "--city", c]),
         ("date_attrs", ["uv", "run", "python", f"{NET}/date_attrs.py", "--city", c]),
@@ -112,6 +122,10 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
     stages.append(
         ("distributions", ["uv", "run", "python",
                            f"{NET}/build_distributions.py", "--city", c]))
+    if city.cv_routes:
+        stages.append(
+            ("headway_cv", ["uv", "run", "python", f"{NET}/build_cv.py",
+                            "--city", c]))
     stages.append(
         ("areas", ["uv", "run", "python", f"{NET}/areas_of_interest.py",
                    "--city", c]))
