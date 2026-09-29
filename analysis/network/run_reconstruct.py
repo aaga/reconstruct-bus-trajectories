@@ -45,6 +45,8 @@ from analysis.network.assign_shapes import (  # noqa: E402
     LOW_CONFIDENCE_SCORE,
     Assignment,
     choose_shape,
+    choose_shape_head_trimmed,
+    reverse_edge_trim,
     monotone_frac,
 )
 from core.decompose.travel_time import last_times_at_boundaries  # noqa: E402
@@ -163,6 +165,10 @@ def _init_worker(city_id: str) -> None:
     reg_path = REPO / "outputs" / "network" / city.city_id / "segment_registry.json"
     reg = json.loads(reg_path.read_text())
     _G["city"] = city
+    # Pre-departure head trim for shape choice, if head_trim_check.py
+    # measured it to help this city's feed (2026-09-24; missing = off).
+    from analysis.network.head_trim_check import load_verdict
+    _G["head_trim"] = load_verdict(city)
     _G["registry_meta"] = reg["meta"]
     _G["canonical_shapes"] = reg["shapes"]
     _G["shapes"] = reg["shapes"]  # shape_id -> {route_id, direction, seg_bounds}
@@ -312,6 +318,21 @@ def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
 # Per-trip processing
 # --------------------------------------------------------------------------
 
+def _trim_reverse_edges(t_on, d_on, v_on):
+    """Drop the reversed approach/drift at the trace edges (reverse_edge_trim)."""
+    lo, hi = reverse_edge_trim(d_on)
+    return t_on[lo:hi], d_on[lo:hi], (v_on[lo:hi] if v_on is not None else None)
+
+
+def _choose(trip: pd.DataFrame, lats, lons, matchers, lens) -> Assignment | str:
+    """choose_shape, with the city's measured pre-departure head trim."""
+    if _G.get("head_trim") and "current_stop_sequence" in trip.columns:
+        return choose_shape_head_trimmed(
+            lats, lons, trip["current_stop_sequence"].to_numpy(),
+            matchers, lens)
+    return choose_shape(lats, lons, matchers, lens)
+
+
 def _process_trip(
     trip: pd.DataFrame, date_iso: str, rejects: Counter
 ) -> list[dict] | None:
@@ -341,7 +362,7 @@ def _process_trip(
     matchers = {sid: _matcher(sid)[0] for sid in candidates}
     lens = {sid: _matcher(sid)[1] for sid in candidates}
 
-    got = choose_shape(lats, lons, matchers, lens)
+    got = _choose(trip, lats, lons, matchers, lens)
     if isinstance(got, str):
         rejects[got] += 1
         return None
@@ -352,6 +373,7 @@ def _process_trip(
     t_on = t_sec_all[on]
     d_on = d_all[on]
     v_on = v_all[on] if v_all is not None else None
+    t_on, d_on, v_on = _trim_reverse_edges(t_on, d_on, v_on)
 
     if monotone_frac(d_on) < MIN_MONOTONE:
         rejects["not_monotone"] += 1

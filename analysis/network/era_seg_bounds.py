@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -120,8 +121,48 @@ def _longest_chain(nodes: list[tuple[int, float]], pairs: dict) -> list:
     return chain[::-1]
 
 
+def _all_chains(nodes: list[tuple[int, float]], pairs: dict) -> list[list]:
+    """Disjoint canonical chains covering the shape, in along-shape order.
+
+    One missing boundary node breaks a chain; keeping only the longest run
+    dropped whole halves of routes (MBTA route 39 lost its first 11 km,
+    2026-09-24). So take the longest chain, then recurse into the candidates
+    strictly before its start and strictly after its end.
+    """
+    chain = _longest_chain(nodes, pairs)
+    if len(chain) < 2:
+        return []
+    lo, hi = chain[0][1], chain[-1][1]
+    before = [n for n in nodes if n[1] < lo]
+    after = [n for n in nodes if n[1] > hi]
+    return _all_chains(before, pairs) + [chain] + _all_chains(after, pairs)
+
+
+def _geom_key(poly) -> str:
+    return hashlib.md5(np.round(np.asarray(poly, float), 6).tobytes()).hexdigest()
+
+
+def canonical_by_geom(city, reg) -> dict[str, dict]:
+    """polyline hash -> canonical registry shape record (exact reuse)."""
+    gz = city.resolve(city.gtfs_zip)
+    out = {}
+    for sid, rec in reg["shapes"].items():
+        try:
+            poly, _ = load_gtfs_shape_with_dist(gz, sid)
+        except Exception:
+            continue
+        out[_geom_key(poly)] = rec
+    return out
+
+
 def build_era(city, gtfs_zip: Path, pairs, coord, out_path: Path | None,
-              shape_ids=None, quiet=False) -> dict:
+              shape_ids=None, quiet=False, reuse: dict | None = None) -> dict:
+    """Project canonical boundaries onto an era's shapes.
+
+    ``reuse`` (from :func:`canonical_by_geom`) short-circuits shapes whose
+    polyline is identical to a canonical one: their registry seg_bounds are
+    copied verbatim rather than re-derived by projection.
+    """
     from scipy.spatial import cKDTree
 
     node_ids = np.array(sorted(coord))
@@ -142,6 +183,16 @@ def build_era(city, gtfs_zip: Path, pairs, coord, out_path: Path | None,
         poly = np.asarray(poly, float)
         if len(poly) < 2:
             continue
+        hit_rec = reuse.get(_geom_key(poly)) if reuse else None
+        if hit_rec is not None:
+            m_ = meta.get(sid, {})
+            out[sid] = {
+                "route_id": m_.get("route_id") or hit_rec["route_id"],
+                "direction": m_.get("direction") or hit_rec.get("direction", ""),
+                "seg_seq": list(hit_rec["seg_seq"]),
+                "seg_bounds": [list(b) for b in hit_rec["seg_bounds"]],
+            }
+            continue
         cum = (np.asarray(dist, float) if dist is not None else None)
         if cum is None:
             from core.mapmatch.shape_snap import equirect_cumulative_m
@@ -160,14 +211,15 @@ def build_era(city, gtfs_zip: Path, pairs, coord, out_path: Path | None,
         hit = np.isfinite(d)
         cand = sorted(((int(node_ids[j]), float(ds[idx[j]])) for j in np.nonzero(hit)[0]),
                       key=lambda r: r[1])
-        chain = _longest_chain(cand, pairs)
-        if len(chain) < 2:
+        chains = _all_chains(cand, pairs)
+        if not chains:
             continue
         bounds, seq = [], []
-        for a, b in zip(chain, chain[1:]):
-            seg_id = pairs[(a[0], b[0])]
-            bounds.append([seg_id, round(a[1], 2), round(b[1], 2)])
-            seq.append(seg_id)
+        for chain in chains:
+            for a, b in zip(chain, chain[1:]):
+                seg_id = pairs[(a[0], b[0])]
+                bounds.append([seg_id, round(a[1], 2), round(b[1], 2)])
+                seq.append(seg_id)
         m_ = meta.get(sid, {})
         out[sid] = {
             "route_id": m_.get("route_id", ""),
@@ -217,7 +269,8 @@ def main() -> int:
     if a.validate:
         validate(city)
         return 0
-    pairs, coord, _ = _canonical(city)
+    pairs, coord, reg = _canonical(city)
+    reuse = canonical_by_geom(city, reg)
     eras = ([a.era] if a.era else
             sorted(gtfs_history.all_eras(city)) if a.all_eras else [])
     if not eras:
@@ -234,7 +287,7 @@ def main() -> int:
             print(f"{e}: zip missing, skipping")
             continue
         t0 = time.time()
-        got = build_era(city, z, pairs, coord, out, quiet=True)
+        got = build_era(city, z, pairs, coord, out, quiet=True, reuse=reuse)
         nseg = sum(len(v["seg_bounds"]) for v in got.values())
         print(f"{e}: {len(got):,} shapes, {nseg:,} seg_bounds "
               f"({time.time() - t0:.0f}s)", flush=True)

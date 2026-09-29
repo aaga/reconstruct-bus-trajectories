@@ -53,6 +53,7 @@ import os
 import sys
 import time
 from collections import Counter, defaultdict
+from datetime import date
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -65,9 +66,11 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
-from analysis.network.assign_shapes import Assignment, choose_shape, monotone_frac  # noqa: E402
+from analysis.network.assign_shapes import Assignment, monotone_frac  # noqa: E402
 from analysis.network.run_reconstruct import (  # noqa: E402
+    _choose,
     _set_era,
+    _trim_reverse_edges,
     _G,
     _init_worker,
     _matcher,
@@ -77,6 +80,7 @@ from analysis.network.run_reconstruct import (  # noqa: E402
     MIN_PINGS,
     TERMINAL_M,
 )
+from analysis.network.date_attrs import daytype_of  # noqa: E402
 from core.decompose.events import AbsoluteSpeedThreshold, detect_events  # noqa: E402
 from core.smooth import fit_trajectory  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
@@ -133,14 +137,19 @@ EVENTS_SCHEMA = pa.schema(
 
 # Headway CV (2026-08-24): per 10 ft bucket, moments of the headway between
 # consecutive buses of the SAME ROUTE crossing the bucket midpoint. CV needs
-# only (n, sum, sum^2), all additive, so no per-crossing storage. Scope: the
-# CTA frequent network from 2026-01-01, within its operating hours.
-CV_ROUTES = {"9", "12", "81", "72", "4", "J14", "20", "34", "47", "49", "53",
-             "54", "55", "60", "63", "66", "77", "79", "82", "95"}
-# frequent-network scope; override for targeted backfills
-CV_START = os.environ.get("CV_START_OVERRIDE", "2026-01-01")
+# only (n, sum, sum^2), all additive, so no per-crossing storage. Routes,
+# start date and operating-hour windows are per city (CityConfig.cv_*,
+# 2026-09-24); CV_START_OVERRIDE still forces a start for targeted backfills.
 CV_MAX_HEADWAY_S = 3600.0
-CV_HOURS = {True: (6, 21), False: (9, 21)}   # weekday -> [6,21), weekend [9,21)
+
+
+def _cv_route(city: CityConfig, route_id: str, date_iso: str) -> bool:
+    start = os.environ.get("CV_START_OVERRIDE") or city.cv_start
+    return (str(route_id) in city.cv_routes
+            and (start is None or date_iso >= start)
+            and daytype_of(date.fromisoformat(date_iso), city.holiday_region)
+            in city.cv_daytypes)
+
 
 CV_SCHEMA = pa.schema(
     [
@@ -376,7 +385,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     else:
         matchers = {sid: _matcher(sid)[0] for sid in candidates}
         lens = {sid: _matcher(sid)[1] for sid in candidates}
-        got = choose_shape(lats, lons, matchers, lens)
+        got = _choose(trip, lats, lons, matchers, lens)
         if isinstance(got, str):
             rejects[got] += 1
             return None
@@ -387,6 +396,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     t_on = t_sec_all[on]
     d_on = asg.match.dist_along_m[on]
     v_on = v_all[on] if v_all is not None else None
+    t_on, d_on, v_on = _trim_reverse_edges(t_on, d_on, v_on)
     if monotone_frac(d_on) < MIN_MONOTONE:
         rejects["not_monotone"] += 1
         return None
@@ -776,8 +786,7 @@ def process_date(args):
         for route_id, route_df in df.groupby("route_id", sort=True):
             out_ev = ev_dir / f"route={route_id}.parquet"
             out_su = su_dir / f"route={route_id}.parquet"
-            cv_missing = (_G.get("cv_on") and str(route_id) in CV_ROUTES
-                          and date_iso >= CV_START
+            cv_missing = (_G.get("cv_on") and _cv_route(city, route_id, date_iso)
                           and not (base / "headway_cv"
                                    / f"service_date={date_iso}"
                                    / f"route={route_id}.parquet").exists())
@@ -793,8 +802,7 @@ def process_date(args):
             ts_n: Counter = Counter()
             ts_dt: Counter = Counter()
             cv_x: dict[tuple, list] = {}
-            cv_want = (_G.get("cv_on") and str(route_id) in CV_ROUTES
-                       and date_iso >= CV_START)
+            cv_want = _G.get("cv_on") and _cv_route(city, route_id, date_iso)
             n_kept = 0
             for _, trip in route_df.groupby(["trip_id", "vehicle_id"], sort=False):
                 got = _process_trip(trip, date_iso, doors, rejects, assigned,
@@ -817,7 +825,8 @@ def process_date(args):
             cv_rows_out: list[dict] = []
             if cv_want and cv_x:
                 wk = pd.Timestamp(date_iso).weekday() < 5
-                h_lo, h_hi = CV_HOURS[wk]
+                h_lo, h_hi = (city.cv_hours_weekday if wk
+                              else city.cv_hours_weekend)
                 for (s_, b_), times in cv_x.items():
                     tt = np.sort(np.asarray(times))
                     hours = pd.to_datetime(tt, unit="s", utc=True).tz_convert(

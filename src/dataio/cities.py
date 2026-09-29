@@ -76,6 +76,18 @@ class CityConfig:
     door_source_dir: str | None = None
     # Hidden from the dashboard city tabs (investigation-only cities).
     show_in_ui: bool = True
+    # Headway CV (delay_events --headway-cv -> build_cv): which routes get
+    # the per-10 ft headway moments, from which service date, and within
+    # which local-hour windows [lo, hi) both crossings must fall. Empty
+    # routes = no CV for this city. Kept per city because the frequent
+    # network and its operating hours differ by agency (2026-09-24).
+    cv_routes: tuple[str, ...] = ()
+    cv_start: str | None = None  # None = whole archive
+    cv_hours_weekday: tuple[int, int] = (6, 21)
+    cv_hours_weekend: tuple[int, int] = (9, 21)
+    # Day types (date_attrs.daytype_of: weekday / sat / sun / holiday, by
+    # holiday_region — the dashboard's daytype filter) whose dates count.
+    cv_daytypes: tuple[str, ...] = ("weekday", "sat", "sun", "holiday")
 
     def resolve(self, rel: str | Path) -> Path:
         """Resolve a repo-root-relative path (absolute paths pass through)."""
@@ -131,6 +143,10 @@ _CTA = CityConfig(
     noaa_station="USW00094846",  # Chicago O'Hare GHCN-D
     deadhead_route_ids=("992",),
     has_door_data=True,
+    # CTA frequent network (moved from delay_events.CV_ROUTES 2026-09-24)
+    cv_routes=("9", "12", "81", "72", "4", "J14", "20", "34", "47", "49",
+               "53", "54", "55", "60", "63", "66", "77", "79", "82", "95"),
+    cv_start="2026-01-01",
     pbf_file="routing-valhalla/chicago/illinois-260728.osm.pbf",
     valhalla_url="http://localhost:8002",
 )
@@ -155,16 +171,21 @@ _MBTA = CityConfig(
     ),
     late_night=(22, 5),
     late_night_wide=(20, 6),  # Boston sleeps 02-04; widen before class prior
-    # NB: the published feed only covers Summer 2026 (feed_info: start
-    # 2026-07-21); earlier archive dates are reconstructed against the summer
-    # feed's shapes — routes changed by a bus-network-redesign phase between
-    # ratings will reject on low_score for spring dates (accepted
-    # simplification; watch reject stats).
+    # Canonical geometry = the current (Fall 2026) feed; earlier archive
+    # dates resolve to the Transitland era MBTA was publishing that day
+    # (gtfs_history + era_seg_bounds), so spring/summer rating shapes still
+    # map onto the canonical segments (2026-09-24 rebuild).
     noaa_station="USW00014739",  # Boston Logan GHCN-D
     exclude_route_prefixes=("Shuttle",),
     has_door_data=False,  # no bus-state extract for MBTA
-    pbf_file="routing-valhalla/boston/massachusetts-latest.osm.pbf",
+    # Hand-picked; route 1 only for now to keep the pass cheap (2026-09-24).
+    cv_routes=("1",),
+    # non-holiday weekday middays only (user decision 2026-09-24)
+    cv_hours_weekday=(10, 15),
+    cv_daytypes=("weekday",),
+    pbf_file="routing-valhalla/boston/massachusetts-260923.osm.pbf",
     valhalla_url="http://localhost:8003",
+    gtfs_history_dir="caches/gtfs_history/mbta",
 )
 
 _TRANSLINK = CityConfig(

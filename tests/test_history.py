@@ -6,7 +6,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
-from analysis.network.era_seg_bounds import _longest_chain  # noqa: E402
+from analysis.network.era_seg_bounds import _all_chains, _longest_chain  # noqa: E402
 from analysis.network.gtfs_history import pick_for_date  # noqa: E402
 
 
@@ -58,3 +58,15 @@ def test_longest_chain_skips_degenerate_spacing():
     assert _longest_chain([(1, 0.0), (2, 3.0)], pairs) == []
     got = _longest_chain([(1, 0.0), (2, 90.0)], pairs)
     assert [n for n, _ in got] == [1, 2]
+
+
+def test_all_chains_keeps_both_sides_of_a_break():
+    """A missing boundary node splits the route; both halves survive."""
+    # 1-2-3 and 5-6-7-8 are canonical chains; node 4 is absent, so 3→5
+    # is not a segment and the longest-chain pass alone keeps only 5..8.
+    pairs = {(1, 2): "a", (2, 3): "b", (5, 6): "c", (6, 7): "d", (7, 8): "e"}
+    nodes = [(1, 0.0), (2, 100.0), (3, 200.0),
+             (5, 400.0), (6, 500.0), (7, 600.0), (8, 700.0)]
+    assert [n for n, _ in _longest_chain(nodes, pairs)] == [5, 6, 7, 8]
+    got = [[n for n, _ in c] for c in _all_chains(nodes, pairs)]
+    assert got == [[1, 2, 3], [5, 6, 7, 8]]
