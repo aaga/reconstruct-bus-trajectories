@@ -46,6 +46,11 @@ FEED_OSID = {
     "cta": "f-dp3-cta",
     "translink": "f-c28-nstranslinkca",  # Vancouver (c28 geohash), not Queensland
     "mbta": "f-drt-mbta",
+    # Multi-feed network: one era = one live version of EACH feed, merged
+    # (dataio.gtfs_merge). MTA publishes NYC buses as six feeds.
+    "nyc": ("f-dr5r-mtanyctbusbrooklyn", "f-dr72-mtanyctbusbronx",
+            "f-dr5r-mtanyctbusmanhattan", "f-dr5x-mtanyctbusqueens",
+            "f-dr5r-mtanyctbusstatenisland", "f-dr5r-mtabc"),
 }
 # Files the pipeline actually reads; the rest (license html, transfers,
 # frequencies) are dropped to keep the cache near 3 GB instead of 4 GB.
@@ -133,11 +138,98 @@ def _download(sha1: str, dest: Path, key: str) -> bool:
     return True
 
 
+def sync_multi(city, osids: tuple[str, ...], start: str, end: str,
+               index_only: bool = False) -> None:
+    """Multi-feed networks: per date pick each feed's live version; each
+    distinct combination is one era, cached as the MERGED zip, so every
+    reader keeps seeing one GTFS per date. Era id = sha1 of the sorted
+    component sha1s (first 8 hex)."""
+    import datetime as dt
+    import hashlib
+
+    from dataio.gtfs_merge import merge_feeds
+
+    out = city.resolve(city.gtfs_history_dir)
+    comp_dir = out / "components"
+    comp_dir.mkdir(parents=True, exist_ok=True)
+    key = _api_key()
+    vers = {o: list_versions(o, key) for o in osids}
+    for o in osids:
+        print(f"{len(vers[o])} feed versions on Transitland for {o}")
+
+    d0, d1 = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    combos: dict[str, dict[str, dict]] = {}
+    index: dict[str, str] = {}
+    day, missing = d0, 0
+    while day <= d1:
+        iso = day.isoformat()
+        picks = {o: pick_for_date(vers[o], iso) for o in osids}
+        if any(v is None for v in picks.values()):
+            missing += 1
+        else:
+            era = hashlib.sha1("".join(sorted(v["sha1"] for v in picks.values()))
+                               .encode()).hexdigest()[:8]
+            combos[era] = picks
+            index[iso] = era
+        day += dt.timedelta(days=1)
+    n_comp = len({v["sha1"] for c in combos.values() for v in c.values()})
+    print(f"{len(index):,} dates mapped to {len(combos)} merged eras "
+          f"({n_comp} component versions)"
+          + (f"; {missing} dates UNCOVERED" if missing else "; no gaps"))
+
+    if not index_only:
+        for i, (era, picks) in enumerate(sorted(combos.items()), 1):
+            dest = out / f"{era}.zip"
+            if dest.exists() and dest.stat().st_size > 0:
+                continue
+            parts = []
+            for o, v in picks.items():
+                cp = comp_dir / f"{o}_{v['sha1'][:8]}.zip"
+                if not (cp.exists() and cp.stat().st_size > 0):
+                    print(f"  download {o} {v['sha1'][:8]}", flush=True)
+                    if not _download(v["sha1"], cp, key):
+                        print(f"    GIVING UP on {o} {v['sha1'][:8]}", flush=True)
+                parts.append(cp)
+            if all(pp.exists() for pp in parts):
+                st = merge_feeds(parts, dest, files=KEEP)
+                bad = {m: x["conflicting_dups"] for m, x in st.items()
+                       if x["conflicting_dups"]}
+                print(f"  [{i}/{len(combos)}] merged era {era}"
+                      + (f" (conflicting duplicate keys kept-first: {bad})" if bad else ""),
+                      flush=True)
+
+    have = {pp.stem for pp in out.glob("*.zip") if pp.stat().st_size > 0}
+    index = {d: e for d, e in index.items() if e in have}
+    meta = {
+        "feed_onestop_id": list(osids),
+        "generated_for": {"start": start, "end": end},
+        "eras": {
+            e: {
+                "fetched_at": max(v["fetched_at"][:10] for v in picks.values()),
+                "earliest_calendar_date": max(v["earliest_calendar_date"] for v in picks.values()),
+                "latest_calendar_date": min(v["latest_calendar_date"] for v in picks.values()),
+                "components": {o: {"sha1": v["sha1"], "fetched_at": v["fetched_at"][:10]}
+                               for o, v in picks.items()},
+            }
+            for e, picks in combos.items() if e in have
+        },
+        "dates": index,
+    }
+    (out / "index.json").write_text(json.dumps(meta, indent=1, sort_keys=True))
+    tot = sum(pp.stat().st_size for pp in out.glob("*.zip"))
+    print(f"cached {len(have)} merged eras, {tot / 2**30:.1f} GB -> {out}")
+    print(f"index covers {len(index):,} dates")
+
+
 def sync(city_id: str, start: str, end: str, index_only: bool = False) -> None:
     city = get_city(city_id)
     osid = FEED_OSID.get(city_id)
     if not osid:
         raise SystemExit(f"no Transitland feed onestop id known for {city_id}")
+    if isinstance(osid, tuple):
+        if not city.gtfs_history_dir:
+            raise SystemExit(f"{city_id} has no gtfs_history_dir configured")
+        return sync_multi(city, osid, start, end, index_only)
     if not city.gtfs_history_dir:
         raise SystemExit(f"{city_id} has no gtfs_history_dir configured")
     out = city.resolve(city.gtfs_history_dir)

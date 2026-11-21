@@ -9,7 +9,8 @@ and stay private, so the public site carries only:
     2026-09-24);
   * each chosen city's network payloads — gzipped stats shards only (the
     browser inflates them; the raw .bin twins are a no-DecompressionStream
-    fallback), plus the delay-location (dist*/) and headway-CV (cv/) files.
+    fallback), plus the delay-location (dist*/) and headway-CV (cv/) files,
+    packed SEGMENT_BUNDLE segments per file (Pages allows 20k files).
 
 Excluded: data/network top level (= Chicago), facts/, vendor/duckdb (Explore
 only), *.archive-* payload snapshots, serve.py, inspect_clusters.html.
@@ -27,10 +28,34 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 DASH = REPO / "dashboard"
-PUBLIC_CITIES = ("mbta", "translink")
+PUBLIC_CITIES = ("mbta", "translink", "nyc")
 # per-city payload entries the Network tab reads
-CITY_FILES = ("meta.json", "segments.json", "golden.json")
-CITY_DIRS = ("dist", "dist3mph", "cv")
+CITY_FILES = ("meta.json", "segments.json", "golden.json", "weather_effect.json")
+CITY_DIRS = ("dist", "dist3mph", "cv", "wx_speed")
+# Per-segment files are packed N to a bundle (b{sid // N}.json = {sid: data});
+# NYC alone has ~32k of them and a Pages deployment allows 20k files. The
+# dashboard reads bundles when site.json carries "segment_bundle".
+SEGMENT_BUNDLE = 200
+
+
+def _bundle_dir(src: Path, dst: Path) -> int:
+    """Pack numeric <sid>.json files into bundles; copy the rest. Returns files written."""
+    dst.mkdir(parents=True, exist_ok=True)
+    bundles: dict[int, dict[str, object]] = {}
+    written = 0
+    for f in sorted(src.iterdir()):
+        if f.name == ".DS_Store" or not f.is_file():
+            continue
+        if f.suffix == ".json" and f.stem.isdigit():
+            sid = int(f.stem)
+            bundles.setdefault(sid // SEGMENT_BUNDLE, {})[str(sid)] = json.loads(f.read_text())
+        else:
+            shutil.copy2(f, dst / f.name)
+            written += 1
+    for k, b in bundles.items():
+        (dst / f"b{k}.json").write_text(json.dumps(b, separators=(",", ":")))
+        written += 1
+    return written
 
 
 def build(out: Path, cities: tuple[str, ...]) -> dict:
@@ -46,6 +71,7 @@ def build(out: Path, cities: tuple[str, ...]) -> dict:
         "network_cities": list(cities),
         "default_city": cities[0],
         "explore": False,
+        "segment_bundle": SEGMENT_BUNDLE,
     }, indent=1))
 
     # Single-trip payloads: exactly what the catalog lists (no aggregates —
@@ -68,8 +94,7 @@ def build(out: Path, cities: tuple[str, ...]) -> dict:
             shutil.copy2(gz, dst / gz.name)
         for d in CITY_DIRS:
             if (src / d).is_dir():
-                shutil.copytree(src / d, dst / d,
-                                ignore=shutil.ignore_patterns(".DS_Store"))
+                _bundle_dir(src / d, dst / d)
 
     files = [p for p in out.rglob("*") if p.is_file()]
     stats = {

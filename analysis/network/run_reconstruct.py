@@ -200,8 +200,11 @@ def _matcher(shape_id: str) -> tuple[SnapToShapeMatcher, float]:
         polyline, dist_m = load_gtfs_shape_with_dist(
             _G.get("gtfs_zip") or city.resolve(city.gtfs_zip), shape_id
         )
+        # sequential: loop-aware matching (shape_snap, 2026-09-30); identical
+        # to plain nearest-projection on shapes that never revisit a street.
         m = SnapToShapeMatcher(
-            polyline, max_perp_m=city.max_perp_m, dist_along_m_per_vertex=dist_m
+            polyline, max_perp_m=city.max_perp_m, dist_along_m_per_vertex=dist_m,
+            sequential=True,
         )
         length = float(dist_m[-1]) if dist_m is not None else float(m._cum_at_vert[-1])
         _G["matchers"][shape_id] = (m, length)
@@ -260,6 +263,58 @@ def _service_date_pings_direct(city: CityConfig, date_iso: str) -> pd.DataFrame:
     return df[df.service_date == d0]
 
 
+# Columns the batches read from an R2 hour-file. Loading only these (not all
+# 26) keeps a full NYC service day to a fraction of the memory: at 8 workers
+# the all-column frames drove delay_events to ~8 GB per worker and into swap
+# (2026-09-29). speed_mps is listed for ingested AVL hour-files; R2 scrape
+# files carry no such column and are unaffected.
+HOUR_COLUMNS = ("timestamp", "trip_id", "route_id", "vehicle_id",
+                "latitude", "longitude", "current_stop_sequence", "speed_mps")
+
+
+def _read_hour(path: Path, feed_speed: bool = False) -> pd.DataFrame:
+    pf = pq.ParquetFile(path)
+    names = set(pf.schema_arrow.names)
+    cols = [c for c in HOUR_COLUMNS if c in names]
+    # v2 scrape files carry the feed's own `speed` (m/s); cities that opt in
+    # (CityConfig.feed_speed) read it as speed_mps so VCHIP-ME can use it.
+    use_speed = feed_speed and "speed_mps" not in names and "speed" in names
+    if use_speed:
+        cols.append("speed")
+    # Arrow-backed strings: ~40% of the object-dtype footprint for the id
+    # columns, identical values/grouping (verified on 126k NYC traversals).
+    df = pf.read(columns=cols).to_pandas(
+        types_mapper={pa.string(): pd.StringDtype("pyarrow"),
+                      pa.large_string(): pd.StringDtype("pyarrow")}.get)
+    if use_speed:
+        df = df.rename(columns={"speed": "speed_mps"})
+        df["speed_mps"] = df["speed_mps"].astype(float)
+    return df
+
+
+def _service_date_pings_ingested(city: CityConfig, date_iso: str) -> pd.DataFrame:
+    """Read a service date from the corrected ping files (ping_ingest.py).
+
+    Split-source cities (NYC): positions already reversed where the feed
+    extrapolates them, one row per (vehicle, timestamp), and ``trip_id`` is
+    the vehicle-run id, so the batches' (trip_id, vehicle_id) grouping holds
+    one physical trip.
+    """
+    p = city.resolve(city.ping_dir) / f"date={date_iso}.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+    df = pq.ParquetFile(p).read(
+        columns=["timestamp", "trip_id", "route_id", "vehicle_id",
+                 "latitude", "longitude"]).to_pandas(
+        types_mapper={pa.string(): pd.StringDtype("pyarrow"),
+                      pa.large_string(): pd.StringDtype("pyarrow")}.get)
+    for c in ("route_id", "vehicle_id"):
+        df[c] = df[c].astype(pd.StringDtype("pyarrow"))
+    df["ts_utc"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["service_date"] = pd.Timestamp(date_iso).date()
+    return df
+
+
 def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
     """All pings whose Chicago service date == date_iso (03:00 cutover).
 
@@ -268,6 +323,8 @@ def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
     """
     if getattr(city, "avl_direct_read", False) and city.avl_source_dir:
         return _service_date_pings_direct(city, date_iso)
+    if city.r2_sources and city.ping_dir:
+        return _service_date_pings_ingested(city, date_iso)
     cache_dir = city.resolve(city.archive_cache_dir)
     lo_local = pd.Timestamp(f"{date_iso} 0{city.service_day_cutover_h}:00", tz=city.tz)
     hi_local = lo_local + pd.Timedelta(days=1)
@@ -284,7 +341,7 @@ def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
         local = cache_dir / path.replace("/", "__")
         if local.exists() and local.stat().st_size > 0:
             try:
-                frames.append(pq.ParquetFile(local).read().to_pandas())
+                frames.append(_read_hour(local, city.feed_speed))
             except Exception:
                 # Corrupt cache entry (truncated download / error-page body).
                 # Delete, refetch once, retry; a still-bad hour is skipped
@@ -296,7 +353,7 @@ def _service_date_pings(city: CityConfig, date_iso: str) -> pd.DataFrame:
                     from dataio.realtime import ARCHIVE_URL, fetch
 
                     fetch(f"{ARCHIVE_URL}/{path}", local)
-                    frames.append(pq.ParquetFile(local).read().to_pandas())
+                    frames.append(_read_hour(local, city.feed_speed))
                 except Exception as e:  # noqa: BLE001
                     print(f"  refetch failed, skipping hour: {e}", file=sys.stderr, flush=True)
                     local.unlink(missing_ok=True)
@@ -375,7 +432,7 @@ def _process_trip(
     v_on = v_all[on] if v_all is not None else None
     t_on, d_on, v_on = _trim_reverse_edges(t_on, d_on, v_on)
 
-    if monotone_frac(d_on) < MIN_MONOTONE:
+    if monotone_frac(d_on, city.monotone_min_move_m) < MIN_MONOTONE:
         rejects["not_monotone"] += 1
         return None
 
@@ -394,7 +451,7 @@ def _process_trip(
             return None
 
     try:
-        sm = fit_trajectory(t_on, d_on, v_on)
+        sm = fit_trajectory(t_on, d_on, v_on, city.speed_min_fill)
     except Exception:
         rejects["smooth_failed"] += 1
         return None
@@ -566,6 +623,10 @@ def _dates_in_archive(city: CityConfig) -> list[str]:
             for p in Path(city.avl_source_dir).glob("date=*.parquet")
         )
         return days[:-1] if len(days) > 1 else days
+    if city.r2_sources and city.ping_dir:
+        return sorted(
+            p.stem.split("=", 1)[1]
+            for p in city.resolve(city.ping_dir).glob("date=*.parquet"))
     cache_dir = city.resolve(city.archive_cache_dir)
     hours = []
     for p in cache_dir.glob(f"agency={city.r2_agency}__*.parquet"):

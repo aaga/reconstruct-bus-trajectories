@@ -14,6 +14,7 @@ Stages (door stages auto-skip when ``city.has_door_data`` is False):
     intersections   PBF walk → control points          (stage 2)
     way_geoms       PBF → OSM way geometries
     registry        canonical signal-to-signal segments
+    ping_ingest     corrected per-date pings           [split-source cities]
     head_trim_check whether shape choice drops pre-departure pings
     traversals      86-day reconstruction batch
     door_join       APC sidecar                        [door cities only]
@@ -24,6 +25,9 @@ Stages (door stages auto-skip when ``city.has_door_data`` is False):
     movements       THRU/LEFT/RIGHT per (segment, shape)
     ping_density    raw archive pings per 10 ft bucket
     distributions   per-segment delay-location files   [door cities only]
+    rain_mrms       hourly MRMS rain crop              [cities with rain_mrms]
+    weather_effect  heavy-rain / snow speed effects    [cities with rain_mrms]
+    weather_speed   heavy-rain / snow 10 ft speed lines [cities with rain_mrms]
     headway_cv      per-segment headway-CV payloads    [cities with cv_routes]
     areas           areas-of-interest rankings
 
@@ -74,11 +78,20 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
         # way_match runs both stages of build_all_intersections in one
         # invocation (stage 2 is minutes now that it reads the PBF); the
         # "intersections" stage is folded in and kept as an alias below.
+        # signals OSM misses: crosswalk inference + signal_add/reject
+        # exceptions, rewriting the intersections file before the registry
+        ("signal_infer", ["uv", "run", "python", f"{NET}/signal_infer.py",
+                          "--city", c]),
         ("way_geoms", [
             "uv", "run", "python", f"{NET}/way_geometry.py", "--city", c,
             *((["--pbf", str(pbf)]) if pbf else []),
         ]),
         ("registry", ["uv", "run", "python", f"{NET}/registry.py", "--city", c]),
+        # Split-source cities (NYC): corrected per-service-date pings —
+        # timetable reversal of extrapolated feeds + vehicle-run trip ids.
+        # No-op for every other city.
+        ("ping_ingest", ["uv", "run", "python", f"{NET}/ping_ingest.py",
+                         "--city", c, "--workers", str(workers)]),
         # Measures whether the pre-departure head trim helps this feed and
         # writes the verdict run_reconstruct reads (no-op verdict for CTA).
         ("head_trim_check", ["uv", "run", "python",
@@ -122,6 +135,14 @@ def stage_commands(city, workers: int) -> list[tuple[str, list[str]]]:
     stages.append(
         ("distributions", ["uv", "run", "python",
                            f"{NET}/build_distributions.py", "--city", c]))
+    if city.rain_mrms:
+        stages.append(("rain_mrms", ["uv", "run", "python", f"{NET}/rain_mrms.py",
+                                     "--city", c, "--delete-raw"]))
+        stages.append(("weather_effect", ["uv", "run", "python",
+                                          f"{NET}/weather_effect.py", "--city", c]))
+        stages.append(("weather_speed", ["uv", "run", "python",
+                                         f"{NET}/weather_speed_profile.py", "--city", c,
+                                         "--workers", str(workers)]))
     if city.cv_routes:
         stages.append(
             ("headway_cv", ["uv", "run", "python", f"{NET}/build_cv.py",

@@ -38,12 +38,13 @@ from pathlib import Path
 
 import duckdb
 import numpy as np
+import pandas as pd
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
-from analysis.network.traversals_view import create_canonical_view  # noqa: E402
+from analysis.network.traversals_view import configured_connection, create_canonical_view  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 from dataio.gtfs import load_route_short_names  # noqa: E402
 
@@ -54,6 +55,8 @@ MAX_GAP_S = 180.0
 FLAG_TOUCHED_TERMINAL = 1
 
 METRICS = ["mean_delay_ratio", "median_delay_ratio", "buffer_ratio", "cv_delay"]
+
+SEG_BATCHES = 8  # segment-kind queries run in sid % K batches (NYC scale)
 
 LEVEL_FILTERS = [
     ("weekday", p) for p in ("am_peak", "midday", "pm_peak", None)
@@ -101,30 +104,50 @@ def _filter_sql(daytype_weather: str, period: str | None) -> str:
 def _entity_sql(kind: str) -> tuple[str, str]:
     """(entity id expression, extra join) per entity kind."""
     if kind == "segment":
-        return "t.seg_id", ""
+        return "t.sid", ""  # integer id; mapped back to seg_id on the result
     if kind == "route":
         return "t.route_id", ""
     raise ValueError(kind)
 
 
 def _metrics_query(kind: str, where: str) -> str:
+    """Per-entity metrics for one context filter.
+
+    Split into three aggregations joined on eid (2026-09-30): exact
+    quantiles plus two COUNT(DISTINCT ...) in ONE grouped query hold every
+    intermediate at once and spilled >40 GB at NYC scale. Distinct counts go
+    through a DISTINCT (eid, x) pre-pass then a plain count — same values,
+    a fraction of the state.
+    """
     ent, join = _entity_sql(kind)
+    base = f"FROM t JOIN da ON da.d = t.d {join} WHERE {where}"
     return f"""
-    SELECT
-      {ent} AS eid,
-      COUNT(*)::BIGINT AS n,
-      AVG(t.ratio) - 1.0 AS mean_delay_ratio,
-      QUANTILE_CONT(t.ratio, 0.5) - 1.0 AS median_delay_ratio,
-      QUANTILE_CONT(t.ratio, 0.9) - QUANTILE_CONT(t.ratio, 0.5) AS buffer_ratio,
-      STDDEV_POP(t.delay_s) / AVG(t.t_ff_s) AS cv_delay,
-      COUNT(DISTINCT t.date_iso) AS n_dates,
-      COUNT(DISTINCT t.trip_key) AS n_trips
-    FROM t
-    JOIN da ON da.date_iso = t.date_iso
-    {join}
-    WHERE {where}
-    GROUP BY 1
-    HAVING COUNT(*) >= {MIN_N}
+    WITH m AS (
+      SELECT
+        {ent} AS eid,
+        COUNT(*)::BIGINT AS n,
+        AVG(t.ratio) - 1.0 AS mean_delay_ratio,
+        QUANTILE_CONT(t.ratio, 0.5) - 1.0 AS median_delay_ratio,
+        QUANTILE_CONT(t.ratio, 0.9) - QUANTILE_CONT(t.ratio, 0.5) AS buffer_ratio,
+        STDDEV_POP(t.delay_s) / AVG(t.t_ff_s) AS cv_delay
+      {base}
+      GROUP BY 1
+      HAVING COUNT(*) >= {MIN_N}
+    ),
+    d AS (
+      SELECT eid, COUNT(*) AS n_dates
+      FROM (SELECT DISTINCT {ent} AS eid, t.d {base})
+      GROUP BY 1
+    ),
+    tr AS (
+      -- low 64 bits of the trip key's md5 (see tc), not the string; NOT
+      -- duckdb hash(), which collides on these near-identical keys.
+      SELECT eid, COUNT(*) AS n_trips
+      FROM (SELECT DISTINCT {ent} AS eid, t.trip_h {base})
+      GROUP BY 1
+    )
+    SELECT m.*, d.n_dates, tr.n_trips
+    FROM m JOIN d USING (eid) JOIN tr USING (eid)
     """
 
 
@@ -135,12 +158,25 @@ def build_areas(city: CityConfig) -> dict:
     date_attrs = json.loads((base / "date_attrs.json").read_text())
     glob = str(base / "traversals" / "service_date=*" / "route=*.parquet")
 
-    con = duckdb.connect()
+    # On-disk work database (2026-09-30): the traversals are materialised
+    # ONCE into a compact, compressed table (tc) that every context query
+    # streams, instead of re-reading 408M parquet rows through the canonical
+    # view per query — which spilled past the free disk at NYC scale.
+    work_db = base / "aoi_work.duckdb"
+    for f in (work_db, work_db.with_suffix(".duckdb.wal")):
+        f.unlink(missing_ok=True)
+    con = configured_connection(city, threads=4, db_path=work_db)
     con.execute("CREATE TABLE ff(seg_id TEXT, t_ff_s DOUBLE)")
     con.executemany(
         "INSERT INTO ff VALUES (?, ?)",
         [(k, v["t_ff_s"]) for k, v in freeflow["freeflow"].items()],
     )
+    # Compact keys (2026-09-30): integer segment ids and DATE instead of the
+    # ~30-byte seg_id / date strings, so NYC-scale aggregation state fits.
+    seg_ids_sorted = sorted(registry["segments"])
+    con.execute("CREATE TABLE segenc(seg_id TEXT, sid INT)")
+    con.executemany("INSERT INTO segenc VALUES (?, ?)",
+                    [(k, i) for i, k in enumerate(seg_ids_sorted)])
     con.execute("CREATE TABLE da(date_iso TEXT, season TEXT, dow INT, weather TEXT, daytype TEXT)")
     con.executemany(
         "INSERT INTO da VALUES (?, ?, ?, ?, ?)",
@@ -149,22 +185,28 @@ def build_areas(city: CityConfig) -> dict:
             for d, a in date_attrs["days"].items()
         ],
     )
+    con.execute("ALTER TABLE da ADD COLUMN d DATE")
+    con.execute("UPDATE da SET d = CAST(date_iso AS DATE)")
     create_canonical_view(con, glob, registry, city)
     con.execute(
         f"""
-        CREATE VIEW t AS
-        SELECT tr.seg_id, tr.route_id, tr.period, tr.trip_key,
-               strftime(tr.service_date, '%Y-%m-%d') AS date_iso,
+        CREATE TABLE tc AS
+        SELECT se.sid, tr.route_id, tr.period, md5_number_lower(tr.trip_key) AS trip_h,
+               CAST(tr.service_date AS DATE) AS d,
                tr.t_obs_s, ff.t_ff_s,
                (tr.t_obs_s - ff.t_ff_s) AS delay_s,
                (tr.t_obs_s / ff.t_ff_s) AS ratio
         FROM trav tr
         JOIN ff ON ff.seg_id = tr.seg_id
+        JOIN segenc se ON se.seg_id = tr.seg_id
         WHERE tr.t_obs_s > 0 AND ff.t_ff_s > 0
           AND tr.max_gap_in_seg_s <= {MAX_GAP_S}
           AND (tr.flags & {FLAG_TOUCHED_TERMINAL}) = 0
         """
     )
+    con.execute("CREATE VIEW t AS SELECT * FROM tc")
+    print(f"materialised {con.execute('SELECT count(*) FROM tc').fetchone()[0]:,} "
+          "traversals into the work table", flush=True)
 
     # Total service hours per context are needed for buses/hour; approximate
     # with n_dates × period hours (period=None → 24h-late_night ≈ 18h).
@@ -205,6 +247,18 @@ def build_areas(city: CityConfig) -> dict:
             )
         return out
 
+    def run_metrics(kind: str, where: str):
+        if kind != "segment":
+            return con.sql(_metrics_query(kind, where)).df()
+        # Segments: every (segment, trip) pair is distinct, so the per-group
+        # state is ~one entry per row; batch by sid so each query holds 1/K.
+        parts = [con.sql(_metrics_query(kind, f"({where}) AND t.sid % {SEG_BATCHES} = {j}")).df()
+                 for j in range(SEG_BATCHES)]
+        df = pd.concat([x for x in parts if len(x)], ignore_index=True) if any(len(x) for x in parts) else parts[0]
+        if len(df):
+            df["eid"] = [seg_ids_sorted[int(i)] for i in df["eid"]]
+        return df
+
     contexts = []
 
     # ---- LEVEL contexts ---------------------------------------------------
@@ -212,7 +266,7 @@ def build_areas(city: CityConfig) -> dict:
         where = _filter_sql(daytype, period)
         hours = period_hours.get(period, 18.0)
         for kind in ("segment", "route"):
-            df = con.sql(_metrics_query(kind, where)).df()
+            df = run_metrics(kind, where)
             if df.empty:
                 continue
             net = {
@@ -243,8 +297,8 @@ def build_areas(city: CityConfig) -> dict:
     for diff_id, (fa, pa), (fb, pb) in DIFF_PAIRS:
         wa, wb = _filter_sql(fa, pa), _filter_sql(fb, pb)
         for kind in ("segment", "route"):
-            da_ = con.sql(_metrics_query(kind, wa)).df().set_index("eid")
-            db_ = con.sql(_metrics_query(kind, wb)).df().set_index("eid")
+            da_ = run_metrics(kind, wa).set_index("eid")
+            db_ = run_metrics(kind, wb).set_index("eid")
             common = da_.index.intersection(db_.index)
             if len(common) < 10:
                 continue
@@ -295,6 +349,9 @@ def build_areas(city: CityConfig) -> dict:
                     }
                 )
 
+    con.close()
+    for f in (work_db, work_db.with_suffix(".duckdb.wal")):
+        f.unlink(missing_ok=True)
     return {
         "meta": {
             "city": city.city_id,

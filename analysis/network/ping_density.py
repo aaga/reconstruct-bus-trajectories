@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import shutil
 import json
 import sys
 import time
@@ -31,8 +32,10 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))
 
 from dataio.cities import get_city  # noqa: E402
+from analysis.network.traversals_view import configured_connection  # noqa: E402
 from dataio.gtfs import load_gtfs_shape_with_dist  # noqa: E402
 
 BUCKET_FT = 10.0
@@ -64,6 +67,11 @@ def build(city_id: str) -> None:
           FROM read_parquet('{city.avl_source_dir}/date=*.parquet')
           WHERE onroute = 1 AND route_id IS NOT NULL AND trip_id IS NOT NULL
         )"""
+    elif city.r2_sources and city.ping_dir:
+        # Split-source cities: the corrected per-service-date files
+        # (ping_ingest.py), whose trip_id is the run id the traversals use.
+        src_sql = (f"(SELECT *, NULL AS speed_mps FROM read_parquet("
+                   f"'{city.resolve(city.ping_dir)}/date=*.parquet'))")
     else:
         # R2 scrape files carry the canonical `speed` (m/s, scraper-
         # normalised); ingested AVL hour-files carry `speed_mps`. Alias
@@ -76,11 +84,14 @@ def build(city_id: str) -> None:
         else:
             v = "speed" if "speed" in cols else "NULL"
             src_sql = f"(SELECT *, {v} AS speed_mps FROM {raw})"
-    glob = str(cache / f"agency={city.r2_agency}__*.parquet")
+    # Ingested files carry their service date; hour-file cities use the
+    # ping's local calendar date (unchanged behaviour).
+    date_sql = ("strftime(p.service_date, '%Y-%m-%d')"
+                if city.r2_sources and city.ping_dir else
+                f"strftime(CAST(p.timestamp AT TIME ZONE '{tz}' AS DATE), '%Y-%m-%d')")
     trav_glob = str(base / "traversals" / "service_date=*" / "*.parquet")
 
-    con = duckdb.connect()
-    con.execute(f"SET temp_directory='{base / 'duckdb_spill'}'")
+    con = configured_connection(city)  # memory cap + spill (2026-09-30)
 
     # trip -> shape from the traversal batch (geometric assignment)
     t0 = time.time()
@@ -95,8 +106,7 @@ def build(city_id: str) -> None:
                  TRY_CAST(p.speed_mps AS DOUBLE) AS v
           FROM {src_sql} p
           JOIN tk ON tk.trip_key =
-            p.trip_id || '_' || p.vehicle_id || '_' ||
-            strftime(CAST(p.timestamp AT TIME ZONE '{tz}' AS DATE), '%Y-%m-%d')
+            p.trip_id || '_' || p.vehicle_id || '_' || {date_sql}
           WHERE p.latitude IS NOT NULL
         ) TO '{inter}' (FORMAT PARQUET)
     """)
@@ -125,12 +135,19 @@ def build(city_id: str) -> None:
         lambda: defaultdict(lambda: [0, 0, 0.0]))  # [n, n_v, sum_v]
     n_snapped = 0
     t0 = time.time()
-    shape_ids = [r[0] for r in con.execute(
-        f"SELECT DISTINCT shape_id FROM read_parquet('{inter}')").fetchall()]
-    for si, sh in enumerate(shape_ids):
+    # One streaming pass over the intermediate, grouped by shape per batch,
+    # with each shape's KD-tree built once and cached. The previous per-shape
+    # `WHERE shape_id = ?` re-scanned the whole (unsorted) file for every
+    # shape — fine for MBTA, hours for NYC's 1.5B pings (2026-09-30).
+    trees: dict[str, tuple | None] = {}
+
+    def shape_tree(sh):
+        if sh in trees:
+            return trees[sh]
         rec = shapes.get(sh)
         if rec is None:
-            continue
+            trees[sh] = None
+            return None
         poly, dist = load_gtfs_shape_with_dist(shape_zip.get(sh, gtfs), sh)
         arr = np.asarray(poly, dtype=float)
         if dist is None:
@@ -150,43 +167,52 @@ def build(city_id: str) -> None:
             ds.append(cum[i] + t * (cum[i + 1] - cum[i]))
         pts.append(xy[-1:]); ds.append(cum[-1:])
         pts = np.concatenate(pts); ds = np.concatenate(ds)
-        tree = cKDTree(pts)
+        trees[sh] = (cKDTree(pts), ds, mlat, rec)
+        return trees[sh]
 
-        pings = con.execute(
-            "SELECT lat, lon, v FROM read_parquet(?) WHERE shape_id = ?",
-            [str(inter), sh]).fetch_df()
-        q = np.column_stack([pings["lon"].to_numpy() * mlat,
-                             pings["lat"].to_numpy() * 111320.0])
-        dd, ii = tree.query(q, distance_upper_bound=SNAP_MAX_M)
-        ok = np.isfinite(dd)
-        d_along = ds[np.clip(ii[ok], 0, len(ds) - 1)]
-        v_ok = pings["v"].to_numpy(dtype=float)[ok]
-        n_snapped += int(ok.sum())
-
-        # locate in this shape's segment bounds; bucket from x_end
-        for seg_id, x0, x1 in rec["seg_bounds"]:
-            m = (d_along > x0) & (d_along <= x1)
-            if not m.any():
+    reader = con.execute(
+        f"SELECT shape_id, lat, lon, v FROM read_parquet('{inter}')"
+    ).fetch_record_batch(5_000_000)
+    n_seen = 0
+    for batch in reader:
+        df = batch.to_pandas()
+        n_seen += len(df)
+        for sh, pings in df.groupby("shape_id", sort=False):
+            got = shape_tree(sh)
+            if got is None:
                 continue
-            b = np.floor((x1 - d_along[m]) * FT_PER_M / BUCKET_FT).astype(int)
-            vv = v_ok[m]
-            fin = np.isfinite(vv)
-            for bb, cnt in zip(*np.unique(b, return_counts=True)):
-                counts[seg_id][int(bb)][0] += int(cnt)
-            if fin.any():
-                bf = b[fin]
-                vf = vv[fin]
-                order = np.argsort(bf, kind="stable")
-                bs, starts = np.unique(bf[order], return_index=True)
-                sums = np.add.reduceat(vf[order], starts)
-                cnts = np.add.reduceat(np.ones_like(vf[order]), starts)
-                for bb, sv, nv in zip(bs, sums, cnts):
-                    c = counts[seg_id][int(bb)]
-                    c[1] += int(nv)
-                    c[2] += float(sv)
-        if (si + 1) % 100 == 0:
-            print(f"  [{si + 1}/{len(shape_ids)}] shapes "
-                  f"({time.time() - t0:.0f}s)", flush=True)
+            tree, ds, mlat, rec = got
+            q = np.column_stack([pings["lon"].to_numpy() * mlat,
+                                 pings["lat"].to_numpy() * 111320.0])
+            dd, ii = tree.query(q, distance_upper_bound=SNAP_MAX_M)
+            ok = np.isfinite(dd)
+            d_along = ds[np.clip(ii[ok], 0, len(ds) - 1)]
+            v_ok = pings["v"].to_numpy(dtype=float)[ok]
+            n_snapped += int(ok.sum())
+
+            # locate in this shape's segment bounds; bucket from x_end
+            for seg_id, x0, x1 in rec["seg_bounds"]:
+                m = (d_along > x0) & (d_along <= x1)
+                if not m.any():
+                    continue
+                b = np.floor((x1 - d_along[m]) * FT_PER_M / BUCKET_FT).astype(int)
+                vv = v_ok[m]
+                fin = np.isfinite(vv)
+                for bb, cnt in zip(*np.unique(b, return_counts=True)):
+                    counts[seg_id][int(bb)][0] += int(cnt)
+                if fin.any():
+                    bf = b[fin]
+                    vf = vv[fin]
+                    order = np.argsort(bf, kind="stable")
+                    bs, starts = np.unique(bf[order], return_index=True)
+                    sums = np.add.reduceat(vf[order], starts)
+                    cnts = np.add.reduceat(np.ones_like(vf[order]), starts)
+                    for bb, sv, nv in zip(bs, sums, cnts):
+                        c = counts[seg_id][int(bb)]
+                        c[1] += int(nv)
+                        c[2] += float(sv)
+        print(f"  {n_seen:,}/{n_total:,} pings ({len(trees)} shapes, "
+              f"{time.time() - t0:.0f}s)", flush=True)
 
     rows = [(s, b, c[0], c[1], c[2])
             for s, d_ in counts.items() for b, c in d_.items()]

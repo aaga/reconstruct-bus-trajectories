@@ -16,7 +16,7 @@ import { $, showBanner } from "../chart_util.js";
 import { NetworkMap } from "../network_map.js";
 import { StreetViewPopup } from "../street_view.js";
 import { State } from "../state.js";
-import { deriveStat, cleanLabel } from "../network_data.js";
+import { deriveStat, cleanLabel, fetchSegFile } from "../network_data.js";
 
 export const METRICS = {
   overall:          { label: "Overall delay (t_obs − t_ff)", kind: "delay", unit: "s" },
@@ -31,6 +31,11 @@ export const METRICS = {
   // summary.json): red = bunching builds across the segment. Fixed to the
   // city's configured CV window, so it ignores the filters like free flow.
   cv_increase:      { label: "Headway CV increase",    kind: "static", unit: "cv" },
+  // Median % speed change in heavy-rain (>= 7.6 mm/h, MRMS) or snow hours vs
+  // the segment's usual normal-hour speed (weather_effect.py). Fixed window:
+  // ignores the filters, like the other static metrics. Red = slower.
+  heavy_rain_effect: { label: "Heavy rain speed effect", kind: "static", unit: "pct", cond: "heavy_rain" },
+  snow_effect:       { label: "Snow speed effect",       kind: "static", unit: "pct", cond: "snow" },
 };
 
 export const STATS = {
@@ -52,6 +57,7 @@ const ALL_PERIODS = ["am_peak", "midday", "pm_peak", "evening", "late_night"];
 function fmtValue(metric, v) {
   const m = METRICS[metric];
   if (m.unit === "cv") return v.toFixed(2);
+  if (m.unit === "pct") return `${v.toFixed(1)}%`;
   if (m.unit === "mph") return `${v.toFixed(0)}`;
   if (m.unit === "/hr") return v.toFixed(1);
   if (m.unit === "pax·s") {
@@ -59,6 +65,66 @@ function fmtValue(metric, v) {
   }
   return `${v.toFixed(0)}s`;
 }
+
+// ---- smooth delay-profile line (2026-11-21) -------------------------------
+// The 10 ft bars spread with a Gaussian weight (sigma LINE_SIGMA_FT) and
+// evaluated every LINE_STEP_FT. Each bar's mass is renormalised inside its
+// own zone, so the area under the line equals the area of the bars.
+const LINE_SIGMA_FT = 20;
+const LINE_STEP_FT = 5;
+const LINE_PER_FT = 100;          // y-axis: quantity per 100 ft of street
+function smoothFine(arr, bucketFt, lenFt) {
+  const m = Math.ceil(lenFt / LINE_STEP_FT) + 1;
+  const out = new Float64Array(m);
+  const w = new Float64Array(m);
+  arr.forEach((v, i) => {
+    if (!v) return;
+    const c = (i + 0.5) * bucketFt;
+    const lo = Math.max(0, Math.floor((c - 3.2 * LINE_SIGMA_FT) / LINE_STEP_FT));
+    const hi = Math.min(m - 1, Math.ceil((c + 3.2 * LINE_SIGMA_FT) / LINE_STEP_FT));
+    let sum = 0;
+    for (let j = lo; j <= hi; j++) {
+      const z = (j * LINE_STEP_FT - c) / LINE_SIGMA_FT;
+      w[j] = Math.exp(-z * z / 2);
+      sum += w[j];
+    }
+    if (!sum) return;
+    for (let j = lo; j <= hi; j++) out[j] += (v * w[j] / sum) * (bucketFt / LINE_STEP_FT);
+  });
+  return out;                      // per-bucket units, sampled every LINE_STEP_FT
+}
+// Sum of the ORIGINAL bars between two distances (fractional end buckets).
+function integBuckets(arr, bucketFt, f0, f1) {
+  const lo = Math.min(f0, f1), hi = Math.max(f0, f1);
+  let t = 0;
+  for (let i = Math.max(0, Math.floor(lo / bucketFt));
+       i <= Math.min(arr.length - 1, Math.floor(hi / bucketFt)); i++) {
+    const ov = Math.min(hi, (i + 1) * bucketFt) - Math.max(lo, i * bucketFt);
+    if (ov > 0) t += (arr[i] * ov) / bucketFt;
+  }
+  return t;
+}
+// Whole-number ticks; decimals only when the maximum is below 1.
+function lineTicks(max) {
+  const out = [];
+  if (max < 1) {
+    const st = max < 0.4 ? 0.1 : max < 0.8 ? 0.2 : 0.5;
+    for (let v = 0; v <= max + 1e-9; v += st) out.push(+v.toFixed(1));
+    return out;
+  }
+  let st = 1;
+  for (const c of [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]) {
+    st = c;
+    if (max / c <= 4.5) break;
+  }
+  for (let v = 0; v <= max; v += st) out.push(v);
+  return out;
+}
+const LINE_GROUP = { sp: "sp", nd: "nd", post_ns: "nd", post2_ns: "nd", pre: "pre",
+                     post: "post", post2: "post", dw: "dw" };
+const LINE_COL = { sp: "#2e3440", nd: "#d63a2f", pre: "#1fb8b0", post: "#8a4fc8", dw: "#2b6fd6" };
+const LINE_NAME = { sp: "time spent", nd: "non-dwell", pre: "pre-boarding", post: "post-boarding",
+                    dw: "door events" };
 
 export class NetworkView {
   constructor(S) {
@@ -176,6 +242,10 @@ export class NetworkView {
             <option value="buses_per_hr">Bus / hour</option>
             <option value="boardings_per_hr" ${this.hasDoor ? "" : "disabled"}>Boardings / hour${this.hasDoor ? "" : " (needs door data)"}</option>
             <option value="cv_increase" ${this.data.cvSummary ? "" : "disabled"}>Headway CV increase${this.data.cvSummary ? "" : " (no headway-CV routes)"}</option>
+          </optgroup>
+          <optgroup label="Weather">
+            <option value="heavy_rain_effect" ${this.data.weatherEffect ? "" : "disabled"}>Heavy rain speed effect${this.data.weatherEffect ? "" : " (no weather data)"}</option>
+            <option value="snow_effect" ${this.data.weatherEffect ? "" : "disabled"}>Snow speed effect${this.data.weatherEffect ? "" : " (no weather data)"}</option>
           </optgroup>
         </select>
         <span class="nw-radios" id="nw-stats">
@@ -501,6 +571,13 @@ export class NetworkView {
       }
       return values;
     }
+    if (METRICS[metric].cond) {
+      const cond = METRICS[metric].cond;
+      for (const [sid, rec] of Object.entries(this.data.weatherEffect?.segments ?? {})) {
+        if (rec[cond]) values.set(Number(sid), rec[cond].pct);
+      }
+      return values;
+    }
     if (metric === "freeflow_speed") {
       for (const f of this.data.segments.features) {
         const p = f.properties;
@@ -541,15 +618,35 @@ export class NetworkView {
     return values;
   }
 
+  // Spinner badge over the map while line colours load. A token so an
+  // older refresh finishing late doesn't hide the badge of a newer one.
+  _mapLoading(on) {
+    let el = document.querySelector("#nw-map-loading");
+    if (!el) {
+      const host = $("map");
+      if (!host) return;
+      el = document.createElement("div");
+      el.id = "nw-map-loading";
+      el.className = "nw-loading-badge";
+      el.innerHTML = `<span class="nw-spinner"></span> Loading…`;
+      host.appendChild(el);
+    }
+    el.classList.toggle("hidden", !on);
+  }
+
   async refresh() {
     this.N.syncHash?.();
     const cnt = document.querySelector("#nw-count");
     if (cnt) cnt.textContent = "loading data…";
+    const token = (this._refreshToken = (this._refreshToken ?? 0) + 1);
+    this._mapLoading(true);
     try {
       await this._refreshInner();
     } catch (err) {
       console.error("network refresh failed", err);
       if (cnt) cnt.textContent = `load failed: ${err.message || err}`;
+    } finally {
+      if (token === this._refreshToken) this._mapLoading(false);
     }
   }
 
@@ -560,6 +657,12 @@ export class NetworkView {
     let values;
     let diverging = false;
     let legendTitle = spec.label + (spec.kind === "delay" ? ` · ${STATS[this.N.stat]}` : "");
+    if (spec.cond) {
+      // Diverging around 0; segments without enough weather hours stay grey.
+      diverging = true;
+      const m = this.data.weatherEffect?.meta;
+      if (m) legendTitle += ` · median % vs usual for the hour · ≥${m.min_n} traversals over ≥${m.min_hours} hours (ignores filters)`;
+    }
     if (metric === "cv_increase") {
       // Only segments with headway CV exist for this metric; + = more
       // bunching (red), − = headways even out (blue).
@@ -611,6 +714,18 @@ export class NetworkView {
     if (cnt) cnt.textContent = `${nShown} segments`;
   }
 
+  // context for the heavy-rain / snow metrics' hover
+  _weatherHoverBit(sid) {
+    const cond = METRICS[this.N.metric]?.cond;
+    if (!cond) return "";
+    const r = this.data.weatherEffect?.segments?.[sid]?.[cond];
+    if (!r) return "<br>not enough traversals in these conditions";
+    const sgn = (x) => (x > 0 ? "+" : "") + x.toFixed(1);
+    const what = cond === "snow" ? "snow" : "heavy-rain";
+    return `<br>${sgn(r.dmph)} mph (${r.cond_mph.toFixed(1)} vs usual ${r.base_mph.toFixed(1)})`
+      + `<br>${r.n.toLocaleString()} traversals in ${r.hours} ${what} hours`;
+  }
+
   // "route: CV up → down" lines for the CV-increase metric's hover.
   _cvHoverBit(sid) {
     if (this.N.metric !== "cv_increase") return "";
@@ -638,7 +753,8 @@ export class NetworkView {
     if (diverging) {
       const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
       // red = worse: for delay, + is worse; for speed, − (slower) is worse
-      const worse = METRICS[metric].unit === "mph" ? -1 : 1;
+      // negative speed / % change = slower = worse
+      const worse = ["mph", "pct"].includes(METRICS[metric].unit) ? -1 : 1;
       const sc = d3.scaleSequential(d3.interpolateRdBu).domain([worse * m, -worse * m]);
       colorOf = (v) => sc(v);
       gradient = d3.range(0, 1.01, 0.1).map((t) => sc.interpolator()(1 - t));
@@ -710,19 +826,25 @@ export class NetworkView {
   async _renderDistribution(host, props, coords) {
     this._distThresh ??= "5";   // slow-event threshold pass: "5" | "3" mph
     const distDir = this._distThresh === "3" ? "dist3mph" : "dist";
+    host.innerHTML = `<div class="nw-panel-loading"><span class="nw-spinner"></span> Loading delay locations…</div>`;
     let d;
     try {
-      const r = await fetch(`${this.data.base}/${distDir}/${props.sid}.json`, { cache: "no-cache" });
-      if (!r.ok) throw new Error();
-      d = await r.json();
+      d = await fetchSegFile(this.data.base, distDir, props.sid);
+      if (!d) throw new Error();
       // headway CV (frequent network only): absent file just greys the box
       if (this._cvSeg !== props.sid) {
         this._cvSeg = props.sid;
         this._cv = null;
         try {
-          const rc = await fetch(`${this.data.base}/cv/${props.sid}.json`, { cache: "no-cache" });
-          if (rc.ok) this._cv = await rc.json();
+          this._cv = await fetchSegFile(this.data.base, "cv", props.sid);
         } catch { /* keep null */ }
+        // heavy-rain / snow per-10 ft speeds (weather_speed_profile.py)
+        this._wx = null;
+        if (this.data.weatherEffect) {
+          try {
+            this._wx = await fetchSegFile(this.data.base, "wx_speed", props.sid);
+          } catch { /* keep null */ }
+        }
       }
     } catch {
       if (this._distThresh === "3") {
@@ -751,7 +873,12 @@ export class NetworkView {
     this._distMode ??= "seconds"; // "seconds" | "pax" | "events" | "queue"
     if (this._distMode === "pings") this._distMode = "seconds"; // tab removed 2026-08-25
     if (this._distMode === "pax" && !d.nd_p) this._distMode = "seconds";
+    if (this._distMode === "spent" && !d.ping_v) this._distMode = "seconds";
     const pingMode = this._distMode === "pings";
+    // "time spent": ALL seconds a bus spends in each 10 ft, not only located
+    // delays. No new data: the avg-speed overlay is bucket length / mean
+    // crossing time (build_distributions), so time = bucket length / speed.
+    const spentMode = this._distMode === "spent";
     const secondsMode = this._distMode === "seconds";
     const paxMode = this._distMode === "pax";
     const queueMode = this._distMode === "queue";
@@ -762,7 +889,7 @@ export class NetworkView {
     // Stack order groups every red-rendered class together (nd + the *_ns
     // classes, currently drawn nd-red) so they read as ONE red bar, with
     // teal/purple above.
-    const CLASSES = pingMode ? ["ping"]
+    const CLASSES = pingMode ? ["ping"] : spentMode ? ["sp"]
                    : ["nd", "post_ns", "post2_ns", "pre", "post", "post2",
                       ...(this._showDoors ? ["dw"] : [])];
     // Turn-movement filter (T/L/R/E through the downstream signal).
@@ -772,7 +899,7 @@ export class NetworkView {
       this._mvmtSeg = props.sid;
       this._mvmtSel = new Set(mvmtAll);
     }
-    const mvmtFiltered = !pingMode && d.by_mvmt && this._mvmtSel.size < mvmtAll.length;
+    const mvmtFiltered = !pingMode && !spentMode && d.by_mvmt && this._mvmtSel.size < mvmtAll.length;
     // Seconds mode: divide by the traversal count so the y-axis reads as
     // AVERAGE delay seconds per trip (dumb rescale, per user). When the
     // movement filter is active, both the arrays and the denominator come
@@ -782,7 +909,19 @@ export class NetworkView {
       : (d.n_trips ?? 1);
     const denom = (secondsMode || paxMode) ? Math.max(1, selTrips) : 1;
     const zeros = d.nd.map(() => 0);
+    const BUCKET_M = d.bucket_ft / 3.28084;
+    const ffPerBucket = (props.t_ff_s > 0 && props.len_m > 0)
+      ? (props.t_ff_s * BUCKET_M) / props.len_m : 0;   // free-flow seconds per 10 ft
+    // seconds per trip in each bucket from its stored speed; the last bucket
+    // is shorter than 10 ft, buckets without a speed fall back to free-flow
+    const spentOf = (vArr, n, lastShort) => Array.from({ length: n }, (_, i) => {
+      const v = vArr?.[i];
+      const len = lastShort && i === n - 1
+        ? Math.max(0.01, props.len_m - (n - 1) * BUCKET_M) : BUCKET_M;
+      return v > 0 ? len / v : (ffPerBucket * len) / BUCKET_M;
+    });
     const pick = (c) => {
+      if (c === "sp") return spentOf(d.ping_v, zeros.length, true);
       if (mvmtFiltered) {
         const out = zeros.slice();
         for (const m of this._mvmtSel) {
@@ -819,7 +958,7 @@ export class NetworkView {
     const COLORS = { nd: "#d63a2f", pre: "#1fb8b0",
                      post: "#8a4fc8", post2: "url(#post2hatch)",
                      post_ns: "#d63a2f", post2_ns: "#d63a2f",   // plain red for now
-                     dw: "#2b6fd6", ping: "#3f3f3f" };
+                     dw: "#2b6fd6", ping: "#3f3f3f", sp: "#3f3f3f" };
     let bars = `<defs><pattern id="post2hatch" width="6" height="6"
         patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
         <rect width="6" height="6" fill="#8a4fc8"/>
@@ -899,14 +1038,149 @@ export class NetworkView {
       <text x="${crx + 4}" y="${chartH}" class="dist-tick">0</text>
       <text x="${crx + 4}" y="6" class="dist-tick" style="font-style:italic">${countUnit}</text>`;
 
+    // ---- line style (default): smooth line in place of the bars ----------
+    this._distStyle ??= "line";    // "line" | "bars"
+    const lineMode = this._distStyle === "line" && !pingMode;
+    const qtyUnit = (secondsMode || spentMode) ? "s per trip" : paxMode ? "pax·s per trip" : "events";
+    const fmtQ = (v) => (v >= 10 ? Math.round(v).toLocaleString() : v.toFixed(1));
+    let LN = null;                 // geometry the drag-to-measure handlers need
+    // delay types as drawn (red / teal / purple / blue), per 10 ft bar:
+    // what the segment total and drag-to-measure sum, in either style
+    const groups = pingMode ? [] : [...new Set(CLASSES.map((c) => LINE_GROUP[c]))];
+    const grpBars = Object.fromEntries(groups.map((g) => [g, zeros.slice()]));
+    if (!pingMode)
+      for (const c of CLASSES) src[c].forEach((v, i) => { grpBars[LINE_GROUP[c]][i] += v; });
+    const total = groups.reduce((a, g) => a + grpBars[g].reduce((x, y) => x + y, 0), 0);
+    const ffSeg = spentMode && props.t_ff_s > 0 ? props.t_ff_s : 0;
+    if (lineMode) {
+      const bf = d.bucket_ft, k = LINE_PER_FT / bf, step = LINE_STEP_FT;
+      // Smooth over the segment AND its neighbour zones as one series, so the
+      // line runs continuously through each end (smoothing the three pieces
+      // separately left a step at both boundaries, 2026-11-21). Delay within
+      // ~2 sigma of an end therefore blends with the neighbour's; totals and
+      // drag measurements still come from the segment's own bars.
+      const nB0 = zeros.length, o = (ghB * bf) / step;
+      const ghGrp = (side) => {
+        const out = Object.fromEntries(groups.map((g) => [g, new Array(ghB).fill(0)]));
+        if (spentMode) {
+          // ping_v_lo[0] is the bucket nearest the light; gh_lo runs the other way
+          const v = side === "gh_lo" ? [...(d.ping_v_lo ?? [])].reverse() : (d.ping_v_hi ?? []);
+          out.sp = spentOf(v, ghB, false);
+          return out;
+        }
+        for (const c of CLASSES) {
+          const key = c + suffix, tgt = out[LINE_GROUP[c]];
+          if (mvmtFiltered) {
+            for (const mv of this._mvmtSel) {
+              const a = d.by_mvmt[mv]?.[side]?.[key] ?? d.by_mvmt[mv]?.[side]?.[c];
+              if (a) a.forEach((v, i) => { tgt[i] += v / denom; });
+            }
+          } else {
+            const a = d[side]?.[key] ?? d[side]?.[c];
+            if (a) a.forEach((v, i) => { tgt[i] += v / denom; });
+          }
+        }
+        return out;
+      };
+      const gLo = ghB ? ghGrp("gh_lo") : null, gHi = ghB ? ghGrp("gh_hi") : null;
+      const E = Object.fromEntries(groups.map((g) => [g, smoothFine(
+        ghB ? [...gLo[g], ...grpBars[g], ...gHi[g]] : grpBars[g], bf,
+        ghB ? (2 * ghB + nB0) * bf : lenFt)]));
+      const m = Math.ceil(lenFt / step) + 1;
+      const F = Object.fromEntries(groups.map((g) => [g, E[g].subarray(o, o + m)]));
+      const T = new Float64Array(m);
+      for (const g of groups) for (let j = 0; j < m; j++) T[j] += F[g][j];
+      // neighbour zones: [ft of first sample, total line] for each side
+      const ghost = [];
+      if (ghB) {
+        const nE = E[groups[0]].length;
+        const tot = (j) => groups.reduce((a2, g) => a2 + E[g][j], 0);
+        const lo = [], hi = [];
+        for (let j = 0; j <= o; j++) lo.push([j * step - ghFt, tot(j)]);
+        for (let j = o + m - 1; j < nE; j++) hi.push([Math.min(lenFt + ghFt, j * step - ghB * bf), tot(j)]);
+        lo[lo.length - 1][0] = 0;
+        hi[0][0] = lenFt;
+        ghost.push(lo, hi);
+      }
+      // the original 10 ft bars stay as a faint trace behind the line, so
+      // the axis has to reach the tallest bar, not only the line's peak
+      const barTot = zeros.map((_, i) => groups.reduce((a, g) => a + grpBars[g][i], 0));
+      let peak = Math.max(0, ffPerBucket && spentMode ? ffPerBucket * 1.5 : 0, ...barTot);
+      for (let j = 0; j < m; j++) peak = Math.max(peak, T[j]);
+      peak *= k;
+      const tk = lineTicks(peak || 1);
+      const yMaxU = Math.max(peak, tk[tk.length - 1]) * 1.06;
+      const yU = (u) => chartH - (u / yMaxU) * (chartH - 6);
+      const yL = (v) => yU(v * k);
+      const pts = [];
+      for (let j = 0; j < m; j++) pts.push([xOf(Math.min(lenFt, j * step)), yL(T[j])]);
+      const dom = (j) => {
+        let b = groups[0], bv = -1;
+        for (const g of groups) if (F[g][j] > bv) { bv = F[g][j]; b = g; }
+        return b;
+      };
+      const P = (a) => a.map((q) => `${q[0].toFixed(1)},${q[1].toFixed(1)}`).join("L");
+      let line = "";
+      for (const v of tk)
+        line += `<line x1="${padL}" x2="${W - padR}" y1="${yU(v).toFixed(1)}"
+                 y2="${yU(v).toFixed(1)}" stroke="#eceef1"/>`;
+      for (const G of ghost) {
+        const gp = G.map(([ft, v]) => [xOf(ft), Math.max(8, yL(v))]);   // clipped at the top
+        if (gp.length > 1) line += `<path d="M${P(gp)}" fill="none" stroke="#888"
+          stroke-width="1.6" stroke-dasharray="4 3" opacity="0.6"/>`;
+      }
+      barTot.forEach((v, i) => {
+        if (v > 0) line += `<rect x="${xOf((i + 1) * bf).toFixed(1)}" y="${yL(v).toFixed(1)}"
+          width="${Math.max(0.6, bw - 0.4).toFixed(1)}" height="${(chartH - yL(v)).toFixed(1)}"
+          fill="#3c4650" fill-opacity="0.16"/>`;
+      });
+      line += `<g class="dist-sel"></g>`;
+      for (let j0 = 0, j = 1; j <= m; j++) {
+        if (j === m || dom(j) !== dom(j0)) {
+          const run = pts.slice(Math.max(0, j0 - 1), j);
+          if (run.length > 1) line += `<path d="M${P(run)}" fill="none"
+            stroke="${LINE_COL[dom(j0)]}" stroke-width="2.6" stroke-linejoin="round"
+            stroke-linecap="round"/>`;
+          j0 = j;
+        }
+      }
+      if (spentMode && ffPerBucket) {
+        // free-flow floor: what a bus running at the segment's free-flow
+        // speed spends in every 10 ft; the gap above it is time lost
+        const yf = yL(ffPerBucket).toFixed(1);
+        line += `<line x1="${padL}" x2="${W - padR}" y1="${yf}" y2="${yf}" stroke="#2e8b57"
+                  stroke-width="1.4" stroke-dasharray="6 4"/>
+                 <text x="${padL + 4}" y="${(+yf - 4).toFixed(1)}" font-size="10" fill="#2e8b57"
+                  style="paint-order:stroke;stroke:#fff;stroke-width:3px">free-flow</text>`;
+      }
+      bars = line;
+      yAxis = `<line x1="${crx}" y1="8" x2="${crx}" y2="${chartH}" stroke="#999"/>` +
+        tk.map((v) => `<text x="${crx + 4}" y="${(yU(v) + 4).toFixed(1)}"
+          class="dist-tick">${v}</text>`).join("") +
+        `<text x="${W - 2}" y="-2" text-anchor="end" class="dist-tick"
+          style="font-style:italic">${(secondsMode || spentMode) ? "s/trip" : paxMode ? "pax·s/trip" : "events"} per ${LINE_PER_FT} ft</text>`;
+      LN = { bf, step, m, T, pts, dom, groups, grpBars, yL, total, ff: ffSeg };
+    } else if (!pingMode) {
+      bars += `<g class="dist-sel"></g>`;      // drag-to-measure overlay, above the bars
+    }
+    // SX: what the total and drag-to-measure read, for the line or the bars
+    const SX = LN ?? (pingMode ? null
+      : { bf: d.bucket_ft, groups, grpBars, total, ff: ffSeg });
+
     // Average-speed overlay (raw ping speeds per 10 ft bucket): join-the-
     // dots line + right-hand mph axis, opposite end from the traffic light.
     this._showSpeed ??= false;
     const MPH = 2.23694;
     const spd = (this._showSpeed && d.ping_v) ? d.ping_v : null;
+    // weather sub-overlays: only offered (and drawn) while avg speed is on
+    this._showWxRain ??= false;
+    this._showWxSnow ??= false;
+    const wxRain = (spd && this._showWxRain) ? this._wx?.heavy_rain?.v : null;
+    const wxSnow = (spd && this._showWxSnow) ? this._wx?.snow?.v : null;
     let vMaxMph = 0, ySpd = null, speedLine = "";
     if (spd) {
-      vMaxMph = Math.max(...spd.filter((v) => v != null)) * MPH * 1.15 || 1;
+      const allV = [...spd, ...(wxRain ?? []), ...(wxSnow ?? [])].filter((v) => v != null);
+      vMaxMph = Math.max(...allV) * MPH * 1.15 || 1;
       ySpd = (mph) => chartH - (mph / vMaxMph) * (chartH - 6);
       const mkPts = (arr, ftOf) => {
         const out = [];
@@ -922,6 +1196,15 @@ export class NetworkView {
           pp.map((p2) => `<circle cx="${p2[0].toFixed(1)}" cy="${p2[1].toFixed(1)}" r="1.6" fill="#0a0a0a"/>`).join("") + "</g>"
         : "";
       speedLine = drawLine(pts, 0.85);
+      const wxLine = (arr, color) => {
+        const pp = mkPts(arr, (i) => (i + 0.5) * d.bucket_ft);
+        return pp.length > 1
+          ? `<polyline points="${pp.map((p2) => p2.map((c) => c.toFixed(1)).join(",")).join(" ")}"
+               fill="none" stroke="${color}" stroke-width="1.6" opacity="0.9"/>`
+          : "";
+      };
+      if (wxRain) speedLine += wxLine(wxRain, "#d62728");
+      if (wxSnow) speedLine += wxLine(wxSnow, "#2b6cb0");
       if (ghB) {
         // buffer extensions: neighbors' speeds at ghost opacity, stitched
         // to the main line's ends so the curve reads continuously
@@ -1147,7 +1430,7 @@ export class NetworkView {
 
     host.innerHTML = `
       <hr class="dist-rule">
-      <div class="dist-head">${this.hasDoor
+      <div class="dist-head">${spentMode ? "Time spent along the segment" : this.hasDoor
           ? "Distribution of non-boarding delays"
           : "Distribution of delay locations"}
         <span class="dist-toggle">
@@ -1155,15 +1438,23 @@ export class NetworkView {
           ${d.nd_p ? `<button data-m="pax" class="${this._distMode === "pax" ? "on" : ""}">pax</button>` : ""}
           <button data-m="events" class="${this._distMode === "events" ? "on" : ""}">events</button>
           ${d.nd_q ? `<button data-m="queue" class="${this._distMode === "queue" ? "on" : ""}">last stop</button>` : ""}
+          ${d.ping_v ? `<button data-m="spent" class="${spentMode ? "on" : ""}"
+            title="all seconds a bus spends in each stretch, not only located delays">time spent</button>` : ""}
         </span>
         ${d.ping_v ? `<label class="dist-speed" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-speed-cb" ${this._showSpeed ? "checked" : ""}> avg speed</label>` : ""}
+        ${d.ping_v && this._showSpeed && this._wx?.heavy_rain ? `<label class="dist-wx" style="font-size:11px;margin-left:8px;cursor:pointer;color:#d62728"
+          title="average speed in hours with >= 7.6 mm of rain at this segment">
+          <input type="checkbox" class="dist-wx-rain-cb" ${this._showWxRain ? "checked" : ""}> heavy rain</label>` : ""}
+        ${d.ping_v && this._showSpeed && this._wx?.snow ? `<label class="dist-wx" style="font-size:11px;margin-left:8px;cursor:pointer;color:#2b6cb0"
+          title="average speed in hours with falling snow at the city's airport">
+          <input type="checkbox" class="dist-wx-snow-cb" ${this._showWxSnow ? "checked" : ""}> snow</label>` : ""}
         <label class="dist-cv" style="font-size:11px;margin-left:10px;cursor:pointer;${this._cv ? "" : "opacity:.4"}"
           title="${this._cv ? "coefficient of variation of headways (routes configured per city)" : "no headway-CV route through this segment in this city"}">
           <input type="checkbox" class="dist-cv-cb" ${this._cv ? "" : "disabled"} ${this._showCV && this._cv ? "checked" : ""}> headway CV</label>
-        ${this.hasDoor && d.dw && !pingMode ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
+        ${this.hasDoor && d.dw && !pingMode && !spentMode ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-doors-cb" ${this._showDoors ? "checked" : ""}> door events</label>` : ""}
-        ${mvmtAll.length && !pingMode ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
+        ${mvmtAll.length && !pingMode && !spentMode ? `<span class="dist-mvmt" style="margin-left:10px;display:inline-flex;gap:3px;vertical-align:middle">
           ${mvmtAll.map((m) => {
             const ARROWS = {
               T: "M12 19 V7 M7.5 10.5 L12 5.5 L16.5 10.5",
@@ -1180,12 +1471,20 @@ export class NetworkView {
               <path d="${ARROWS[m]}" fill="none" stroke="#fff" stroke-width="2.4"
                     stroke-linecap="round" stroke-linejoin="round"/></svg>`;
           }).join("")}</span>` : ""}
+        ${SX ? `<br><span class="dist-total"><b>${fmtQ(SX.total)}</b> ${qtyUnit} ${spentMode ? "average travel time" : "on this segment"}${
+          SX.ff ? ` · ${fmtQ(SX.ff)} s at free-flow · ${fmtQ(Math.max(0, SX.total - SX.ff))} s above it` : ""}</span>` : ""}
         <span class="nw-note">${pingMode
           ? `(${totals.reduce((a, v) => a + v, 0).toLocaleString()} raw AVL pings, pre-reconstruction)`
           : `(${d.n_events} events · ${d.n_trips ?? "?"} trips)`}</span>
       </div>
-      <svg viewBox="0 -12 ${W} ${H + 12}" class="dist-svg">${yAxis}${bars}${speedLine}${cvLines}${road}${axis}</svg>
-      ${this.hasDoor && !pingMode ? `<div class="dist-legend">
+      <div class="dist-wrap"><svg viewBox="0 -12 ${W} ${H + 12}" class="dist-svg${SX ? " dist-line" : ""}">${yAxis}${bars}${speedLine}${cvLines}${road}${axis}</svg>
+        <div class="dist-call hidden"></div></div>
+      ${SX ? `<div class="dist-hint"><span>Drag across the chart to measure the ${spentMode ? "time spent" : "delay"} between two points.
+        <a href="#" class="dist-sel-clear hidden">clear</a></span>
+        <span class="dist-style" title="smooth line, or the original 10 ft bars">
+          <button data-st="line" class="${lineMode ? "on" : ""}">line</button><button
+            data-st="bars" class="${lineMode ? "" : "on"}">10 ft bars</button></span></div>` : ""}
+      ${this.hasDoor && !pingMode && !spentMode ? `<div class="dist-legend">
         <span><i style="background:#d63a2f"></i>non-dwell</span>
         <span><i style="background:#1fb8b0"></i>pre-boarding</span>
         <span><i style="background:#8a4fc8"></i>post-boarding</span>
@@ -1199,6 +1498,145 @@ export class NetworkView {
         this._renderDistribution(host, props, coords);
       };
     });
+    host.querySelectorAll(".dist-style button").forEach((b) => {
+      b.onclick = () => {
+        this._distStyle = b.dataset.st;
+        this._renderDistribution(host, props, coords);
+      };
+    });
+    // Drag to measure (line style): shade the area under the curve between
+    // two points and float the integrated quantity next to it. Figures are
+    // summed from the original bars, so they do not depend on the smoothing.
+    if (SX) {
+      const svgL = host.querySelector(".dist-svg");
+      const selG = svgL.querySelector(".dist-sel");
+      const call = host.querySelector(".dist-call");
+      const clearA = host.querySelector(".dist-sel-clear");
+      if (this._distSel?.sid !== props.sid) this._distSel = null;
+      const ftAt = (e) => {
+        const rect = svgL.getBoundingClientRect();
+        const px = (e.clientX - rect.left) * (W / rect.width);
+        return ((W - padR - px) / innerW) * domFt - ghFt;
+      };
+      const clampFt = (f) => Math.max(0, Math.min(lenFt, f));
+      const at = (f) => {       // line height at a distance (line style only)
+        const u = Math.min(LN.m - 1.001, Math.max(0, f / LN.step)), i = Math.floor(u);
+        return LN.T[i] + (LN.T[i + 1] - LN.T[i]) * (u - i);
+      };
+      const drawSel = () => {
+        const sel = this._distSel;
+        if (!sel || Math.abs(sel.a - sel.b) < 5) {
+          selG.innerHTML = "";
+          call.classList.add("hidden");
+          clearA?.classList.add("hidden");
+          return;
+        }
+        const fa = Math.max(sel.a, sel.b), fb = Math.min(sel.a, sel.b);
+        let g = "", yTop = chartH;
+        const guides = (yAt) => {
+          for (const f of [fa, fb]) {
+            const x = xOf(f).toFixed(1), y = yAt(f).toFixed(1);
+            g += `<line x1="${x}" x2="${x}" y1="8" y2="${y}" stroke="#777" stroke-opacity=".6"
+                   stroke-dasharray="3 4"/>
+                  <line x1="${x}" x2="${x}" y1="${y}" y2="${chartH}" stroke="#1c1c28"
+                   stroke-width="1.5"/>`;
+          }
+        };
+        if (LN) {
+          // line: shade the area under the curve in the line's colour
+          const ja = Math.min(LN.m - 1, Math.floor(fa / LN.step));
+          const jb = Math.max(0, Math.ceil(fb / LN.step));
+          const jn = (f) => Math.max(0, Math.min(LN.m - 1, Math.round(f / LN.step)));
+          const Q = [[xOf(fa), LN.yL(at(fa)), LN.dom(jn(fa))]];
+          for (let j = ja; j >= jb; j--) Q.push([LN.pts[j][0], LN.pts[j][1], LN.dom(j)]);
+          Q.push([xOf(fb), LN.yL(at(fb)), LN.dom(jn(fb))]);
+          for (const q of Q) yTop = Math.min(yTop, q[1]);
+          for (let i0 = 0, i = 1; i <= Q.length; i++) {
+            if (i === Q.length || Q[i][2] !== Q[i0][2]) {
+              const run = Q.slice(i0, Math.min(Q.length, i + 1));
+              if (run.length > 1) g += `<path d="M${run[0][0].toFixed(1)},${chartH}L${
+                run.map((q) => `${q[0].toFixed(1)},${q[1].toFixed(1)}`).join("L")}L${
+                run[run.length - 1][0].toFixed(1)},${chartH}Z"
+                fill="${LINE_COL[Q[i0][2]]}" fill-opacity="0.5"/>`;
+              i0 = i;
+            }
+          }
+          guides((f) => LN.yL(at(f)));
+        } else {
+          // bars: the selected bars keep their colours, the rest of the
+          // segment is veiled
+          const nB1 = totals.length;
+          const bi = (f) => Math.max(0, Math.min(nB1 - 1, Math.floor(f / SX.bf)));
+          for (let i = bi(fb); i <= bi(fa); i++) yTop = Math.min(yTop, yOf(totals[i]));
+          const veil = (f0, f1) => {
+            const x0 = xOf(f0), x1 = xOf(f1);
+            if (x1 - x0 > 0.5) g += `<rect x="${x0.toFixed(1)}" y="6" width="${(x1 - x0).toFixed(1)}"
+              height="${chartH - 6}" fill="#fff" fill-opacity="0.66"/>`;
+          };
+          veil(lenFt, fa);
+          veil(fb, 0);
+          guides((f) => yOf(totals[bi(f)]));
+        }
+        selG.innerHTML = g;
+        const parts = SX.groups
+          .map((gk) => [gk, integBuckets(SX.grpBars[gk], SX.bf, fa, fb)]);
+        const t = parts.reduce((a, q) => a + q[1], 0);
+        const ffSel = SX.ff ? (SX.ff * (fa - fb)) / lenFt : 0;
+        call.innerHTML = `<div><b>${fmtQ(t)}</b> ${qtyUnit}</div>
+          ${SX.ff ? `<div class="r">${fmtQ(Math.max(0, t - ffSel))} s above free-flow</div>` : ""}
+          <div class="r">${Math.round(fa / 10) * 10} to ${Math.round(fb / 10) * 10} ft before the light</div>
+          ${parts.length > 1 ? `<div class="parts">${parts.filter((q) => q[1] >= 0.05)
+            .map(([gk, v]) => `<span><i style="background:${LINE_COL[gk]}"></i>${
+              LINE_NAME[gk]} ${fmtQ(v)}</span>`).join("")}</div>` : ""}`;
+        call.classList.remove("hidden");
+        clearA?.classList.remove("hidden");
+        // attach the box to the area: above its highest point if it fits,
+        // otherwise beside it
+        const rect = svgL.getBoundingClientRect();
+        const sc = rect.width / W, cw = call.offsetWidth, ch = call.offsetHeight;
+        const xa = xOf(fa) * sc, xb = xOf(fb) * sc;
+        const topOf = (y) => (y + 12) * sc;          // viewBox starts at y = -12
+        let left, topPx;
+        if (topOf(yTop) - ch - 8 >= 0) {
+          left = (xa + xb) / 2 - cw / 2;
+          topPx = topOf(yTop) - ch - 8;
+        } else {
+          topPx = Math.max(2, topOf(8));
+          left = xa - cw - 10 >= 0 ? xa - cw - 10 : xb + 10;
+        }
+        call.style.left = `${Math.max(2, Math.min(rect.width - cw - 2, left))}px`;
+        call.style.top = `${topPx}px`;
+      };
+      let dragFt = null;
+      svgL.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        const f = ftAt(e);
+        if (f < 0 || f > lenFt) return;
+        dragFt = f;
+        this._distSel = { sid: props.sid, a: f, b: f };
+        svgL.setPointerCapture(e.pointerId);
+        drawSel();
+      });
+      svgL.addEventListener("pointermove", (e) => {
+        if (dragFt === null) return;
+        this._distSel = { sid: props.sid, a: dragFt, b: clampFt(ftAt(e)) };
+        drawSel();
+      });
+      const endDrag = () => {
+        if (dragFt === null) return;
+        dragFt = null;
+        if (this._distSel && Math.abs(this._distSel.a - this._distSel.b) < 5) this._distSel = null;
+        drawSel();
+      };
+      svgL.addEventListener("pointerup", endDrag);
+      svgL.addEventListener("pointercancel", endDrag);
+      if (clearA) clearA.onclick = (e) => {
+        e.preventDefault();
+        this._distSel = null;
+        drawSel();
+      };
+      drawSel();
+    }
     const cvCb = host.querySelector(".dist-cv-cb");
     if (cvCb) cvCb.onchange = () => {
       this._showCV = cvCb.checked;
@@ -1209,6 +1647,13 @@ export class NetworkView {
       this._showSpeed = speedCb.checked;
       this._renderDistribution(host, props, coords);
     };
+    for (const [cls, key] of [[".dist-wx-rain-cb", "_showWxRain"], [".dist-wx-snow-cb", "_showWxSnow"]]) {
+      const cb = host.querySelector(cls);
+      if (cb) cb.onchange = () => {
+        this[key] = cb.checked;
+        this._renderDistribution(host, props, coords);
+      };
+    }
     const doorsCb = host.querySelector(".dist-doors-cb");
     if (doorsCb) doorsCb.onchange = () => {
       this._showDoors = doorsCb.checked;
@@ -1253,7 +1698,10 @@ export class NetworkView {
             const mph = v * MPH;
             spdEl.setAttribute("x", (px + 7).toFixed(1));
             spdEl.setAttribute("y", (ySpd(mph) - 7).toFixed(1));
-            spdEl.textContent = `${mph.toFixed(1)} mph`;
+            const extra = [[wxRain, "rain"], [wxSnow, "snow"]]
+              .filter(([a]) => a && a[bi] != null)
+              .map(([a, lab]) => ` · ${lab} ${(a[bi] * MPH).toFixed(1)}`).join("");
+            spdEl.textContent = `${mph.toFixed(1)} mph${extra}`;
           } else spdEl.textContent = "";
         } else if (spdEl) spdEl.textContent = "";
       });
@@ -1332,7 +1780,7 @@ export class NetworkView {
     this._tooltip.innerHTML = `
       <b>${cleanLabel(p.label)}</b><br>
       routes: ${routes.map((r) => `${this._routeLabel(r.r)} ${r.dir}`).join(", ")}<br>
-      ${spec.label}${statBit}: ${v == null ? "—" : (this.N.metric === "cv_increase" && v > 0 ? "+" : "") + fmtValue(this.N.metric, v)} · ${Math.round(p.len_m)} m${this._cvHoverBit(p.sid)}`;
+      ${spec.label}${statBit}: ${v == null ? "—" : ((this.N.metric === "cv_increase" || spec.cond) && v > 0 ? "+" : "") + fmtValue(this.N.metric, v)} · ${Math.round(p.len_m)} m${this._cvHoverBit(p.sid)}${this._weatherHoverBit(p.sid)}`;
     const mapRect = $("map").getBoundingClientRect();
     this._tooltip.style.left = `${mapRect.left + point.x + 12}px`;
     this._tooltip.style.top = `${mapRect.top + point.y + 12}px`;
@@ -1362,12 +1810,32 @@ export class NetworkView {
           maxZoom: 17.5, duration: 700 });
     }
 
+    // Open the panel at once with a spinner: the per-period table below
+    // needs every period's shards, which on a first click (NYC: ~14 parts
+    // per period) can take a while.
+    const placeholder = document.createElement("div");
+    placeholder.className = "nw-detail";
+    placeholder.innerHTML = `
+      <button class="nw-close">×</button>
+      <h3>${cleanLabel(p.label)}</h3>
+      <div class="nw-panel-loading"><span class="nw-spinner"></span> Loading segment…</div>`;
+    placeholder.querySelector(".nw-close").onclick = () => {  // same as the real panel's ×
+      placeholder.remove();
+      this.map.highlight([]);
+      this.S.network.selected = null;
+      this.N.syncHash?.();
+    };
+    $("stage").appendChild(placeholder);
+
     // Per-period table under the current non-period filters.
     const rows = [];
     for (const period of ALL_PERIODS) {
       const acc = (await this.data.combine({ ...this.F, periods: [period] })).get(sid);
       rows.push(acc ?? null);
     }
+    placeholder.remove();
+    // another segment (or none) was selected while we loaded: drop this one
+    if (this.S.network.selected !== sid) return;
     const M = this.data.meta;
     const cell = (v, suffix = "") => (Number.isFinite(v) ? `${v.toFixed(0)}${suffix}` : "—");
 
