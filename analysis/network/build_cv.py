@@ -33,8 +33,10 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))
 
 from dataio.cities import get_city  # noqa: E402
+from analysis.network.traversals_view import configured_connection  # noqa: E402
 
 MIN_N = 25
 END_FT = 50.0  # CV at a segment end = mean of valid buckets within this
@@ -97,7 +99,11 @@ def build(city_id: str) -> None:
         shutil.rmtree(out)
     out.mkdir(parents=True)
 
-    con = duckdb.connect()
+    # Only the configured window: headway_cv/ may also hold side-study
+    # dates (CTA summers 2024/2025, written 2026-08-25 for the by-year
+    # comparison) that must not leak into the dashboard payload.
+    lo = city.cv_start or "0000-00-00"
+    con = configured_connection(city)
     rows = con.execute(f"""
         SELECT seg_id,
                regexp_extract(filename, 'route=([^./]+)', 1) AS route_id,
@@ -105,9 +111,11 @@ def build(city_id: str) -> None:
                sum(sum_h) AS sum_h, sum(sum_h2) AS sum_h2
         FROM read_parquet('{src}/service_date=*/route=*.parquet',
                           filename=true)
+        WHERE regexp_extract(filename, 'service_date=([0-9-]+)', 1) >= '{lo}'
         GROUP BY 1, 2, 3
     """).fetchall()
     dates = sorted(d.name.split("=")[1] for d in src.glob("service_date=*"))
+    dates = [d for d in dates if d >= lo]
 
     per_seg: dict[str, dict[str, dict[int, tuple]]] = {}
     for seg_id, route, b, n, sh, sh2 in rows:

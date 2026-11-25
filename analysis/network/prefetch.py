@@ -36,7 +36,7 @@ def prefetch(
     city = get_city(city_id)
     cache_dir = city.resolve(city.archive_cache_dir)
     man = realtime.load_manifest(cache_dir, refresh=True)
-    rows = man[man.agency == city.r2_agency].copy()
+    rows = man[man.agency.isin(city.r2_agencies)].copy()
     rows["dt"] = pd.to_datetime(
         dict(year=rows.year, month=rows.month, day=rows.day, hour=rows.hour), utc=True
     )

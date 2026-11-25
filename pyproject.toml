@@ -15,6 +15,8 @@ dependencies = [
     "osmium>=4.3.1",
     "scikit-learn>=1.7.2",
     "tslearn>=0.9.0",
+    "eccodes>=2.49.0",
+    "eccodeslib>=2.49.0.30",
 ]
 
 [project.scripts]

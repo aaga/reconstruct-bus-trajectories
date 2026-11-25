@@ -33,6 +33,33 @@ import duckdb
 from dataio.cities import CityConfig
 
 
+def configured_connection(city: CityConfig, memory_limit: str | None = None,
+                          threads: int | None = None,
+                          db_path: str | Path | None = None) -> "duckdb.DuckDBPyConnection":
+    """A duckdb connection that spills instead of swapping.
+
+    duckdb's default memory_limit is ~80% of RAM with no temp directory, so
+    a query bigger than RAM (NYC: 408M traversals through the canonical
+    view) grows the process into swap and stalls at 0% CPU (2026-09-30,
+    freeflow at 27 GB). A cap + a spill dir lets it page to disk itself.
+    ``PIPELINE_DUCKDB_MEMORY`` overrides the default cap. ``db_path`` makes
+    it an on-disk database (tables stored compressed, streamed from disk).
+    """
+    import os
+
+    con = duckdb.connect(str(db_path)) if db_path else duckdb.connect()
+    spill = (Path(__file__).resolve().parents[2] / "outputs" / "network"
+             / city.city_id / "duckdb_spill")
+    spill.mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET temp_directory='{spill}'")
+    con.execute("SET memory_limit='"
+                + (memory_limit or os.environ.get("PIPELINE_DUCKDB_MEMORY", "10GB")) + "'")
+    con.execute("SET preserve_insertion_order=false")
+    if threads:
+        con.execute(f"SET threads={int(threads)}")
+    return con
+
+
 def _period_case(city: CityConfig, hour_expr: str) -> str:
     whens = []
     fallback = None
@@ -54,11 +81,18 @@ def create_canonical_view(
     *,
     view_name: str = "trav",
     door_sidecar_glob: str | None = None,
+    pre_filter: str | None = None,
 ) -> None:
     """See module docstring. When ``door_sidecar_glob`` is given (and files
     exist), the view gains door/APC columns summed over constituents:
     has_door (every constituent covered), door_n, dwell_s, ons, offs,
-    load_sum. Without a sidecar these come back as 0/NULL."""
+    load_sum. Without a sidecar these come back as 0/NULL.
+
+    ``pre_filter`` (SQL over the raw constituent columns, alias ``tr``) is
+    applied BEFORE the per-trip merge. At NYC scale (408M rows) merging
+    everything and filtering afterwards spilled >30 GB (2026-09-30);
+    callers that need a slice (freeflow: late night) should pass it here
+    and keep their own filter on the merged rows as well."""
     # Identity map over canonical seg_bounds: stored seg_id == canonical
     # seg_id since the 2026-07 regen. k = occurrences of the segment within
     # the shape (loop routes can cross one canonical segment twice; the
@@ -111,9 +145,18 @@ def create_canonical_view(
             coalesce(sum(offs), 0) AS offs,
             coalesce(sum(load_sum), 0) AS load_sum,
             coalesce(arg_min(part_load_in, t_enter_utc), 0) AS load_in,"""
+        door_single_cols = """
+            part_covered AS has_door,
+            coalesce(door_n, 0) AS door_n,
+            coalesce(part_dwell_s, 0) AS dwell_s,
+            coalesce(ons, 0) AS ons,
+            coalesce(offs, 0) AS offs,
+            coalesce(load_sum, 0) AS load_sum,
+            coalesce(part_load_in, 0) AS load_in,"""
     else:
         door_join = ""
         door_part_cols = ""
+        door_single_cols = None
         door_merge_cols = """
             FALSE AS has_door, 0 AS door_n, 0.0 AS dwell_s,
             0 AS ons, 0 AS offs, 0 AS load_sum, 0 AS load_in,"""
@@ -122,12 +165,36 @@ def create_canonical_view(
     con.execute(
         f"""
         CREATE OR REPLACE VIEW {view_name} AS
-        WITH joined AS (
+        -- NOT MATERIALIZED: `joined` feeds both the pass-through and the
+        -- loop-merge branches, and duckdb auto-materialises a CTE used twice
+        -- — i.e. writes out every column of every traversal (38 GB of spill
+        -- for NYC, 2026-09-30). Streaming it per branch is cheap.
+        WITH joined AS NOT MATERIALIZED (
           SELECT m.new_seg, m.k, {door_part_cols} tr.*
           FROM read_parquet('{traversals_glob}') tr
           JOIN segmap m
             ON m.shape_id = tr.shape_id AND m.old_seg = tr.seg_id
           {door_join}
+          {f"WHERE {pre_filter}" if pre_filter else ""}
+        ),
+        -- A segment crossed ONCE by the shape (k = 1) has exactly one
+        -- constituent per trip, so the merge would regroup each row with
+        -- itself: pass those rows straight through and aggregate only the
+        -- k > 1 crossings (loops). At NYC scale the full GROUP BY over 408M
+        -- rows spilled >30 GB (2026-09-30). Verified row-identical on the
+        -- full MBTA archive; the one difference is rare duplicate trip keys
+        -- (same trip_id+vehicle+date twice on one shape/segment: 572 of
+        -- 19.4M CTA July rows), which the old merge DROPPED (2 parts != k=1)
+        -- and this now keeps as the two traversals they are.
+        single AS (
+          SELECT
+            new_seg AS seg_id, route_id, shape_id, direction, service_date,
+            trip_key, t_enter_utc, t_exit_utc, t_obs_s, n_pings_in_seg,
+            max_gap_in_seg_s, flags,
+            {door_single_cols or door_merge_cols}
+            1 AS n_parts, k
+          FROM joined
+          WHERE k = 1
         ),
         merged AS (
           SELECT
@@ -147,7 +214,13 @@ def create_canonical_view(
             count(*) AS n_parts,
             any_value(k) AS k
           FROM joined
+          WHERE k > 1
           GROUP BY new_seg, shape_id, service_date, trip_key
+        ),
+        unioned AS (
+          SELECT * FROM single
+          UNION ALL BY NAME
+          SELECT * FROM merged
         )
         SELECT
           seg_id, route_id, shape_id, direction, service_date, trip_key,
@@ -155,7 +228,7 @@ def create_canonical_view(
           {hour_expr}::UTINYINT AS hour_local,
           {_period_case(city, hour_expr)} AS period,
           flags, has_door, door_n, dwell_s, ons, offs, load_sum, load_in
-        FROM merged
+        FROM unioned
         WHERE n_parts = k        -- full coverage of the canonical span only
         """
     )

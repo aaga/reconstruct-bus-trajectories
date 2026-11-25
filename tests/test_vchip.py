@@ -157,3 +157,27 @@ def test_signal_side_classification():
     assert side == "near_side" and 0 < d < SIDE_WINDOW_FT
     side, d = classify(40.0, short)          # 66 ft since the light behind
     assert side == "far_side" and -SIDE_WINDOW_FT < d < 0
+
+
+def test_fit_trajectory_min_speed_fill_zero_uses_vchip():
+    """RIPTA (speed_min_fill=0): sparse speeds still route to VCHIP-ME."""
+    t = np.array([0.0, 30, 60])
+    d = np.array([0.0, 200, 400])
+    v = np.array([7.0, np.nan, np.nan])
+    assert fit_trajectory(t, d, v, 0.0).f.__class__.__name__ == "CubicHermiteSpline"
+    # but no speeds at all still means plain PCHIP
+    v0 = np.full(3, np.nan)
+    assert fit_trajectory(t, d, v0, 0.0).f.__class__.__name__ == "PchipInterpolator"
+
+
+def test_fit_trajectory_clips_glitch_speeds():
+    """Speeds above MAX_SPEED_MPS count as missing (gate + tangent seeding)."""
+    from core.smooth import MAX_SPEED_MPS
+    t = np.array([0.0, 30, 60])
+    d = np.array([0.0, 200, 400])
+    v = np.array([7.0, MAX_SPEED_MPS + 80, MAX_SPEED_MPS + 80])
+    # 1/3 usable < 0.5 gate -> PCHIP, exactly as if the glitches were NaN
+    assert fit_trajectory(t, d, v).f.__class__.__name__ == "PchipInterpolator"
+    sm = fit_trajectory(t, d, v, 0.0)
+    ref = vchip_me(t, d, np.array([7.0, np.nan, np.nan]))
+    assert np.allclose(sm.f(np.linspace(0, 60, 13)), ref.f(np.linspace(0, 60, 13)))

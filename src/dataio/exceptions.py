@@ -40,6 +40,14 @@ Entry types (the ``value`` schema each type expects):
                         Unlisted nodes join whichever side they chain to.
                         target: {"nodes_a": [int, ...], "nodes_b": [int, ...]}
 
+  signal_add            Treat these junction nodes as signalized although
+                        OSM has no signal there (verified on street view).
+                        target: {"nodes": [int, ...]}
+
+  signal_reject         Never treat these junction nodes as signalized:
+                        blocks the crosswalk-based inference and demotes an
+                        OSM signal. target: {"nodes": [int, ...]}
+
 Common required fields per entry: ``id`` (unique slug), ``type``, ``city``,
 ``target``, ``why``, ``added`` (YYYY-MM-DD). Optional: ``value``,
 ``evidence``, ``review_after``.
@@ -86,6 +94,8 @@ _TYPES = {
     "boundary_rep_override",
     "terminal_stop",
     "cluster_split",
+    "signal_add",
+    "signal_reject",
 }
 _COMMON_REQUIRED = ("id", "type", "city", "target", "why", "added")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -106,6 +116,8 @@ class Exceptions:
     boundary_reps: dict[frozenset[int], int] = field(default_factory=dict)
     terminal_stops: frozenset[str] = frozenset()
     cluster_splits: tuple[tuple[frozenset[int], frozenset[int]], ...] = ()
+    signal_adds: frozenset[int] = frozenset()
+    signal_rejects: frozenset[int] = frozenset()
     entries: tuple[dict, ...] = ()
 
 
@@ -154,6 +166,11 @@ def _validate_entry(e: dict, seen_ids: set[str]) -> None:
                 _fail(eid, f"target.{nm} must be a non-empty list of node ids")
         if set(a) & set(b):
             _fail(eid, "nodes_a and nodes_b must be disjoint")
+    if t in ("signal_add", "signal_reject"):
+        nodes = target.get("nodes")
+        if (not isinstance(nodes, list) or not nodes
+                or not all(isinstance(n, int) for n in nodes)):
+            _fail(eid, "target.nodes must be a non-empty list of node ids")
 
 
 # Derived cities consume their parent's exceptions: cta-hf shares CTA's
@@ -170,6 +187,7 @@ def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
     coord, pins, reps = {}, {}, {}
     rejects, terminals = set(), set()
     splits = []
+    sig_add, sig_rej = set(), set()
     kept = []
     for e in doc.get("entries", []):
         _validate_entry(e, seen)
@@ -190,6 +208,12 @@ def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
         elif t == "cluster_split":
             splits.append((frozenset(target["nodes_a"]),
                            frozenset(target["nodes_b"])))
+        elif t == "signal_add":
+            sig_add.update(int(n) for n in target["nodes"])
+        elif t == "signal_reject":
+            sig_rej.update(int(n) for n in target["nodes"])
+    if sig_add & sig_rej:
+        _fail(None, f"{city_id}: nodes both added and rejected: {sorted(sig_add & sig_rej)}")
     return Exceptions(
         city=city_id,
         coord_overrides=coord,
@@ -198,6 +222,8 @@ def load_exceptions(city_id: str, path: Path = EXCEPTIONS_PATH) -> Exceptions:
         boundary_reps=reps,
         terminal_stops=frozenset(terminals),
         cluster_splits=tuple(splits),
+        signal_adds=frozenset(sig_add),
+        signal_rejects=frozenset(sig_rej),
         entries=tuple(kept),
     )
 

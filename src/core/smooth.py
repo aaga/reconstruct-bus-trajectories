@@ -307,13 +307,25 @@ def vchip_me(t: np.ndarray, d: np.ndarray, v: np.ndarray,
                              x=x_in, f=f)
 
 
+# Reported speeds above this are feed glitches, not buses (67 mph). RIPTA's
+# v2 scrape carries ~0.3% such values, up to 114 m/s (2026-11-02). They are
+# treated as missing, so VCHIP-ME seeds those knots like any other gap.
+MAX_SPEED_MPS = 30.0
+
+
 def fit_trajectory(t: np.ndarray, d: np.ndarray,
-                   v: np.ndarray | None = None) -> LocregPchipResult:
+                   v: np.ndarray | None = None,
+                   min_speed_fill: float = 0.5) -> LocregPchipResult:
     """Route to the reconstruction method for this feed (2026-08 decision):
-    VCHIP-ME when usable speeds are present (>= half the pings finite),
-    plain PCHIP otherwise. LOCREG is retired from the network pipeline."""
+    VCHIP-ME when usable speeds are present (finite fraction >=
+    ``min_speed_fill``, after dropping > ``MAX_SPEED_MPS``), plain PCHIP
+    otherwise. ``min_speed_fill=0`` uses VCHIP-ME whenever any speed is
+    present (CityConfig.speed_min_fill; RIPTA, whose feed omits speed at
+    0 mph). LOCREG is retired from the network pipeline."""
     if v is not None:
         v = np.asarray(v, dtype=float)
-        if np.isfinite(v).mean() >= 0.5:
+        v = np.where(v > MAX_SPEED_MPS, np.nan, v)
+        fill = np.isfinite(v).mean()
+        if fill > 0 and fill >= min_speed_fill:
             return vchip_me(t, d, v)
     return plain_pchip(t, d)

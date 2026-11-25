@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO))
 
-from analysis.network.traversals_view import create_canonical_view  # noqa: E402
+from analysis.network.traversals_view import configured_connection, create_canonical_view  # noqa: E402
 from dataio.cities import CityConfig, get_city  # noqa: E402
 
 MIN_N_P5 = 20
@@ -51,10 +51,16 @@ def _window_sql(lo: int, hi: int) -> str:
 
 
 def build_freeflow(city: CityConfig, traversals_glob: str, registry: dict) -> dict:
-    con = duckdb.connect()
-    create_canonical_view(con, traversals_glob, registry, city)
+    con = configured_connection(city)
     night = _window_sql(*city.late_night)
     wide = _window_sql(*city.late_night_wide) if city.late_night_wide else night
+    # slice before the per-trip merge (exact for the gap test: a merged row
+    # passes only if every constituent does); the query below re-applies
+    # both filters to the merged rows
+    create_canonical_view(
+        con, traversals_glob, registry, city,
+        pre_filter=(f"{wide.replace('hour_local', 'tr.hour_local')} "
+                    f"AND tr.max_gap_in_seg_s <= {MAX_GAP_S} AND tr.t_obs_s > 0"))
     rows = con.execute(
         f"""
         SELECT seg_id,

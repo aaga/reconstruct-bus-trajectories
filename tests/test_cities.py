@@ -26,4 +26,10 @@ def test_cta_period_boundaries():
 
 def test_unknown_city_raises():
     with pytest.raises(KeyError):
-        get_city("nyc")
+        get_city("atlantis")  # (nyc became a real city 2026-09-29)
+
+
+def test_cities_default_to_gated_speed_fill():
+    for cid in ("cta", "mbta", "translink", "nyc"):
+        c = get_city(cid)
+        assert not c.feed_speed and c.speed_min_fill == 0.5

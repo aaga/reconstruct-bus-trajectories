@@ -460,6 +460,7 @@ async function applySiteConfig() {
   const cfg = await fetch("site.json", { cache: "no-cache" })
     .then((r) => (r.ok ? r.json() : null)).catch(() => null);
   if (!cfg) return;
+  globalThis.SITE_CONFIG = cfg;  // read by network_data.fetchSegFile (segment_bundle)
   if (Array.isArray(cfg.network_cities) && cfg.network_cities.length) {
     const keep = new Set(cfg.network_cities.filter((c) => NETWORK_CITIES[c]));
     for (const c of Object.keys(NETWORK_CITIES)) if (!keep.has(c)) delete NETWORK_CITIES[c];

@@ -14,7 +14,29 @@ export const NETWORK_CITIES = {
   cta: { label: "Chicago", base: "../data/network" },
   mbta: { label: "Boston", base: "../data/network/mbta" },
   translink: { label: "Vancouver", base: "../data/network/translink" },
+  nyc: { label: "New York", base: "../data/network/nyc" },
 };
+
+// Per-segment payload files (dist/, dist3mph/, cv/). The public build packs
+// them into bundles of N segments (site.json "segment_bundle": N) to stay
+// under the Pages 20k-file limit; locally each segment is its own file.
+// Resolves to the parsed JSON, or null if the segment has no file.
+const _bundleCache = new Map();
+export async function fetchSegFile(base, dir, sid) {
+  const n = globalThis.SITE_CONFIG?.segment_bundle;
+  if (!n) {
+    const r = await fetch(`${base}/${dir}/${sid}.json`, { cache: "no-cache" });
+    return r.ok ? r.json() : null;
+  }
+  const url = `${base}/${dir}/b${Math.floor(sid / n)}.json`;
+  if (!_bundleCache.has(url)) {
+    _bundleCache.set(url, fetch(url, { cache: "no-cache" })
+      .then((r) => (r.ok ? r.json() : {}))
+      .catch(() => { _bundleCache.delete(url); return {}; }));
+  }
+  const bundle = await _bundleCache.get(url);
+  return bundle[sid] ?? null;
+}
 
 // Strip raw OSM node ids from human-facing labels ("node 4332637067" adds
 // clutter and means nothing to a rider). "A → node N" reads as mid-block.
@@ -41,6 +63,10 @@ export class NetworkData {
     // Optional: per-segment headway-CV change (build_cv summary.json); only
     // cities with configured cv_routes have it. null = metric unavailable.
     this.cvSummary = await fetch(`${this.base}/cv/summary.json`, { cache: "no-cache" })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    // Optional: per-segment heavy-rain / snow speed effects (weather_effect.py).
+    this.weatherEffect = await fetch(`${this.base}/weather_effect.json`, { cache: "no-cache" })
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
     return this;

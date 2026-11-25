@@ -75,6 +75,7 @@ from analysis.network.run_reconstruct import (  # noqa: E402
     _init_worker,
     _matcher,
     _service_date_pings,
+    EDGE_MARGIN_M,
     MAX_DURATION_H,
     MIN_MONOTONE,
     MIN_PINGS,
@@ -141,6 +142,50 @@ EVENTS_SCHEMA = pa.schema(
 # start date and operating-hour windows are per city (CityConfig.cv_*,
 # 2026-09-24); CV_START_OVERRIDE still forces a start for targeted backfills.
 CV_MAX_HEADWAY_S = 3600.0
+
+
+def cv_headway_rows(per_seg: dict, h_lo: int, h_hi: int, tz: str) -> list[dict]:
+    """Per-bucket headway moments with the headway SET fixed per segment.
+
+    ``per_seg`` maps seg_id -> list of {bucket: crossing epoch s}, one dict
+    per trip. Which trips count (operating-hour window) and where service
+    breaks fall (> CV_MAX_HEADWAY_S) are decided ONCE per segment from each
+    trip's crossing at the segment's upstream end (highest bucket), then the
+    same trips and breaks apply at every bucket (2026-11-03). Deciding them
+    per bucket let a headway sitting on the 60 min cap, or a bus crossing at
+    07:00/19:00, count at one end of a segment and not the other, which read
+    as a CV change (RIPTA Eddy St: +0.014 of which +0.010 was one 3,600 s
+    gap). Within a block, each bucket still differences its own sorted
+    crossing times, so overtaking stays a positive headway.
+    """
+    out: list[dict] = []
+    for seg, trips in per_seg.items():
+        if len(trips) < 2:
+            continue
+        b_up = max(max(tr) for tr in trips)
+        anchor = np.array([tr.get(b_up, tr[max(tr)]) for tr in trips], float)
+        hrs = pd.to_datetime(anchor, unit="s", utc=True).tz_convert(tz).hour.to_numpy()
+        keep = np.flatnonzero((hrs >= h_lo) & (hrs < h_hi))
+        if len(keep) < 2:
+            continue
+        keep = keep[np.argsort(anchor[keep], kind="stable")]
+        block = np.concatenate([[0], np.cumsum(np.diff(anchor[keep]) > CV_MAX_HEADWAY_S)])
+        by_b: dict[int, list] = defaultdict(list)
+        for k, blk in zip(keep, block):
+            for b_, tm in trips[k].items():
+                by_b[b_].append((tm, blk))
+        for b_, xs in by_b.items():
+            if len(xs) < 2:
+                continue
+            a = np.array(sorted(xs))
+            h = np.diff(a[:, 0])
+            ok = (a[1:, 1] == a[:-1, 1]) & (h > 0)
+            if not ok.any():
+                continue
+            hh = h[ok]
+            out.append({"seg_id": seg, "bucket": int(b_), "n": int(len(hh)),
+                        "sum_h": float(hh.sum()), "sum_h2": float((hh * hh).sum())})
+    return out
 
 
 def _cv_route(city: CityConfig, route_id: str, date_iso: str) -> bool:
@@ -397,7 +442,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     d_on = asg.match.dist_along_m[on]
     v_on = v_all[on] if v_all is not None else None
     t_on, d_on, v_on = _trim_reverse_edges(t_on, d_on, v_on)
-    if monotone_frac(d_on) < MIN_MONOTONE:
+    if monotone_frac(d_on, city.monotone_min_move_m) < MIN_MONOTONE:
         rejects["not_monotone"] += 1
         return None
     at_term = np.nonzero(d_on >= shape_len - TERMINAL_M)[0]
@@ -410,7 +455,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             rejects["few_pings_after_truncate"] += 1
             return None
     try:
-        sm = fit_trajectory(t_on, d_on, v_on)
+        sm = fit_trajectory(t_on, d_on, v_on, city.speed_min_fill)
     except Exception:
         rejects["smooth_failed"] += 1
         return None
@@ -430,6 +475,17 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     # dwell (2026-07-29 decision), so the dwell-blob pass below must run.
 
     bounds = _G["shapes"][asg.shape_id]["seg_bounds"]  # [seg_id, x_lo, x_hi]
+    # A trip contributes to a segment's stats only if it covers the whole
+    # segment (2026-11-02, user decision) — the same test run_reconstruct
+    # applies before writing a traversal (segment >= EDGE_MARGIN_M inside
+    # the observed position range), so events, event sums, traj_speed and
+    # headway-CV crossings all describe the traversal set the bars are
+    # normalised by. Before this, a trace starting/ending mid-segment
+    # (short-turns, feed gaps, terminal truncation) added its delay to that
+    # segment's bars and crossings without adding a traversal.
+    d_lo, d_hi = float(sm.x.min()), float(sm.x.max())
+    covered = {b[0] for b in bounds
+               if b[1] >= d_lo + EDGE_MARGIN_M and b[2] <= d_hi - EDGE_MARGIN_M}
 
     # ---- trajectory bucket-crossing times (--traj-speed) -----------------
     # Per 10 ft bucket, the time this trajectory took to cross it (dwell
@@ -442,7 +498,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
         bucket_m = 10.0 / 3.28084
         x_cov_lo, x_cov_hi = float(xg[0]), float(xg[-1])
         for seg_id, x0, x1 in bounds:
-            if x1 <= x_cov_lo or x0 >= x_cov_hi:
+            if seg_id not in covered:
                 continue
             nb = int(np.ceil((x1 - x0) / bucket_m))
             bx = x1 - np.arange(nb + 1) * bucket_m
@@ -468,6 +524,10 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             dt = t_full[:-1] - t_full[1:]
             for k in np.nonzero(np.isfinite(dt) & (dt > 0))[0]:
                 ts_rows.append((seg_id, int(k), float(dt[k])))
+            # (covered-only, above) For headway CV a partial bus would also
+            # change the set of buses between the two ends: a spurious
+            # end-to-end CV change (RIPTA Broad St at Trinity Square:
+            # +0.046 from 14 short-turns whose first ping was mid-segment).
             if _G.get("cv_on"):
                 # midpoint crossing epoch per bucket (boundary-time average —
                 # exact to well under a second over a 10 ft cell)
@@ -578,7 +638,9 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
                 door_snap.append(seg_of(x))
         else:
             mtc = _matcher(asg.shape_id)[0]
-            snp = mtc.match(trip_doors[:, 3], trip_doors[:, 4], exact_far=False)
+            # door cycles are independent points, not a trajectory
+            snp = mtc.match(trip_doors[:, 3], trip_doors[:, 4], exact_far=False,
+                            sequential=False)
             for k in range(len(trip_doors)):
                 if snp.on_route[k]:
                     x = float(snp.dist_along_m[k])
@@ -713,6 +775,7 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
     # exited (by piece end time). Many sit at the light; a bus released from
     # a queue that clears the rest of the segment leaves its marker upstream.
     # dw rows are boarding by definition and never compete.
+    event_rows = [r for r in event_rows if r["seg_id"] in covered]
     last_by_seg: dict[str, dict] = {}
     for row in event_rows:
         if row["cls"] == "dw":
@@ -742,13 +805,14 @@ def _process_trip(trip: pd.DataFrame, date_iso: str, doors: dict, rejects: Count
             "dwell_union_s": float(dwell_by_seg.get(s, 0.0)),
             "pax_event_s": float(pax_by_seg.get(s, 0.0)),
         }
-        for s in set(nd_by_seg) | set(dwell_by_seg) | set(pax_by_seg)
+        for s in (set(nd_by_seg) | set(dwell_by_seg) | set(pax_by_seg)) & covered
     ]
     return event_rows, sum_rows, ts_rows, cv_rows
 
 
 def _init_worker_ev(city_id: str, mph: float = 5.0, suffix: str = "",
-                    traj_speed: bool = False, cv_on: bool = False) -> None:
+                    traj_speed: bool = False, cv_on: bool = False,
+                    cv_only: bool = False) -> None:
     """Shared initializer plus the threshold/suffix this pass runs at."""
     _init_worker(city_id)
     global THRESHOLD
@@ -756,6 +820,9 @@ def _init_worker_ev(city_id: str, mph: float = 5.0, suffix: str = "",
     _G["out_suffix"] = suffix
     _G["traj_speed"] = traj_speed
     _G["cv_on"] = cv_on and traj_speed  # crossings come from the traj block
+    # --cv-only: rebuild headway_cv/ alone; events, sums and traj_speed
+    # are neither re-checked nor rewritten.
+    _G["cv_only"] = cv_only and _G["cv_on"]
 
 
 def process_date(args):
@@ -764,8 +831,9 @@ def process_date(args):
     suffix = args[4] if len(args) > 4 else ""
     traj_speed = args[5] if len(args) > 5 else False
     cv_on = args[6] if len(args) > 6 else False
+    cv_only = args[7] if len(args) > 7 else False
     if "city" not in _G:
-        _init_worker_ev(city_id, mph, suffix, traj_speed, cv_on)
+        _init_worker_ev(city_id, mph, suffix, traj_speed, cv_on, cv_only)
     city: CityConfig = _G["city"]
     _set_era(date_iso)
     base = REPO / "outputs" / "network" / city.city_id
@@ -790,7 +858,12 @@ def process_date(args):
                           and not (base / "headway_cv"
                                    / f"service_date={date_iso}"
                                    / f"route={route_id}.parquet").exists())
-            if (out_ev.exists() and out_su.exists() and not force
+            if _G.get("cv_only"):
+                if not _cv_route(city, route_id, date_iso):
+                    continue
+                if not force and not cv_missing:
+                    continue
+            elif (out_ev.exists() and out_su.exists() and not force
                     and not cv_missing
                     and not (_G.get("traj_speed")
                              and not (ts_dir / f"route={route_id}.parquet").exists())):
@@ -801,7 +874,7 @@ def process_date(args):
             su_rows: list[dict] = []
             ts_n: Counter = Counter()
             ts_dt: Counter = Counter()
-            cv_x: dict[tuple, list] = {}
+            cv_x: dict[str, list] = {}
             cv_want = _G.get("cv_on") and _cv_route(city, route_id, date_iso)
             n_kept = 0
             for _, trip in route_df.groupby(["trip_id", "vehicle_id"], sort=False):
@@ -815,38 +888,29 @@ def process_date(args):
                     ts_n[(s_, b_)] += 1
                     ts_dt[(s_, b_)] += dt_
                 if cv_want:
+                    mine: dict[str, dict] = {}
                     for s_, b_, tm in got[3]:
-                        cv_x.setdefault((s_, b_), []).append(tm)
+                        mine.setdefault(s_, {})[int(b_)] = tm
+                    for s_, bt in mine.items():
+                        cv_x.setdefault(s_, []).append(bt)
                 n_kept += 1
             # headways: consecutive same-route crossings of each bucket
-            # midpoint, differenced within the service date. Both crossings
-            # must fall inside the frequent network's operating hours, and
-            # gaps over an hour are service breaks, not headways.
+            # midpoint within the service date. The trip set (operating-hour
+            # window) and service breaks (> 1 h) are fixed per segment at its
+            # upstream end; see cv_headway_rows.
             cv_rows_out: list[dict] = []
             if cv_want and cv_x:
                 wk = pd.Timestamp(date_iso).weekday() < 5
                 h_lo, h_hi = (city.cv_hours_weekday if wk
                               else city.cv_hours_weekend)
-                for (s_, b_), times in cv_x.items():
-                    tt = np.sort(np.asarray(times))
-                    hours = pd.to_datetime(tt, unit="s", utc=True).tz_convert(
-                        city.tz).hour.to_numpy()
-                    inwin = (hours >= h_lo) & (hours < h_hi)
-                    h = np.diff(tt)
-                    keep = (inwin[:-1] & inwin[1:]
-                            & (h > 0) & (h <= CV_MAX_HEADWAY_S))
-                    if not keep.any():
-                        continue
-                    hh = h[keep]
-                    cv_rows_out.append({
-                        "seg_id": s_, "bucket": int(b_),
-                        "n": int(len(hh)), "sum_h": float(hh.sum()),
-                        "sum_h2": float((hh * hh).sum())})
+                cv_rows_out = cv_headway_rows(cv_x, h_lo, h_hi, city.tz)
             sinks = [
                 (ev_dir, ev_rows, EVENTS_SCHEMA, out_ev),
                 (su_dir, su_rows, SUMS_SCHEMA, out_su),
             ]
-            if _G.get("traj_speed"):
+            if _G.get("cv_only"):
+                sinks = []
+            elif _G.get("traj_speed"):
                 ts_rows = [
                     {"seg_id": s_, "bucket": b_, "n": ts_n[(s_, b_)],
                      "sum_dt": ts_dt[(s_, b_)]}
@@ -900,7 +964,13 @@ def main() -> None:
     ap.add_argument("--headway-cv", action="store_true",
                     help="also write headway_cv/ moments for the frequent "
                          "network (needs --traj-speed)")
+    ap.add_argument("--cv-only", action="store_true",
+                    help="rebuild headway_cv/ only (implies --traj-speed "
+                         "--headway-cv); other outputs untouched. With "
+                         "--force, recomputes existing CV files too")
     args = ap.parse_args()
+    if args.cv_only:
+        args.traj_speed = args.headway_cv = True
 
     from analysis.network.run_reconstruct import _dates_in_archive
 
@@ -920,7 +990,7 @@ def main() -> None:
                   / f"events_index{out_suffix}.jsonl")
     index_path.parent.mkdir(parents=True, exist_ok=True)
     work = [(args.city, d, args.force, args.mph, out_suffix, args.traj_speed,
-             args.headway_cv) for d in dates]
+             args.headway_cv, args.cv_only) for d in dates]
     t_start = time.time()
     done = 0
 
@@ -940,13 +1010,13 @@ def main() -> None:
 
     if args.workers <= 1:
         _init_worker_ev(args.city, args.mph, out_suffix, args.traj_speed,
-                        args.headway_cv)
+                        args.headway_cv, args.cv_only)
         for w in work:
             log(process_date(w))
     else:
         with Pool(args.workers, initializer=_init_worker_ev,
                   initargs=(args.city, args.mph, out_suffix, args.traj_speed,
-                            args.headway_cv)) as pool:
+                            args.headway_cv, args.cv_only)) as pool:
             for stats in pool.imap_unordered(process_date, work):
                 log(stats)
     print("done")

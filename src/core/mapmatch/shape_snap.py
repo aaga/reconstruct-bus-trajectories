@@ -29,6 +29,23 @@ DEFAULT_MAX_PERP_M = 50.0  # paper uses Valhalla's internal threshold; 50m is a
 # the ping is guaranteed to be registered there.
 DEFAULT_GRID_CELL_M = 200.0
 
+# Sequential (loop-aware) matching, 2026-09-30. Where a shape revisits a
+# street (loops, out-and-back legs), the nearest projection can land on the
+# wrong pass — a km-scale "backward" jump that fails the monotonicity gate
+# (NYC Q70+, BX18A/B, Q102). With ``sequential=True`` each on-route ping
+# keeps its best projection on EVERY pass within max_perp, and a Viterbi
+# pass picks the sequence that is closest to the pings while not moving
+# backward along the shape (DTW-style alignment at full resolution).
+# Pings with a single pass keep exactly the nearest projection, and shapes
+# that never come back within 2*max_perp of themselves skip the step, so
+# results there are bitwise-identical to the plain matcher.
+PASS_SPLIT_M = 100.0      # candidates further apart than this along the shape = different passes
+SEQ_SIGMA_M = 15.0        # emission scale: cost (perp / sigma)^2
+SEQ_BACK_FLOOR_M = 50.0   # backward moves up to this are GPS jitter (free)
+SEQ_BACK_COST = 20.0      # flat cost of a backward move beyond the floor ...
+SEQ_BACK_PER_M = 0.1      # ... plus this per metre
+SEQ_FWD_PER_M = 1e-3      # tiny forward cost: ties prefer the earlier pass
+
 
 def equirect_cumulative_m(polyline_latlon: np.ndarray) -> np.ndarray:
     """Cumulative along-polyline meters, equirectangular about the centroid.
@@ -62,6 +79,7 @@ class SnapToShapeMatcher:
         polyline_latlon: np.ndarray,
         max_perp_m: float = DEFAULT_MAX_PERP_M,
         dist_along_m_per_vertex: np.ndarray | None = None,
+        sequential: bool = False,
     ):
         if polyline_latlon.ndim != 2 or polyline_latlon.shape[1] != 2:
             raise ValueError("polyline_latlon must have shape (N, 2) of (lat, lon)")
@@ -69,6 +87,7 @@ class SnapToShapeMatcher:
             raise ValueError("polyline must have at least 2 vertices")
         self.polyline = polyline_latlon
         self.max_perp_m = float(max_perp_m)
+        self.sequential = bool(sequential)
 
         # Local equirectangular projection around the polyline centroid.
         self._lat0 = float(polyline_latlon[:, 0].mean())
@@ -125,6 +144,32 @@ class SnapToShapeMatcher:
                 for gy in range(cy0[i], cy1[i] + 1):
                     grid.setdefault((gx, gy), []).append(i)
         self._grid = {k: np.asarray(v, dtype=np.int64) for k, v in grid.items()}
+        self.self_overlaps = self._detect_self_overlap() if self.sequential else False
+
+    def _detect_self_overlap(self) -> bool:
+        """True if the shape comes back within 2*max_perp of itself.
+
+        A conservative fast skip for sequential matching (sharp curves can
+        trip it too; the per-ping ambiguity test decides what actually
+        changes). Densified at 10 m; pairs closer than 2*max_perp in space
+        but more than PASS_SPLIT_M + 2*max_perp apart along the shape.
+        """
+        from scipy.spatial import cKDTree
+
+        pts, cum = [], []
+        for i in range(len(self._seg_a)):
+            L = float(self._proj_seg_len[i])
+            k = max(1, int(L // 10.0))
+            t = np.arange(k) / k
+            pts.append(self._seg_a[i] + t[:, None] * self._seg_v[i])
+            cum.append(self._cum_to_seg_start[i] + t * self._seg_dist_len[i])
+        pts = np.concatenate(pts)
+        cum = np.concatenate(cum)
+        pairs = cKDTree(pts).query_pairs(2 * self.max_perp_m, output_type="ndarray")
+        if len(pairs) == 0:
+            return False
+        gap = np.abs(cum[pairs[:, 0]] - cum[pairs[:, 1]])
+        return bool((gap > PASS_SPLIT_M + 2 * self.max_perp_m).any())
 
     # ------------------------------------------------------------------ utils
     def _project(self, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
@@ -183,7 +228,8 @@ class SnapToShapeMatcher:
 
     # ------------------------------------------------------------------ match
     def match(
-        self, lats: np.ndarray, lons: np.ndarray, *, exact_far: bool = True
+        self, lats: np.ndarray, lons: np.ndarray, *, exact_far: bool = True,
+        sequential: bool | None = None,
     ) -> MatchResult:
         """Grid-accelerated snap.
 
@@ -256,6 +302,10 @@ class SnapToShapeMatcher:
                 self._cum_to_seg_start[jj] + tj * self._seg_dist_len[jj]
             )
             perp[covered] = np.sqrt(d2[rows, j])
+            seq = self.sequential if sequential is None else sequential
+            if seq and self.self_overlaps:
+                self._sequential_fix(covered, C, t, d2, seg_idx, frac,
+                                     dist_along, perp)
         if exact_far:
             # Beyond-threshold (or empty-cell) pings: the padding proof only
             # covers distances <= max_perp, so rerun those against all
@@ -275,6 +325,99 @@ class SnapToShapeMatcher:
             perp_dist_m=perp,
             on_route=on_route,
         )
+
+    def _sequential_fix(self, covered, C, t, d2, seg_idx, frac, dist_along,
+                        perp) -> None:
+        """Re-pick projections for ambiguous pings by a monotone Viterbi.
+
+        Rows of C/t/d2 correspond to ``covered`` (time order preserved).
+        Only on-route rows take part; a ping is ambiguous when its within-
+        max_perp candidates span more than PASS_SPLIT_M along the shape.
+        A single-candidate ping pins the path, so the global optimum splits
+        into independent runs of consecutive ambiguous pings, each anchored
+        by the pinned pings around it — solved run by run, which is exactly
+        equivalent and touches only the ambiguous rows.
+        """
+        lim = self.max_perp_m ** 2
+        ok = d2 <= lim                                       # (nc, g)
+        on = ok.any(axis=1)
+        da = self._cum_to_seg_start[C] + t * self._seg_dist_len[C]
+        big = np.where(ok, da, -np.inf).max(axis=1)
+        small = np.where(ok, da, np.inf).min(axis=1)
+        amb = on & ((big - small) > PASS_SPLIT_M)
+        if not amb.any():
+            return
+        rows = np.flatnonzero(on)                            # on-route, time order
+        amb_on = amb[rows]
+        near_da = dist_along[covered[rows]]                  # nearest projection
+        # Candidate passes for ALL ambiguous rows at once (per-row numpy calls
+        # dominated the cost): sort each row's in-radius candidates by
+        # distance-along, cut where consecutive ones are > PASS_SPLIT_M apart,
+        # keep the nearest projection of each pass.
+        ar = np.flatnonzero(amb)
+        daA = np.where(ok[ar], da[ar], np.inf)
+        order = np.argsort(daA, axis=1)
+        dsort = np.take_along_axis(daA, order, axis=1)
+        valid = np.isfinite(dsort)
+        newpass = np.zeros_like(valid)
+        with np.errstate(invalid="ignore"):              # inf - inf in padding
+            newpass[:, 1:] = (np.diff(dsort, axis=1) > PASS_SPLIT_M) & valid[:, 1:]
+        pid = np.cumsum(newpass, axis=1)
+        rr_, cc_ = np.nonzero(valid)
+        colj = order[rr_, cc_]
+        grp = rr_ * (daA.shape[1] + 1) + pid[rr_, cc_]
+        key_d2 = d2[ar[rr_], colj]
+        o = np.lexsort((key_d2, grp))
+        first = np.r_[True, grp[o][1:] != grp[o][:-1]]
+        sel = o[first]                                      # nearest of each (row, pass)
+        cand_row = ar[rr_[sel]]
+        cand_col = colj[sel]
+        cand = {}
+        for r, c in zip(cand_row.tolist(), cand_col.tolist()):
+            cand.setdefault(r, []).append(
+                (float(da[r, c]), float(d2[r, c]), int(C[r, c]), float(t[r, c])))
+        # runs of consecutive ambiguous on-route rows
+        edges = np.flatnonzero(np.diff(np.r_[0, amb_on.astype(np.int8), 0]))
+        s2 = SEQ_SIGMA_M ** 2
+
+        def trans(d_a, d_b):
+            mv = d_b - d_a
+            if mv >= -SEQ_BACK_FLOOR_M:
+                return SEQ_FWD_PER_M * max(mv, 0.0)
+            return SEQ_BACK_COST + SEQ_BACK_PER_M * (-mv - SEQ_BACK_FLOOR_M)
+
+        for lo, hi in zip(edges[::2], edges[1::2]):          # rows[lo:hi] ambiguous
+            prev_d = float(near_da[lo - 1]) if lo > 0 else None
+            next_d = float(near_da[hi]) if hi < len(rows) else None
+            states = [cand[r] for r in rows[lo:hi].tolist()]
+            cost = [(trans(prev_d, dv) if prev_d is not None else 0.0) + dd / s2
+                    for dv, dd, _, _ in states[0]]
+            back = []
+            for k in range(1, len(states)):
+                prev, nc, bp = states[k - 1], [], []
+                for (d_b, dd_b, _, _) in states[k]:
+                    best, arg = math.inf, 0
+                    for ia, (d_a, _, _, _) in enumerate(prev):
+                        c = cost[ia] + trans(d_a, d_b)
+                        if c < best:
+                            best, arg = c, ia
+                    nc.append(best + dd_b / s2)
+                    bp.append(arg)
+                cost = nc
+                back.append(bp)
+            if next_d is not None:
+                cost = [c + trans(dv, next_d) for c, (dv, _, _, _) in zip(cost, states[-1])]
+            pick = [0] * len(states)
+            pick[-1] = int(np.argmin(cost))
+            for k in range(len(states) - 1, 0, -1):
+                pick[k - 1] = back[k - 1][pick[k]]
+            for k, r in enumerate(rows[lo:hi]):
+                d_v, dd_v, sg, fr = states[k][pick[k]]
+                i = covered[r]
+                seg_idx[i] = sg
+                frac[i] = fr
+                dist_along[i] = d_v
+                perp[i] = math.sqrt(dd_v)
 
     def match_brute(self, lats: np.ndarray, lons: np.ndarray) -> MatchResult:
         """Full-scan reference implementation (testing / verification)."""

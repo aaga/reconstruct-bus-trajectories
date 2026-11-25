@@ -255,7 +255,8 @@ archive as a read-only data source.
   `agency=<id>/year=YYYY/month=MM/day=DD/hour=HH.parquet`, appended to the
   base URL. No credentials are needed.
 - Coverage: the manifest listed 330 agencies as of 2026-11; CTA, MBTA and MTA
-  start 2026-04-27 and TransLink 2026-06-23.
+  start 2026-04-27 and TransLink 2026-06-23. MTA buses are two agencies:
+  `mta-gtfs-rt` to 2026-11-20 and `mta-siri` afterwards.
 
 `src/dataio/realtime.py` is the single client (`ARCHIVE_URL`,
 `load_manifest`, `load_hour`); `analysis/network/prefetch.py` bulk-downloads a
@@ -265,7 +266,13 @@ For the network pipeline, **CTA no longer uses the R2 scrape**: since
 2026-08 it reads a local high-resolution AVL export directly
 (`avl_source_dir` + `avl_direct_read` in `cities.py`, 2024-01 → present,
 with speeds enabling VCHIP-ME reconstruction). Other agencies (TransLink,
-MBTA) still reconstruct from the R2 archive.
+MBTA, MTA New York) still reconstruct from the R2 archive.
+
+**New York needs a repair step first.** MTA's GTFS-rt positions are pushed
+along the timetable to the feed build time, so they are not observations.
+`analysis/network/ping_ingest.py` reverses that, removes duplicate reports
+and regroups pings into vehicle runs before anything else reads them; see
+[`AGENTS.md`](AGENTS.md#nyc-specifics).
 
 ## What's reproduced vs. what's new
 

@@ -72,7 +72,7 @@ def _dims(city: CityConfig, registry: dict, date_attrs: dict) -> dict:
     names = load_route_short_names(str(city.resolve(city.gtfs_zip)))
     seasons = sorted({d["season"] for d in date_attrs["days"].values()})
     periods = [name for name, _, _ in city.periods]
-    if len(route_ids) > 255 or len(seg_ids) > 65535:
+    if len(route_ids) > 65535 or len(seg_ids) > 65535:
         raise SystemExit("dimension overflow: widen route/seg dtypes")
     return {
         "seg_ids": seg_ids,
@@ -138,7 +138,11 @@ def _aggregate(
     con.execute("CREATE OR REPLACE TABLE es_dates(date_iso TEXT)")
     if es_dates:  # no-door cities have no event_sums at all
         con.executemany("INSERT INTO es_dates VALUES (?)", [(d,) for d in es_dates])
-    if su_files:
+    # No-door cities still get event_sums (the delay-location view), but
+    # every es-derived column below is FILTER (WHERE has_door) and has_door
+    # is always false there — so the join only costs: NYC's per-month
+    # trip_key x seg_id hash join spilled >33 GB (2026-09-30). Skip it.
+    if su_files and city.has_door_data:
         su_pat = "service_date=*" if month is None else f"service_date={month}-*"
         con.execute(
             f"""CREATE OR REPLACE VIEW es AS
@@ -147,7 +151,7 @@ def _aggregate(
         )
     else:
         con.execute(
-            """CREATE VIEW es AS SELECT NULL::TEXT trip_key, NULL::TEXT seg_id,
+            """CREATE OR REPLACE VIEW es AS SELECT NULL::TEXT trip_key, NULL::TEXT seg_id,
             0.0 nd_event_s, 0.0 dwell_union_s, 0.0 pax_event_s WHERE FALSE"""
         )
 
@@ -273,14 +277,23 @@ SHARD_DTYPES = {
     **{f"hn{b}": "<u2" for b in range(N_BUCKETS)},
     **{f"hp{b}": "<u2" for b in range(N_BUCKETS)},
 }
-SHARD_ROW_BYTES = sum(
-    {"<u1": 1, "<u2": 2, "<f4": 4}[d] for d in SHARD_DTYPES.values()
-)
+def shard_dtypes(n_routes: int) -> dict[str, str]:
+    """Column dtypes for a city: rid widens to u2 past 255 routes (NYC has
+    ~400). The header records every column's dtype and the JS decoder reads
+    it from there, so narrower existing payloads stay valid unchanged."""
+    return {**SHARD_DTYPES, "rid": "<u1" if n_routes <= 255 else "<u2"}
 
 
-def _write_shard(path: Path, rows: dict[str, np.ndarray]) -> int:
+def _row_bytes(dtypes: dict[str, str]) -> int:
+    return sum({"<u1": 1, "<u2": 2, "<f4": 4}[d] for d in dtypes.values())
+
+
+SHARD_ROW_BYTES = _row_bytes(SHARD_DTYPES)
+
+
+def _write_shard(path: Path, rows: dict[str, np.ndarray],
+                 dtypes: dict[str, str] = SHARD_DTYPES) -> int:
     """Write one packed columnar shard; returns byte size."""
-    dtypes = SHARD_DTYPES
     n_rows = len(rows["sid"])
     header = {
         "n_rows": n_rows,
@@ -330,7 +343,12 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
     # histogram buckets), so summing partials over the group key is exact;
     # m2 is derived from the folded sums afterwards.
     import pandas as pd
-    months = sorted({d[:7] for d in date_attrs["days"]})
+    # Only months with traversals: date_attrs spans its own default window
+    # (2026-04-27 → today), which predates a newly scraped city's archive
+    # (RIPTA starts 2026-10-20) and would glob empty months (IO error).
+    have = {p.name.split("=", 1)[1][:7]
+            for p in (base / "traversals").glob("service_date=*")}
+    months = sorted({d[:7] for d in date_attrs["days"]} & have)
     con = None   # first _aggregate call creates + configures it
     parts = []
     for ym in months:
@@ -389,7 +407,8 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
         }
         # Multi-part shards: keep every file under the Pages 25 MB limit.
         n_rows = len(sub)
-        rows_per_part = max(1, int((MAX_SHARD_MB * 1e6 - 8192) // SHARD_ROW_BYTES))
+        dtypes = shard_dtypes(len(dims["route_ids"]))
+        rows_per_part = max(1, int((MAX_SHARD_MB * 1e6 - 8192) // _row_bytes(dtypes)))
         parts = []
         for pi in range(0, n_rows, rows_per_part):
             piece = {k: v[pi : pi + rows_per_part] for k, v in cols.items()}
@@ -397,7 +416,7 @@ def build(city_id: str, out_dir: Path | None = None) -> None:
                 f"stats_{period}.bin" if n_rows <= rows_per_part
                 else f"stats_{period}_p{pi // rows_per_part}.bin"
             )
-            size = _write_shard(out / name, piece)
+            size = _write_shard(out / name, piece, dtypes)
             assert size / 1e6 < MAX_SHARD_MB, f"{name} still too big"
             parts.append({"name": name, "rows": len(piece["sid"]), "bytes": size})
         shard_meta[period] = {"rows": n_rows, "parts": parts}
