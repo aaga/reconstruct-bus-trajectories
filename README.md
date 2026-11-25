@@ -40,8 +40,11 @@ PYTHONPATH=src uv run bus-trajectories compare \
 
 `cta_gtfs.zip` is downloaded on demand from the CTA's published GTFS feed the
 first time a script needs it (into `data/gtfs/`); archived heartbeat data is
-fetched lazily from a public Cloudflare R2 bucket (into `caches/realtime_archive/`)
-using the paths in its `_manifest.parquet`.
+fetched lazily from the [public R2 archive](#public-r2-archive) (into
+`caches/realtime_archive/`) using the paths in its `_manifest.parquet`.
+
+To run the network pipeline for a configured city, or to add a new city from
+the archive, see [`AGENTS.md`](AGENTS.md).
 
 ## Repository layout
 
@@ -239,9 +242,24 @@ schema, batches into 1-minute Parquet files, uploads to Cloudflare R2, and
 compacts each completed UTC hour into a single Hive-partitioned object indexed
 by a manifest. **That scraper is intentionally not included in this
 repository** — it depends on agency API keys and an R2 bucket the analyst would
-need to provide. This repo reads from its public R2 bucket
-(`pub-777d0904efb449dc838791645b9e2e0f.r2.dev`), treating the archive as a
-read-only data source.
+need to provide. This repo reads from its public R2 bucket, treating the
+archive as a read-only data source.
+
+### Public R2 archive
+
+- Base URL: <https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev>
+- Index: [`_manifest.parquet`](https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev/_manifest.parquet),
+  one row per agency and UTC hour (`agency`, `year`, `month`, `day`, `hour`,
+  `path`, row and vehicle counts, field fill rates).
+- Objects: one Parquet file per agency per UTC hour at
+  `agency=<id>/year=YYYY/month=MM/day=DD/hour=HH.parquet`, appended to the
+  base URL. No credentials are needed.
+- Coverage: the manifest listed 330 agencies as of 2026-11; CTA, MBTA and MTA
+  start 2026-04-27 and TransLink 2026-06-23.
+
+`src/dataio/realtime.py` is the single client (`ARCHIVE_URL`,
+`load_manifest`, `load_hour`); `analysis/network/prefetch.py` bulk-downloads a
+city's hours into `caches/realtime_archive/`.
 
 For the network pipeline, **CTA no longer uses the R2 scrape**: since
 2026-08 it reads a local high-resolution AVL export directly
