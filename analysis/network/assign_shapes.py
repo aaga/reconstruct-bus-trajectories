@@ -269,3 +269,111 @@ def _choose_shape_exact(
     if int(match.on_route.sum()) < min_on_route:
         return "few_on_route"
     return Assignment(shape_id, score, frac_on, fm, match)
+
+
+# ---------------------------------------------------------------------------
+# Pre-departure head trim (2026-09-24)
+# ---------------------------------------------------------------------------
+# GTFS-rt feeds attach the next trip's id while the bus is still deadheading
+# to its origin and laying over there (MBTA: the whole drive in to Kenmore is
+# reported as "STOPPED_AT stop 1"). Those pings vote in choose_shape: a rare
+# variant that happens to run along the deadhead street keeps more pings
+# on-route than the real shape and wins — then the layover lands mid-shape,
+# inside a segment (Comm Ave @ Kenmore read ~17 min of "delay").
+#
+# The trim only decides WHICH SHAPE; reconstruction still uses every ping on
+# the winner, where the layover sits upstream of the first boundary and the
+# "last time at x" crossing convention already excludes it. Trimming the
+# trajectory itself would cost first segments: the feed's sequence often
+# advances late (TransLink median ~480 m into the route).
+#
+# Whether a city applies it is decided per city by head_trim_check.py
+# (measured against scheduled shapes); see decide_head_trim.
+
+HEAD_TRIM_MIN_NET_GAIN = 0.01  # (fixed - broken) / trips must reach +1 pt
+HEAD_TRIM_MIN_FIX_RATIO = 3.0  # and fixes must outnumber breaks 3:1
+
+
+def pre_departure_cut(stop_seq) -> int:
+    """First index to keep for shape choice: drop the leading run of pings
+    still reporting the trip's first stop sequence, keeping its last ping
+    (the departure). 0 = nothing to trim (no sequence, trip joined the feed
+    mid-route, or the sequence never advances)."""
+    seq = np.asarray(stop_seq, dtype=float)
+    if len(seq) == 0 or np.isnan(seq[0]) or seq[0] != np.nanmin(seq):
+        return 0
+    adv = np.flatnonzero(seq > seq[0])
+    return max(int(adv[0]) - 1, 0) if len(adv) else 0
+
+
+def choose_shape_head_trimmed(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    stop_seq,
+    matchers: dict[str, object],
+    shape_len_m: dict[str, float],
+) -> Assignment | str:
+    """choose_shape on the post-departure pings, re-matched on ALL pings.
+
+    The returned Assignment's ``match`` covers every ping (so callers index
+    it exactly as before); only the choice of shape_id ignores the head.
+    Falls back to the untrimmed choice when too few pings remain.
+    """
+    k = pre_departure_cut(stop_seq) if stop_seq is not None else 0
+    if k == 0 or len(lats) - k < MIN_ON_ROUTE_PINGS:
+        return choose_shape(lats, lons, matchers, shape_len_m)
+    got = choose_shape(lats[k:], lons[k:], matchers, shape_len_m)
+    if isinstance(got, str):
+        return got
+    full = matchers[got.shape_id].match(lats, lons, exact_far=False)
+    return Assignment(got.shape_id, got.score, got.frac_on,
+                      got.frac_monotone, full)
+
+
+def decide_head_trim(n_trips: int, n_fixed: int, n_broken: int) -> bool:
+    """Apply the trim only if it clearly beats the untrimmed choice against
+    the schedule: a net gain of HEAD_TRIM_MIN_NET_GAIN of trips AND fixes
+    outnumbering breaks HEAD_TRIM_MIN_FIX_RATIO to 1."""
+    if n_trips <= 0:
+        return False
+    net = (n_fixed - n_broken) / n_trips
+    return (net >= HEAD_TRIM_MIN_NET_GAIN
+            and n_fixed >= HEAD_TRIM_MIN_FIX_RATIO * max(n_broken, 1))
+
+
+# ---------------------------------------------------------------------------
+# Reverse-run edge trim (2026-09-24, MBTA route 1 at Nubian)
+# ---------------------------------------------------------------------------
+# The trip id is attached before departure, so the head of a trace can be the
+# bus ARRIVING at its origin along the route's own street in the opposite
+# direction (projects onto the shape running backwards), and the tail can be
+# the bus drifting back after its furthest point (terminal loops). Both fail
+# the monotonicity gate — route 1 lost ~11% of Harvard-bound trips — though
+# the trip in between is clean. Feed-agnostic and applied to every city: the
+# trip starts at its lowest point along the shape before its first
+# EDGE_PROGRESS_M of net forward progress, and ends at its furthest point
+# after its last EDGE_PROGRESS_M. A normal trace starts at its minimum and
+# ends at its maximum, so it is untouched.
+
+EDGE_PROGRESS_M = 500.0
+
+
+def _head_cut(d: np.ndarray, progress_m: float) -> int:
+    run_min = np.minimum.accumulate(d)
+    past = np.flatnonzero(d - run_min > progress_m)
+    j = int(past[0]) if len(past) else len(d)
+    return int(np.argmin(d[:j]))
+
+
+def reverse_edge_trim(d_on, progress_m: float = EDGE_PROGRESS_M) -> tuple[int, int]:
+    """[lo, hi) slice of the on-route pings that drops reversed edges."""
+    d = np.asarray(d_on, dtype=float)
+    n = len(d)
+    if n < 2:
+        return 0, n
+    lo = _head_cut(d, progress_m)
+    # tail = the head rule on the time-reversed, negated trace
+    hi = n - _head_cut(-d[::-1], progress_m)
+    if hi - lo < 2:
+        return 0, n
+    return lo, hi

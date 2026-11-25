@@ -65,8 +65,17 @@ def build(city_id: str) -> None:
           WHERE onroute = 1 AND route_id IS NOT NULL AND trip_id IS NOT NULL
         )"""
     else:
-        src_sql = (f"read_parquet('{cache}/agency={city.r2_agency}__*.parquet',"
-                   " union_by_name=true)")
+        # R2 scrape files carry the canonical `speed` (m/s, scraper-
+        # normalised); ingested AVL hour-files carry `speed_mps`. Alias
+        # whichever exists — referencing an absent column is a binder error.
+        raw = (f"read_parquet('{cache}/agency={city.r2_agency}__*.parquet',"
+               " union_by_name=true)")
+        cols = {r[0] for r in duckdb.sql(f"DESCRIBE SELECT * FROM {raw}").fetchall()}
+        if "speed_mps" in cols:
+            src_sql = raw
+        else:
+            v = "speed" if "speed" in cols else "NULL"
+            src_sql = f"(SELECT *, {v} AS speed_mps FROM {raw})"
     glob = str(cache / f"agency={city.r2_agency}__*.parquet")
     trav_glob = str(base / "traversals" / "service_date=*" / "*.parquet")
 

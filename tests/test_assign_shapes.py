@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from analysis.network.assign_shapes import Assignment, choose_shape, monotone_frac
+from analysis.network.assign_shapes import (
+    Assignment,
+    choose_shape,
+    choose_shape_head_trimmed,
+    decide_head_trim,
+    monotone_frac,
+    pre_departure_cut,
+    reverse_edge_trim,
+)
 from core.mapmatch.shape_snap import SnapToShapeMatcher
 
 
@@ -153,3 +161,85 @@ def test_wandering_trip_still_rejected_with_trimming():
     lons = np.concatenate([lon_a, lon_w, lon_b])
     got = choose_shape(lats, lons, m, lens)
     assert got == "low_score"
+
+
+# --- pre-departure head trim (2026-09-24, MBTA Kenmore) --------------------
+
+def test_pre_departure_cut_keeps_departure_ping():
+    # stop 1 reported for 4 pings, then the sequence advances
+    assert pre_departure_cut([1, 1, 1, 1, 2, 2, 3]) == 3
+    assert pre_departure_cut([1, 2, 3]) == 0          # no head to drop
+
+
+def test_pre_departure_cut_leaves_odd_traces_alone():
+    assert pre_departure_cut([]) == 0
+    assert pre_departure_cut([np.nan, 1, 2]) == 0     # unknown first seq
+    assert pre_departure_cut([5, 5, 3, 6]) == 0       # first isn't the minimum
+    assert pre_departure_cut([1, 1, 1]) == 0          # never advances
+
+
+def test_head_trim_ignores_deadhead_along_a_variant():
+    """The Kenmore case: the bus drives in along a street that only a rare
+    variant uses, already reporting stop 1. Untrimmed, the variant keeps
+    more pings and wins; trimmed, the real (shorter) shape wins and the
+    returned match still covers every ping."""
+    via = _straight_shape(n=100, dlat=0.10)     # deadhead street + route
+    main = via[50:]                             # route starts halfway up
+    matchers, lens = _matchers({"via": via, "main": main})
+    lats, lons = _pings_along(via, np.arange(10, 98, 2))
+    seq = np.where(np.arange(10, 98, 2) < 52, 1, 2 + np.arange(len(lats)))
+    assert choose_shape(lats, lons, matchers, lens).shape_id == "via"
+    got = choose_shape_head_trimmed(lats, lons, seq, matchers, lens)
+    assert isinstance(got, Assignment)
+    assert got.shape_id == "main"
+    assert len(got.match.on_route) == len(lats)
+
+
+def test_head_trim_without_sequence_is_plain_choice():
+    full = _straight_shape()
+    matchers, lens = _matchers({"full": full})
+    lats, lons = _pings_along(full, np.arange(5, 95, 3))
+    a = choose_shape(lats, lons, matchers, lens)
+    b = choose_shape_head_trimmed(lats, lons, None, matchers, lens)
+    assert a.shape_id == b.shape_id and a.score == b.score
+
+
+def test_decide_head_trim():
+    # MBTA 2026-08-20 sample: 205 fixed / 16 broken of 2,969 -> apply
+    assert decide_head_trim(2969, 205, 16)
+    # TransLink same date: 16 fixed / 107 broken -> off
+    assert not decide_head_trim(2985, 16, 107)
+    # small net gain, or fixes not dominating -> off
+    assert not decide_head_trim(3000, 20, 0)
+    assert not decide_head_trim(3000, 100, 40)
+    assert not decide_head_trim(0, 0, 0)
+
+
+# --- reverse-run edge trim (2026-09-24, MBTA route 1 at Nubian) -----------
+
+def test_reverse_edge_trim_leaves_clean_trace():
+    d = np.linspace(0, 7000, 200)
+    assert reverse_edge_trim(d) == (0, 200)
+
+
+def test_reverse_edge_trim_drops_backward_approach():
+    # bus arrives at the origin along the route's street, reversed: 1200 -> 0
+    head = np.linspace(1200, 0, 20)
+    trip = np.linspace(0, 7000, 150)
+    lo, hi = reverse_edge_trim(np.concatenate([head, trip]))
+    assert (lo, hi) == (19, 170)          # starts at the origin ping
+
+
+def test_reverse_edge_trim_drops_terminal_drift():
+    trip = np.linspace(0, 6900, 150)
+    tail = np.linspace(6900, 5700, 15)    # drifts back after the far end
+    lo, hi = reverse_edge_trim(np.concatenate([trip, tail]))
+    assert (lo, hi) == (0, 151)          # keeps the last ping AT the far end
+
+
+def test_reverse_edge_trim_ignores_interior_reversals_and_jitter():
+    d = np.linspace(0, 7000, 200)
+    d[100] -= 400                         # mid-trip glitch stays for the gate
+    d[:5] = [3, 0, 4, 1, 2]               # origin jitter
+    lo, hi = reverse_edge_trim(d)
+    assert lo <= 1 and hi == 200

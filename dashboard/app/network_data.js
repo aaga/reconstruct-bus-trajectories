@@ -38,6 +38,11 @@ export class NetworkData {
     ]);
     this.meta = meta;
     this.segments = segments;
+    // Optional: per-segment headway-CV change (build_cv summary.json); only
+    // cities with configured cv_routes have it. null = metric unavailable.
+    this.cvSummary = await fetch(`${this.base}/cv/summary.json`, { cache: "no-cache" })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
     return this;
   }
 

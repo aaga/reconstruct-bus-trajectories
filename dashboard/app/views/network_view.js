@@ -27,6 +27,10 @@ export const METRICS = {
   avg_speed:        { label: "Average speed",          kind: "speed",  unit: "mph" },
   buses_per_hr:     { label: "Bus / hour",             kind: "rate", unit: "/hr" },
   boardings_per_hr: { label: "Boardings / hour",       kind: "rate", unit: "/hr" },
+  // Headway CV at the downstream end minus the upstream end (build_cv
+  // summary.json): red = bunching builds across the segment. Fixed to the
+  // city's configured CV window, so it ignores the filters like free flow.
+  cv_increase:      { label: "Headway CV increase",    kind: "static", unit: "cv" },
 };
 
 export const STATS = {
@@ -47,6 +51,7 @@ const ALL_PERIODS = ["am_peak", "midday", "pm_peak", "evening", "late_night"];
 
 function fmtValue(metric, v) {
   const m = METRICS[metric];
+  if (m.unit === "cv") return v.toFixed(2);
   if (m.unit === "mph") return `${v.toFixed(0)}`;
   if (m.unit === "/hr") return v.toFixed(1);
   if (m.unit === "pax·s") {
@@ -170,6 +175,7 @@ export class NetworkView {
             <option value="avg_speed">Average speed</option>
             <option value="buses_per_hr">Bus / hour</option>
             <option value="boardings_per_hr" ${this.hasDoor ? "" : "disabled"}>Boardings / hour${this.hasDoor ? "" : " (needs door data)"}</option>
+            <option value="cv_increase" ${this.data.cvSummary ? "" : "disabled"}>Headway CV increase${this.data.cvSummary ? "" : " (no headway-CV routes)"}</option>
           </optgroup>
         </select>
         <span class="nw-radios" id="nw-stats">
@@ -489,6 +495,12 @@ export class NetworkView {
       this.data.segments.features.map((f) => [f.properties.sid, f.properties.t_ff_s]));
     const tFf = this._tFf;
 
+    if (metric === "cv_increase") {
+      for (const [sid, rec] of Object.entries(this.data.cvSummary?.segments ?? {})) {
+        values.set(Number(sid), rec.d_cv);
+      }
+      return values;
+    }
     if (metric === "freeflow_speed") {
       for (const f of this.data.segments.features) {
         const p = f.properties;
@@ -544,10 +556,22 @@ export class NetworkView {
   async _refreshInner() {
     const metric = this.N.metric;
     const spec = METRICS[metric];
-    const visible = this._visibleSids();
+    let visible = this._visibleSids();
     let values;
     let diverging = false;
     let legendTitle = spec.label + (spec.kind === "delay" ? ` · ${STATS[this.N.stat]}` : "");
+    if (metric === "cv_increase") {
+      // Only segments with headway CV exist for this metric; + = more
+      // bunching (red), − = headways even out (blue).
+      const cvSids = new Set(Object.keys(this.data.cvSummary?.segments ?? {}).map(Number));
+      visible = visible ? new Set([...visible].filter((s) => cvSids.has(s))) : cvSids;
+      diverging = true;
+      const w = this.data.cvSummary?.window;
+      if (w) {
+        const days = (w.daytypes ?? []).length === 4 ? "all days" : (w.daytypes ?? []).join("/");
+        legendTitle += ` · ${days} ${w.hours_weekday?.[0]}:00–${w.hours_weekday?.[1]}:00, ${w.n_dates} dates (ignores filters)`;
+      }
+    }
 
     if (this.N.compare === "peak" && spec.kind !== "static") {
       diverging = true;
@@ -585,6 +609,15 @@ export class NetworkView {
       : values.size;
     const cnt = document.querySelector("#nw-count");
     if (cnt) cnt.textContent = `${nShown} segments`;
+  }
+
+  // "route: CV up → down" lines for the CV-increase metric's hover.
+  _cvHoverBit(sid) {
+    if (this.N.metric !== "cv_increase") return "";
+    const rec = this.data.cvSummary?.segments?.[sid];
+    if (!rec) return "";
+    return Object.entries(rec.routes).map(([r, x]) =>
+      `<br>${this._routeLabel(r)}: CV ${x.cv_up.toFixed(2)} → ${x.cv_down.toFixed(2)}`).join("");
   }
 
   _paint(values, visible, diverging, legendTitle) {
@@ -1126,7 +1159,7 @@ export class NetworkView {
         ${d.ping_v ? `<label class="dist-speed" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-speed-cb" ${this._showSpeed ? "checked" : ""}> avg speed</label>` : ""}
         <label class="dist-cv" style="font-size:11px;margin-left:10px;cursor:pointer;${this._cv ? "" : "opacity:.4"}"
-          title="${this._cv ? "coefficient of variation of headways, frequent network" : "no frequent route through this segment"}">
+          title="${this._cv ? "coefficient of variation of headways (routes configured per city)" : "no headway-CV route through this segment in this city"}">
           <input type="checkbox" class="dist-cv-cb" ${this._cv ? "" : "disabled"} ${this._showCV && this._cv ? "checked" : ""}> headway CV</label>
         ${this.hasDoor && d.dw && !pingMode ? `<label class="dist-doors" style="font-size:11px;margin-left:10px;cursor:pointer">
           <input type="checkbox" class="dist-doors-cb" ${this._showDoors ? "checked" : ""}> door events</label>` : ""}
@@ -1299,7 +1332,7 @@ export class NetworkView {
     this._tooltip.innerHTML = `
       <b>${cleanLabel(p.label)}</b><br>
       routes: ${routes.map((r) => `${this._routeLabel(r.r)} ${r.dir}`).join(", ")}<br>
-      ${spec.label}${statBit}: ${v == null ? "—" : fmtValue(this.N.metric, v)} · ${Math.round(p.len_m)} m`;
+      ${spec.label}${statBit}: ${v == null ? "—" : (this.N.metric === "cv_increase" && v > 0 ? "+" : "") + fmtValue(this.N.metric, v)} · ${Math.round(p.len_m)} m${this._cvHoverBit(p.sid)}`;
     const mapRect = $("map").getBoundingClientRect();
     this._tooltip.style.left = `${mapRect.left + point.x + 12}px`;
     this._tooltip.style.top = `${mapRect.top + point.y + 12}px`;

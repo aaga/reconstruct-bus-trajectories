@@ -45,6 +45,7 @@ API = "https://transit.land/api/v2/rest"
 FEED_OSID = {
     "cta": "f-dp3-cta",
     "translink": "f-c28-nstranslinkca",  # Vancouver (c28 geohash), not Queensland
+    "mbta": "f-drt-mbta",
 }
 # Files the pipeline actually reads; the rest (license html, transfers,
 # frequencies) are dropped to keep the cache near 3 GB instead of 4 GB.

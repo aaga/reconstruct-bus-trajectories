@@ -15,19 +15,15 @@ import { StreetViewPopup } from "./street_view.js";
 import { $, busElement, interp, getSource } from "./chart_util.js";
 import { TrajectoryView } from "./views/trajectory_view.js";
 import { SpeedView } from "./views/speed_view.js";
-import { OverallDelayView } from "./views/overall_delay_view.js";
-import { DelayView } from "./views/delay_view.js";
 import { NetworkData, NETWORK_CITIES } from "./network_data.js";
 import { NetworkView, METRICS } from "./views/network_view.js";
 import { AreasView } from "./views/areas_view.js";
 import { ExploreView } from "./views/explore_view.js";
 
 const S = {
-  main: "single",          // "single" | "average"
+  main: "single",          // "single" | "network"
   trip: null,
-  agg: null,               // loaded aggregate payload (average trip)
   tab: "trajectory",       // single-trip sub-tab: "trajectory" | "speed"
-  atab: "overall",         // average-trip sub-tab: "overall" | "segment"
   showFull: false, // false = crop both tabs to the phone-GPS window
   speedX: "time",  // "time" | "distance" for the speed tab x-axis
   // Persisted visible domains per tab (null = default extent). Survive resize.
@@ -65,7 +61,6 @@ const S = {
 window.__S = S; // dev/testing handle
 const trajView = new TrajectoryView(S);
 const speedView = new SpeedView(S);
-const overallView = new OverallDelayView(S);
 const networkView = new NetworkView(S);
 const areasView = new AreasView(S);
 const exploreView = new ExploreView(S);
@@ -166,7 +161,6 @@ function render() {
   syncHash();
   if (S.main === "network") { renderNetwork(); return; }
   teardownNetwork();
-  if (S.main === "average") { renderAverage(); return; }
   renderSingle();
 }
 
@@ -174,7 +168,6 @@ function render() {
 // highlight on it); NetworkData persists across main-tab switches.
 async function renderNetwork() {
   teardownMap();
-  teardownAggViews();
   $("trip-meta").textContent = ""; // trip info is irrelevant on this tab
   const xp = document.getElementById("explore-panel");
   if (S.ntab === "explore") {
@@ -234,7 +227,6 @@ function teardownNetwork() {
 }
 
 function renderSingle() {
-  teardownAggViews(); // clean up the average-trip map/DelayView if we came from it
   ensureTripState();  // map/street-view State available on both tabs (dbl-click → Street View)
   $("controls").querySelectorAll(".ctrl-group").forEach((g) =>
     g.classList.toggle("hidden", g.dataset.for !== S.tab));
@@ -251,40 +243,6 @@ function renderSingle() {
     setTimeout(() => S.mapView?.resize(), 60);
     publishChartRange();
   }
-}
-
-// Average-trip: Overall delay (F3 breakdown) or Delay per segment (DelayView
-// Segments/Stems mirrored to the shared map, coupled via a per-aggregate State).
-function renderAverage() {
-  teardownMap(); // tear down any single-trip map/buses
-  if (!S.agg) { teardownAggViews(); document.body.classList.remove("show-map"); $("chart").innerHTML = ""; return; }
-  if (S.atab === "segment") {
-    document.body.classList.add("show-map");
-    teardownAggViews();
-    ensureAggViews();
-  } else {
-    teardownAggViews();
-    document.body.classList.remove("show-map");
-    overallView.render();
-  }
-}
-
-function ensureAggViews() {
-  if (S.delayView) return;
-  $("chart").innerHTML = "";
-  S.aggState = new State();
-  S.delayView = new DelayView($("chart"), S.agg, S.aggState);
-  S.aggMap = new MapView($("map"), S.agg, S.aggState);
-  S.aggStreet = new StreetViewPopup(S.agg, S.aggState);
-  S.aggMap.map.once("idle", () => S.aggMap?.resize());
-  setTimeout(() => S.aggMap?.resize(), 60);
-}
-
-function teardownAggViews() {
-  S.aggMap?.destroy();
-  S.aggStreet?.destroy();
-  if (S.delayView) $("chart").innerHTML = ""; // DelayView has no destroy()
-  S.aggMap = S.aggStreet = S.aggState = S.delayView = null;
 }
 
 async function loadTrip(key) {
@@ -307,22 +265,36 @@ async function loadTrip(key) {
   render();
 }
 
-async function loadAggregate(key) {
-  teardownMap();
-  S.agg = await fetch(`../data/${key}.json`, { cache: "no-store" }).then((r) => r.json());
-  $("trip-meta").textContent = `${S.agg.label} · ${S.agg.n_trips} trips`;
-  render();
-}
-
 // ---------------------------------------------------------------- deep links
-// Shareable hash routes: #single/trajectory, #single/speed, #average/overall,
-// #average/segment, #network/map, #network/areas. Network adds ?metric=<key>.
+// Shareable hash routes: #single/trajectory, #single/speed, #network/map,
+// #network/explore. Network adds ?metric=<key>…; single adds the trip and
+// its controls: ?trip=<key>&mode=lite&full=1&x=distance&on=a.b&off=c.d
+// (on/off = checkbox toggles that differ from the mode's preset).
 // The hash is updated on navigation and applied on load / back-forward.
 
 function currentHash() {
   let h = `#${S.main}`;
-  const sub = { single: S.tab, average: S.atab, network: S.ntab }[S.main];
+  const sub = { single: S.tab, network: S.ntab }[S.main];
   if (sub) h += `/${sub}`;
+  if (S.main === "single") {
+    const q = new URLSearchParams();
+    const key = $("trip-select")?.value;
+    if (key) q.set("trip", key);
+    const mode = S.mode ?? "rich";
+    if (mode !== "rich") q.set("mode", mode);
+    if (S.showFull) q.set("full", "1");
+    if (S.speedX !== "time") q.set("x", S.speedX);
+    const preset = MODE_PRESETS[mode];
+    const on = [], off = [];
+    for (const k of Object.keys(preset)) {
+      if (S.toggles[k] && !preset[k]) on.push(k);
+      else if (!S.toggles[k] && preset[k]) off.push(k);
+    }
+    if (on.length) q.set("on", on.join("."));
+    if (off.length) q.set("off", off.join("."));
+    const qs = q.toString();
+    if (qs) h += `?${qs}`;
+  }
   if (S.main === "network") {
     const N = S.network;
     const F = N.filters;
@@ -368,12 +340,12 @@ function applyHash() {
   if (!raw) return false;
   const [path, query] = raw.split("?");
   const [main, sub] = path.split("/");
-  if (!["single", "average", "network"].includes(main)) return false;
+  if (!["single", "network"].includes(main)) return false;
   S._applyingHash = true;
   if (main === "single" && ["trajectory", "speed"].includes(sub)) S.tab = sub;
-  if (main === "average" && ["overall", "segment"].includes(sub)) S.atab = sub;
   if (main === "network" && S.ntab !== "explore") S.ntab = "map";
   const params = new URLSearchParams(query || "");
+  if (main === "single") applySingleParams(params);
   if (main === "network") {
     const N = S.network;
     const F = N.filters;
@@ -423,13 +395,51 @@ function applyHash() {
   }
   // reflect sub-tab button states
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
-  document.querySelectorAll("#atabs button").forEach((b) => b.classList.toggle("active", b.dataset.atab === S.atab));
   document.querySelectorAll("#ntabs button").forEach((b) => b.classList.toggle("active", b.dataset.ntab === S.ntab));
   const metricSel = $("nw-metric");
   if (metricSel && metricSel.options.length) metricSel.value = S.network.metric;
   setMain(main);
   S._applyingHash = false;
   return true;
+}
+
+// Single-trip URL params -> state + controls. The trip itself loads async:
+// on startup init() picks S.pendingTrip; later (edited URL / back-forward)
+// a different key is loaded here.
+function applySingleParams(params) {
+  const mode = params.get("mode") === "lite" ? "lite" : "rich";
+  S.mode = mode;
+  Object.assign(S.toggles, MODE_PRESETS[mode]);
+  const flip = (name, v) => {
+    for (const k of (params.get(name) ?? "").split(".")) {
+      if (k in MODE_PRESETS.rich) S.toggles[k] = v;
+    }
+  };
+  flip("on", true);
+  flip("off", false);
+  S.showFull = params.get("full") === "1";
+  S.speedX = params.get("x") === "distance" ? "distance" : "time";
+  S.view = { trajectory: null, speed: null };
+  S.cursor = null;
+  syncSingleControls();
+  const key = params.get("trip");
+  if (!key) return;
+  if (!S.trip) { S.pendingTrip = key; return; } // startup: init() loads it
+  const sel = $("trip-select");
+  if (sel && sel.value !== key && [...sel.options].some((o) => o.value === key)) {
+    sel.value = key;
+    loadTrip(key);
+  }
+}
+
+function syncSingleControls() {
+  for (const [id, key] of Object.entries(TOGGLE_IDS)) { const el = $(id); if (el) el.checked = S.toggles[key]; }
+  document.querySelectorAll("#modes button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.mode === (S.mode ?? "rich")));
+  const full = $("show-full"); if (full) full.checked = S.showFull;
+  document.querySelectorAll('input[name="speedx"]').forEach((r) => { r.checked = r.value === S.speedX; });
+  const loss = $("s-dLoss");
+  if (loss) { loss.disabled = !S.toggles.dAVL; loss.parentElement.style.opacity = S.toggles.dAVL ? "" : "0.45"; }
 }
 
 // Switch main tab: toggle the per-main selector bars, sub-tabs, and controls.
@@ -443,7 +453,29 @@ function setMain(main) {
   render();
 }
 
+// Optional site config (written by scripts/build_public_site.py; absent in
+// the local full build): which Network cities and sub-tabs this deployment
+// exposes, e.g. {"network_cities": ["mbta", "translink"], "explore": false}.
+async function applySiteConfig() {
+  const cfg = await fetch("site.json", { cache: "no-cache" })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (!cfg) return;
+  if (Array.isArray(cfg.network_cities) && cfg.network_cities.length) {
+    const keep = new Set(cfg.network_cities.filter((c) => NETWORK_CITIES[c]));
+    for (const c of Object.keys(NETWORK_CITIES)) if (!keep.has(c)) delete NETWORK_CITIES[c];
+    document.querySelectorAll("#ntabs [data-ncity]").forEach((b) => {
+      if (!keep.has(b.dataset.ncity)) b.remove();
+    });
+    if (!keep.has(S.network.city)) S.network.city = cfg.default_city ?? [...keep][0];
+  }
+  if (cfg.explore === false) {
+    document.querySelector('#ntabs [data-ntab="explore"]')?.remove();
+    if (S.ntab === "explore") S.ntab = "map";
+  }
+}
+
 async function init() {
+  await applySiteConfig();
   // Tolerate a payload set with no single-trip data (e.g. network-only build):
   // the Network tab must still work.
   let items = [];
@@ -454,10 +486,9 @@ async function init() {
     });
     items = idx.items;
   } catch (e) {
-    console.warn("no data/index.json — single/average tabs will be empty", e);
+    console.warn("no data/index.json — single-trip tab will be empty", e);
   }
   const trips = items.filter((i) => i.kind === "trip");
-  const aggs = items.filter((i) => i.kind === "aggregate");
 
   const tripSel = $("trip-select");
   for (const it of trips) {
@@ -467,22 +498,9 @@ async function init() {
   }
   tripSel.onchange = () => loadTrip(tripSel.value);
 
-  const routeSel = $("route-select");
-  for (const it of aggs) {
-    const o = document.createElement("option");
-    o.value = it.key; o.textContent = it.label;
-    routeSel.appendChild(o);
-  }
-  routeSel.onchange = () => loadAggregate(routeSel.value);
-
-  // Main tabs (single / average). First switch to average loads the aggregate.
+  // Main tabs (single / network).
   document.querySelectorAll("#main-tabs button").forEach((b) =>
-    (b.onclick = () => {
-      setMain(b.dataset.main);
-      if (b.dataset.main === "average" && !S.agg && aggs.length) {
-        routeSel.value = aggs[0].key; loadAggregate(aggs[0].key);
-      }
-    }));
+    (b.onclick = () => setMain(b.dataset.main)));
 
   // Single-trip sub-tabs
   document.querySelectorAll("#tabs button").forEach((b) =>
@@ -490,13 +508,6 @@ async function init() {
       document.querySelectorAll("#tabs button").forEach((x) => x.classList.remove("active"));
       b.classList.add("active");
       S.tab = b.dataset.tab; render();
-    }));
-  // Average-trip sub-tabs
-  document.querySelectorAll("#atabs button").forEach((b) =>
-    (b.onclick = () => {
-      document.querySelectorAll("#atabs button").forEach((x) => x.classList.remove("active"));
-      b.classList.add("active");
-      S.atab = b.dataset.atab; render();
     }));
   // Network sub-tabs (city buttons are separate — they carry data-ncity)
   document.querySelectorAll("#ntabs button[data-ntab]").forEach((b) =>
@@ -531,20 +542,11 @@ async function init() {
       render();
     });
   // Keyboard shortcuts. These must ALWAYS fire (no focused-element guard) —
-  // single-trip: M/S basemap, H hide-features (speed tab map); average-trip:
-  // B/E Segments/Stems, H hide-features, M/S basemap.
+  // single-trip: M/S basemap, H hide-features (speed tab map); network: M/S.
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
     const hide = () => { S._hideUnattr = !S._hideUnattr; return S._hideUnattr; };
-    if (S.main === "average" && S.aggState) {
-      if (k === "b") S.aggState.publish("delayMode:changed", { value: "segments" });
-      else if (k === "e") S.aggState.publish("delayMode:changed", { value: "stems" });
-      else if (k === "h") S.aggState.publish("hideUnattributed:changed", { value: hide() });
-      else if (k === "m") S.aggState.publish("basemap:changed", { value: "map" });
-      else if (k === "s") S.aggState.publish("basemap:changed", { value: "satellite" });
-      return;
-    }
     if (S.main === "network" && S.network.map) {
       if (k === "m") S.network.map.setBasemap("map");
       else if (k === "s") S.network.map.setBasemap("satellite");
@@ -570,10 +572,11 @@ async function init() {
   if (routed && S.main === "network") {
     // network payloads need no trip; still load trips in the background for tab switches
     if (trips.length) { tripSel.value = trips[0].key; loadTrip(trips[0].key); }
-  } else if (routed && S.main === "average" && aggs.length) {
-    routeSel.value = aggs[0].key; await loadAggregate(aggs[0].key);
-    if (trips.length) { tripSel.value = trips[0].key; loadTrip(trips[0].key); }
-  } else if (trips.length) { tripSel.value = trips[0].key; await loadTrip(trips[0].key); }
+  } else if (trips.length) {
+    const want = trips.some((t) => t.key === S.pendingTrip) ? S.pendingTrip : trips[0].key;
+    S.pendingTrip = null;
+    tripSel.value = want; await loadTrip(want);
+  }
   else { setMain("network"); }  // network-only payload set: land on the map
 }
 
