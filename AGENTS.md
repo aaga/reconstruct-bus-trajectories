@@ -33,10 +33,12 @@ operating procedure.
 | Source | Where | Used by |
 | --- | --- | --- |
 | Realtime pings | Public R2 archive, <https://pub-777d0904efb449dc838791645b9e2e0f.r2.dev>, indexed by `_manifest.parquet` | every city except CTA |
+| Corrected pings | `caches/pings/<city>/`, one Parquet per service date, written by `ping_ingest` | cities with `r2_sources` (`nyc`) |
 | CTA pings | Local high-resolution AVL export (`avl_source_dir` in `cities.py`), not in the repo | `cta` |
 | Timetable (GTFS) | `data/gtfs/<city>_gtfs.zip`; dated versions from Transitland under `caches/gtfs_history/<city>/` | all |
 | Road network | An OpenStreetMap extract plus a Valhalla server built from the same extract, under `routing-valhalla/<area>/` | intersection and segment build |
 | Weather | NOAA GHCN-D daily station (`noaa_station`) | `date_attrs` |
+| Hourly rain and snow | NOAA MRMS radar rain crop and an ASOS station (`asos_station`) | `rain_mrms`, `weather_effect`, `weather_speed` (cities with `rain_mrms=True`) |
 
 Archive objects are one Parquet file per agency per UTC hour:
 `agency=<id>/year=YYYY/month=MM/day=DD/hour=HH.parquet`. All timestamps are
@@ -49,10 +51,11 @@ UTC. `src/dataio/realtime.py` is the only client; do not write another.
 | `cta` | Chicago CTA | local AVL export, read in place | `localhost:8002` | needs the private export; has door data; 2024-01 onward |
 | `mbta` | Boston MBTA | R2, agency `mbta` | `localhost:8003` | no door data |
 | `translink` | Vancouver TransLink | R2, agency `translink` | `localhost:8004` | no door data, no weather |
+| `nyc` | New York MTA buses | R2, agencies `mta-gtfs-rt` (to 2026-11-20) and `mta-siri` (after), repaired by `ping_ingest` | `localhost:8005` | no door data; hourly rain and snow effects; see NYC specifics |
 | `cta-hf` | CTA 2 s test vehicles | local ingest | `localhost:8002` | investigation only, hidden from the dashboard |
 
 `cta` cannot be run without the CTA export, whose path in `cities.py` is
-specific to one machine. `mbta` and `translink` run from public data.
+specific to one machine. `mbta`, `translink` and `nyc` run from public data.
 
 ## Running an existing city
 
@@ -81,8 +84,10 @@ Stage order (see the docstring of `analysis/network/run_pipeline.py`):
 | --- | --- | --- |
 | `prefetch` | downloads the city's R2 hour files to `caches/realtime_archive/` | network |
 | `way_match` | map-matches every GTFS shape and builds the signal list | Valhalla server, OSM extract |
+| `signal_infer` | adds signals OSM misses and applies `signal_add` / `signal_reject` exceptions; does nothing unless the city sets `infer_signals_from_crossings` or has such exceptions | OSM extract |
 | `way_geoms` | OSM way geometries | OSM extract |
 | `registry` | signal-to-signal segments | intersections cache |
+| `ping_ingest` | writes corrected per-date pings; does nothing unless the city has `r2_sources` | prefetched hours, dated timetables |
 | `head_trim_check` | decides whether to trim pre-departure pings | cached pings |
 | `traversals` | reconstructs every trip; one row per trip and segment | the slow stage |
 | `door_join` | joins door events | door cities only |
@@ -90,10 +95,12 @@ Stage order (see the docstring of `analysis/network/run_pipeline.py`):
 | `freeflow` | late-night 5th-percentile time per segment | traversals |
 | `date_attrs` | day type, season, weather per date | NOAA |
 | `payloads` | dashboard data under `dashboard/data/network/<city>/` | all above |
+| `rain_mrms`, `weather_effect`, `weather_speed` | speed change in heavy rain and snow | cities with `rain_mrms=True` |
 | `movements`, `ping_density`, `distributions`, `headway_cv`, `areas` | dashboard extras | payloads |
 
 To pick up new days only, re-run `prefetch`, then
-`--from-stage traversals`. Existing date and route checkpoints are skipped.
+`--from-stage traversals` (`--from-stage ping_ingest` for `nyc`). Existing
+date and route checkpoints are skipped.
 
 To limit the date range, call the stage scripts directly: `prefetch.py`,
 `run_reconstruct.py` and `delay_events.py` take `--start` and `--end`.
@@ -123,6 +130,31 @@ Build the static public site with
 and door data. Follow `analysis/network/README.md`, steps 2b and 4b, or run
 `analysis/network/run_history.sh <start> <end>`.
 
+### NYC specifics
+
+- **Two archive agencies.** MTA positions were scraped from GTFS-rt until
+  2026-11-20 (`mta-gtfs-rt`) and from SIRI afterwards (`mta-siri`).
+  `r2_sources` in the `nyc` config lists both with their kind.
+- **Never read the raw NYC hours directly.** GTFS-rt positions are not
+  observations: the feed pushes the last real report along the timetable to
+  the feed build time. `ping_ingest` reverses that, keeps one row per vehicle
+  and timestamp, and regroups pings into vehicle runs because the feed's
+  `trip_id` flips mid-trip. Every later stage reads `caches/pings/nyc/`.
+  Rows whose trip is in no nearby timetable version are dropped.
+- **`trip_id` in NYC outputs is a run id**, not the feed's trip id;
+  `feed_trip_id` keeps the original.
+- **Timetable.** MTA publishes six bus feeds. Merge them into
+  `data/gtfs/nyc_gtfs.zip` with
+  `PYTHONPATH=src uv run python src/dataio/gtfs_merge.py data/gtfs/nyc_gtfs.zip <six zips>`.
+  The reversal needs the dated versions too, so run `gtfs_history.py --city
+  nyc` and `era_seg_bounds.py --city nyc --all-eras` before `ping_ingest`.
+- **Redo one date:**
+  `uv run python analysis/network/ping_ingest.py --city nyc --date 2026-09-22 --force`,
+  then `run_reconstruct.py` for the same date with `--force`.
+- **Headway variability routes** were chosen with
+  `analysis/network/cv_window.py --city nyc`; rerun it when the timetable
+  changes and update `cv_routes`.
+
 ## Adding a new city from the R2 archive
 
 1. **Check the archive has it.** Find the agency id and its date range:
@@ -140,6 +172,11 @@ and door data. Follow `analysis/network/README.md`, steps 2b and 4b, or run
    filled, and whether timestamps advance (some feeds repeat a frozen
    timestamp). The manifest's `*_fill` columns give a first look.
 
+   Also check whether positions are real observations. Feeds built with
+   OneBusAway can publish timetable-extrapolated positions (MTA GTFS-rt
+   does). Such a feed needs `r2_sources` with kind `oba_extrapolated` and a
+   `ping_dir`, so that `ping_ingest` repairs it; see NYC specifics.
+
 2. **Get the timetable.** Put the agency's current GTFS zip at
    `data/gtfs/<city>_gtfs.zip`. It must contain `shapes.txt`. If the archive
    spans a timetable change, add the agency's Transitland feed id to
@@ -149,7 +186,7 @@ and door data. Follow `analysis/network/README.md`, steps 2b and 4b, or run
 3. **Stand up routing.** Download an OpenStreetMap extract covering every
    route (merge neighbouring regions if routes cross a border) into
    `routing-valhalla/<area>/`, build Valhalla tiles from that same file, and
-   serve them on an unused port (8002 to 8004 are taken). The extract and the
+   serve them on an unused port (8002 to 8005 are taken). The extract and the
    tiles must be the same vintage. The repo does not record the container
    command; any standard Valhalla server works.
 
@@ -171,6 +208,15 @@ and door data. Follow `analysis/network/README.md`, steps 2b and 4b, or run
    - `exclude_route_prefixes` for rail-replacement shuttles and similar
    - `has_door_data=False` unless you have a door or passenger-count extract
    - `cv_routes` only if you want headway variability for named routes
+     (`analysis/network/cv_window.py` proposes a window and route set)
+   - `r2_sources` and `ping_dir` only for a feed that needs repair before
+     reconstruction
+   - `feed_speed=True` only after checking the feed's speed field is real
+     and in m/s
+   - `monotone_min_move_m` if GPS jitter in dense streets breaks trips
+     (default 30 m; `nyc` uses 50 m)
+   - `rain_mrms=True` and `asos_station` for hourly rain and snow effects
+     (United States only)
 
    City-config behaviour is tested in `tests/test_cities.py`; add a case
    there if the new city needs a rule the others do not.

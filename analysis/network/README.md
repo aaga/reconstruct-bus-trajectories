@@ -2,10 +2,21 @@
 
 Full-network (all routes, all segments, all corridors) speed/delay analysis
 for a city's bus network. Chicago CTA is the primary city (2024-01 →
-present); TransLink Vancouver is fully onboarded (2026, R2-fed, no door
-data), and MBTA Boston has partial payloads (city tab hidden 2026-08-24
-while its pipeline lags CTA's). Everything city-specific lives in
-`src/dataio/cities.py`.
+present); TransLink Vancouver, MBTA Boston and MTA New York are onboarded
+from the R2 archive (2026, no door data). Everything city-specific lives in
+`src/dataio/cities.py`. `run_pipeline.py --city <id>` runs every stage in
+order; its docstring is the authoritative stage list, and
+[`AGENTS.md`](../../AGENTS.md) is the operating procedure.
+
+**New York reads corrected pings, not raw hour-files.** `ping_ingest.py`
+(cities with `r2_sources`) writes one Parquet per service date to
+`caches/pings/nyc/` after three repairs: first-seen row per vehicle and
+timestamp, timetable reversal of the extrapolated GTFS-rt positions, and
+trip identity by vehicle run. `rain_mrms.py`, `weather_effect.py` and
+`weather_speed_profile.py` (cities with `rain_mrms`) add heavy-rain and snow
+speed effects; `signal_infer.py` adds signals OSM misses and is off unless a
+city enables it; `cv_window.py` picks a headway-variability window and route
+set from the timetable.
 
 **CTA now runs off the local high-resolution AVL export, not the R2 scrape**
 (2026-08-15), and since 2026-08-17 covers **2024-01-01 → 2026-08** — 957
@@ -217,10 +228,11 @@ uv run python dashboard/serve.py --port 8931     # NOT python -m http.server
 
 1. Add a `CityConfig` in `src/dataio/cities.py` (R2 agency name, tz, GTFS
    zip path, bandwidth for the feed's ping cadence, periods, NOAA station,
-   `holiday_region`).
+   `holiday_region`). A feed whose positions are timetable-extrapolated also
+   needs `r2_sources` and `ping_dir`.
 2. Build the intersections + way caches for its GTFS shapes
    (`record-a-ride/scripts/build_all_intersections.py`, needs Valhalla).
    Local Valhalla containers live under `routing-valhalla/<city>/`
-   (`chicago/`, `bc/`, `boston/`) — one OSM extract + tile set per area,
+   (`chicago/`, `bc/`, `boston/`, `nyc/`) — one OSM extract + tile set per area,
    pointed at by the city's `pbf_file` / `valhalla_url`.
 3. Run the pipeline above with `--city <id>`.
